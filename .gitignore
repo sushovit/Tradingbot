@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+
+# Virtual environment
+tradingbot/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime state & data (local only)
+*.db
+*.csv
+bot.run
+bot_status.log
+server_startup.log
+portfolio_state.json
+positions.json
+configs/
+
+# Local tooling state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

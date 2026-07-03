@@ -1,0 +1,30 @@
+{
+    "session": "2026-07-03",
+    "regime": "risk-on",
+    "orders": [
+        {
+            "action": "BUY",
+            "ticker": "NVDA",
+            "notional_usd": 250,
+            "entry": 172.5,
+            "stop": 168.0,
+            "target": 181.5,
+            "setup": "momentum_continuation",
+            "reason": "breakout continuation over 20-day high",
+            "valid_until": "2026-12-31T15:30:00"
+        },
+        {
+            "action": "BUY",
+            "ticker": "TSLA",
+            "notional_usd": 200,
+            "entry": 315.0,
+            "stop": 305.0,
+            "target": 340.0,
+            "setup": "event_flow",
+            "hard_exit_date": "2026-07-10",
+            "reason": "index inclusion flow into rebalance date"
+        }
+    ],
+    "watchlist": ["AMD"],
+    "no_new_trades_if": {"daily_loss_pct_exceeds": 3.0}
+}

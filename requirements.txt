@@ -1,0 +1,12 @@
+anthropic
+alpaca-py
+streamlit
+yfinance
+pandas
+pandas_ta
+pytz
+python-dotenv
+finnhub-python
+discord-webhook
+requests
+pytest
