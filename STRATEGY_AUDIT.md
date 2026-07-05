@@ -22,5 +22,9 @@ bypasses it.
 | Per-ticker strategy enablement | `bot_config.json` `"strategies"` | `test_per_ticker_strategy_config` ✅ |
 | Notional > 30% equity rejected | `risk.check_signal` | `test_oversized_notional_rejected` ✅ |
 | Max positions enforced | `risk.check_signal` | `test_max_positions_rejected` ✅ |
+| Hard capital cap (broker $97k → $1,000) | `risk.effective_equity` | `test_effective_equity_caps_broker_balance` ✅ |
+| No margin: total notional ≤ cash | `risk.check_signal` | `test_total_notional_cannot_exceed_cash` ✅ |
+| Whole-share reality journaled | `risk.zero_size_reason` | `test_whole_share_rejection_is_journaled` ✅ |
+| Universe filters (price/volume/OTC/ETF) + ranking | `universe.filter_and_rank` | `test_universe_*` ✅ |
 
-Run `python -m pytest tests -q` to re-verify (33 tests, no network).
+Run `python -m pytest tests -q` to re-verify (46 tests, no network).

@@ -28,6 +28,7 @@ from claude_integration import (
 import journal
 import risk
 import analyst
+import universe
 from broker import Broker, BrokerError
 from strategies import enabled_strategies, Signal, Rejection
 
@@ -286,6 +287,15 @@ def live_bot_worker():
     positions = reconcile_positions(broker, positions)
     write_positions(positions)
 
+    # Refresh the candidate universe once per session start (graceful on failure).
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            startup_config = json.load(f)
+        candidates = universe.refresh(broker, startup_config)
+        logger.info(f"Universe refreshed: {len(candidates)} candidates.")
+    except Exception as e:
+        logger.warning(f"Universe refresh failed — falling back to configured tickers: {e}")
+
     logger.info("Live bot worker started against Alpaca PAPER account.")
 
     while os.path.exists(LOCK_FILE):
@@ -293,7 +303,13 @@ def live_bot_worker():
             with open(CONFIG_FILE, "r") as f: config = json.load(f)
 
             ticker_profiles = config["ticker_profiles"]
-            ticker_list = list(ticker_profiles.keys())
+            # Daily universe candidates replace the fixed ticker list; open
+            # positions are ALWAYS scanned so they stay managed even after
+            # dropping out of the universe. Falls back to configured tickers.
+            universe_tickers = universe.load_universe_tickers()
+            base_list = universe_tickers or list(ticker_profiles.keys())
+            held = [t for t, s in positions.items() if s.get("in_position")]
+            ticker_list = list(dict.fromkeys(base_list + held))
             interval_mins = config["interval"]
             max_positions = config["max_positions"]
             use_spy_filter = config.get("use_spy_filter", True)
@@ -313,11 +329,14 @@ def live_bot_worker():
             a_time.sleep(30)
             continue
 
-        # --- Capital comes from the broker, portfolio_state.json is display cache only ---
+        # --- Capital comes from the broker, hard-capped by capital_cap_usd.
+        # portfolio_state.json is display cache only ---
         try:
-            equity = broker.get_equity()
+            broker_equity = broker.get_equity()
+            equity = risk.effective_equity(broker_equity, config)
             with open(PORTFOLIO_STATE_FILE, 'w') as f:
-                json.dump({"capital": equity, "source": "alpaca_paper",
+                json.dump({"capital": equity, "broker_equity": broker_equity,
+                           "source": "alpaca_paper",
                            "as_of": now_et.isoformat()}, f)
         except BrokerError as e:
             logger.error(f"Cannot fetch account equity, skipping cycle: {e}")
@@ -378,6 +397,10 @@ def live_bot_worker():
         status_updates = []
         for ticker in ticker_list:
             open_positions_count = sum(1 for s in positions.values() if s.get("in_position"))
+            # Cash actually deployed — entries must never push this above
+            # effective equity (no margin, ever).
+            open_notional = sum(s.get("shares_held", 0) * s.get("entry_price", 0)
+                                for s in positions.values() if s.get("in_position"))
             state = positions.get(ticker, {})
 
             df = intraday_bars.get(ticker, pd.DataFrame())
@@ -515,7 +538,8 @@ def live_bot_worker():
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,
                 open_positions=open_positions_count, max_positions=max_positions,
-                daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd)
+                daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
+                open_notional_usd=open_notional)
             if not ok:
                 journal_rules_pass(ticker, signal.setup_name, reject_reason,
                                    f"entry={signal.entry:.2f} stop={signal.stop:.2f} "
@@ -557,19 +581,24 @@ def live_bot_worker():
                     status_updates.append(f"{ticker}: Waiting (gatekeeper failed)")
                     continue
 
-            # --- Risk-based sizing, then bracket order AT THE BROKER ---
+            # --- Risk-based sizing (whole shares), then bracket order AT THE BROKER ---
             qty = risk.position_size(equity, risk_profile['risk_per_trade_pct'],
-                                     signal.entry, signal.stop)
-            if qty <= 0:
-                journal_rules_pass(ticker, signal.setup_name, "size_zero",
-                                   f"equity={equity:.2f}")
-                status_updates.append(f"{ticker}: Pass (size zero)")
+                                     signal.entry, signal.stop,
+                                     open_notional_usd=open_notional)
+            if qty < 1:
+                # Whole-share reality: journal WHY (tells us which tickers this
+                # account can't afford).
+                zero_reason = risk.zero_size_reason(signal.entry, equity)
+                journal_rules_pass(ticker, signal.setup_name, zero_reason,
+                                   f"entry={signal.entry:.2f} equity={equity:.2f}")
+                status_updates.append(f"{ticker}: Pass ({zero_reason})")
                 continue
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,
                 notional_usd=qty * signal.entry,
                 open_positions=open_positions_count, max_positions=max_positions,
-                daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd)
+                daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
+                open_notional_usd=open_notional)
             if not ok:
                 journal_rules_pass(ticker, signal.setup_name, reject_reason, "")
                 status_updates.append(f"{ticker}: Pass ({reject_reason})")
@@ -631,8 +660,10 @@ def live_bot_worker():
             }
             # Capital persisted on BUY (display cache; broker stays authoritative).
             try:
+                post_buy_equity = broker.get_equity()
                 with open(PORTFOLIO_STATE_FILE, 'w') as f:
-                    json.dump({"capital": broker.get_equity(),
+                    json.dump({"capital": risk.effective_equity(post_buy_equity, config),
+                               "broker_equity": post_buy_equity,
                                "source": "alpaca_paper",
                                "as_of": now_et.isoformat()}, f)
             except (BrokerError, OSError) as e:

@@ -26,8 +26,15 @@ DEFAULT_STRATEGIES = ["trend_continuation"]
 
 
 def enabled_strategies(ticker: str, config: dict) -> list:
-    """Instantiate the strategies enabled for a ticker in bot_config.json."""
-    names = config.get("strategies", {}).get(ticker, DEFAULT_STRATEGIES)
+    """Instantiate the strategies enabled for a ticker.
+
+    Per-ticker overrides come from bot_config.json "strategies"; tickers
+    without an override (e.g. daily universe candidates) get the config's
+    "default_strategies" list, falling back to the original single-strategy
+    behaviour."""
+    names = config.get("strategies", {}).get(ticker)
+    if names is None:
+        names = config.get("default_strategies", DEFAULT_STRATEGIES)
     instances = []
     for name in names:
         cls = REGISTRY.get(name)

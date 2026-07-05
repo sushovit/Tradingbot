@@ -20,6 +20,16 @@ A Streamlit trading bot with:
   every fill, and every outcome is recorded.
 - **Risk engine** (`risk.py`) — R:R ≥ 1.5, notional ≤ 30% of equity, risk-based
   position sizing, max positions, and a daily-loss circuit breaker.
+- **Hard capital cap** — `capital_cap_usd` in `bot_config.json` (default $1,000)
+  caps the equity every sizing/validation path sees, regardless of the broker
+  balance: a $97k paper account trades like a $1,000 account. Margin is never
+  used — total deployed notional can't exceed effective capital — and sizing
+  is whole-share (tickers too expensive for the account are journaled as
+  `price_too_high_for_account` passes).
+- **Daily universe scanner** (`universe.py`) — most-actives + top movers from
+  Alpaca's screener, filtered to $5–$250 price, ≥ $20M average daily dollar
+  volume, tradable non-OTC common stocks (ETFs skipped by default), ranked by
+  dollar volume × |% move|, top 15 → `universe_today.json`.
 
 ## Setup
 
@@ -63,6 +73,22 @@ State survives restarts: on startup, `positions.json` is reconciled against
 The daily-loss circuit breaker halts new entries when today's realized PnL
 (from the journal) drops below `daily_loss_limit_pct` of equity
 (default 3%, `bot_config.json`).
+
+## Daily universe — universe.py
+
+```powershell
+python universe.py     # print the ranked candidate table (CEO scan session)
+```
+
+The bot refreshes the universe automatically once per session start and then
+scans those tickers (plus any open positions, which are always managed even
+after dropping out of the universe) across all `default_strategies`.
+Per-ticker strategy overrides in `"strategies"` still apply; tickers without
+a risk profile default to **Moderate**. If the screener is unavailable or the
+file is stale, the bot falls back to the configured `ticker_profiles`.
+
+Config knobs (`bot_config.json → "universe"`): `min_price`, `max_price`,
+`min_dollar_volume`, `max_candidates`, `skip_etfs`.
 
 ## CEO order sheets — orders.py
 

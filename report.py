@@ -15,12 +15,23 @@ from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 
+import json
+
 import journal
+import risk
 
 load_dotenv()
 logging.basicConfig(level=logging.WARNING)
 
 EASTERN_TZ = pytz.timezone("US/Eastern")
+
+
+def _load_config() -> dict:
+    try:
+        with open("bot_config.json", "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def build_report() -> str:
@@ -39,10 +50,15 @@ def build_report() -> str:
     # --- Account ---
     try:
         acct = broker.get_account()
+        config = _load_config()
+        broker_equity = float(acct.equity)
+        eff = risk.effective_equity(broker_equity, config)
+        cap_note = " (cap)" if eff < broker_equity else ""
         lines.append("")
-        lines.append(f"**Equity:** ${float(acct.equity):,.2f} | "
-                     f"**Cash:** ${float(acct.cash):,.2f} | "
-                     f"**Buying power:** ${float(acct.buying_power):,.2f}")
+        lines.append(f"**Effective capital: ${eff:,.2f}{cap_note} | "
+                     f"Broker equity: ${broker_equity:,.2f}**")
+        lines.append(f"Cash: ${float(acct.cash):,.2f} — margin buying power is "
+                     f"never used; deployable cash is capped at effective capital.")
     except BrokerError as e:
         lines.append(f"\n**Account unavailable:** {e}")
         return "\n".join(lines)

@@ -29,11 +29,15 @@ from alpaca.trading.requests import (
     GetOrderByIdRequest,
     ReplaceOrderRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
+from alpaca.trading.enums import (OrderSide, TimeInForce, OrderClass,
+                                  QueryOrderStatus, AssetStatus, AssetClass)
+from alpaca.trading.requests import GetAssetsRequest
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.historical.screener import ScreenerClient
+from alpaca.data.requests import (StockBarsRequest, MostActivesRequest,
+                                  MarketMoversRequest)
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import DataFeed, MostActivesBy, MarketType
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -85,6 +89,7 @@ class Broker:
         # paper=True is deliberate and non-configurable.
         self.trading = TradingClient(api_key, secret_key, paper=True)
         self.data = StockHistoricalDataClient(api_key, secret_key)
+        self.screener = ScreenerClient(api_key, secret_key)
 
     # ---------------- Account & positions ----------------
 
@@ -166,6 +171,44 @@ class Broker:
             logger.warning(f"Could not list open orders for {ticker}: {e}")
         return _retry(self.trading.close_position, ticker,
                       what=f"close_position({ticker})")
+
+    # ---------------- Screener (market data v1beta1) ----------------
+
+    def get_most_actives(self, top: int = 50) -> list:
+        """Most-active symbols by share volume: [{'symbol', 'volume'}, ...]"""
+        req = MostActivesRequest(by=MostActivesBy.VOLUME, top=top)
+        result = _retry(self.screener.get_most_actives, req, what="get_most_actives")
+        return [{"symbol": a.symbol, "volume": float(getattr(a, "volume", 0) or 0)}
+                for a in (getattr(result, "most_actives", None) or [])]
+
+    def get_market_movers(self, top: int = 50) -> list:
+        """Top gainers + losers: [{'symbol', 'percent_change', 'price'}, ...]"""
+        req = MarketMoversRequest(market_type=MarketType.STOCKS, top=top)
+        result = _retry(self.screener.get_market_movers, req, what="get_market_movers")
+        movers = []
+        for m in list(getattr(result, "gainers", None) or []) + \
+                 list(getattr(result, "losers", None) or []):
+            movers.append({"symbol": m.symbol,
+                           "percent_change": float(getattr(m, "percent_change", 0) or 0),
+                           "price": float(getattr(m, "price", 0) or 0)})
+        return movers
+
+    def get_assets_map(self, symbols) -> dict:
+        """{symbol: {'tradable', 'exchange', 'name'}} for the given symbols.
+        One bulk call — used to skip OTC / non-tradable / (optionally) ETFs."""
+        wanted = set(symbols)
+        req = GetAssetsRequest(status=AssetStatus.ACTIVE,
+                               asset_class=AssetClass.US_EQUITY)
+        assets = _retry(self.trading.get_all_assets, req, what="get_assets_map")
+        out = {}
+        for a in assets:
+            if a.symbol in wanted:
+                out[a.symbol] = {
+                    "tradable": bool(getattr(a, "tradable", False)),
+                    "exchange": str(getattr(a, "exchange", "") or ""),
+                    "name": str(getattr(a, "name", "") or ""),
+                }
+        return out
 
     # ---------------- Market data (IEX feed) ----------------
 

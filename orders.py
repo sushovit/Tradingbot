@@ -75,13 +75,19 @@ def validate_sheet(sheet: dict) -> list:
 
 
 def validate_order(order: dict, equity: float, open_positions: int,
-                   max_positions: int, now_et: datetime = None):
+                   max_positions: int, now_et: datetime = None,
+                   open_notional_usd: float = 0.0):
     """Validate one order against the risk rules. Returns (ok, reason).
+
+    `equity` must be the EFFECTIVE equity (risk.effective_equity — capped by
+    capital_cap_usd, never raw broker equity).
 
     Rules enforced for BUY:
       - stop is mandatory (any order missing a stop is rejected)
       - target/stop reward:risk must be >= 1.5
       - notional must not exceed 30% of equity
+      - open + new notional must not exceed equity (cash only, no margin)
+      - notional must buy at least 1 whole share (Alpaca bracket requirement)
       - must not exceed max_positions
       - setup 'event_flow' REQUIRES hard_exit_date
       - expired valid_until is rejected
@@ -148,8 +154,15 @@ def validate_order(order: dict, equity: float, open_positions: int,
         entry=float(entry), stop=float(stop),
         target=float(target) if target is not None else None,
         equity=equity, notional_usd=float(notional),
-        open_positions=open_positions, max_positions=max_positions)
-    return ok, reason
+        open_positions=open_positions, max_positions=max_positions,
+        open_notional_usd=open_notional_usd)
+    if not ok:
+        return ok, reason
+
+    # Whole-share reality: Alpaca brackets need qty >= 1.
+    if math.floor(float(notional) / float(entry)) < 1:
+        return False, "price_too_high_for_account"
+    return True, None
 
 
 def check_no_new_trades(sheet: dict, equity: float) -> str:
@@ -306,13 +319,16 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
         from broker import Broker  # imported here so validation tests need no alpaca creds
         try:
             broker = Broker()
-            equity = broker.get_equity()
+            # Hard capital cap: never size off raw broker equity.
+            equity = risk.effective_equity(broker.get_equity(), config)
         except Exception as e:
             print(f"CANNOT REACH BROKER (paper account): {e}")
             print("No orders were executed. Check ALPACA_API_KEY / ALPACA_SECRET_KEY in .env.")
             return 1
     positions = _load_positions()
     open_positions = sum(1 for s in positions.values() if s.get("in_position"))
+    open_notional = sum(s.get("shares_held", 0) * s.get("entry_price", 0)
+                        for s in positions.values() if s.get("in_position"))
 
     block_reason = check_no_new_trades(sheet, equity)
     if block_reason:
@@ -322,7 +338,8 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
     for order in sheet.get("orders", []):
         ticker = str(order.get("ticker", "?")).upper()
         action = str(order.get("action", "?")).upper()
-        ok, reason = validate_order(order, equity, open_positions, max_positions)
+        ok, reason = validate_order(order, equity, open_positions, max_positions,
+                                    open_notional_usd=open_notional)
         if ok and action == "BUY" and block_reason:
             ok, reason = False, f"no_new_trades_if:{block_reason}"
 
@@ -347,6 +364,7 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
             print(result)
             if action == "BUY":
                 open_positions += 1
+                open_notional += float(order.get("notional_usd", 0))
         except Exception as e:
             print(f"EXECUTION FAILED {action} {ticker}: {e}")
             exit_code = 1
