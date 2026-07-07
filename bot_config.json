@@ -9,8 +9,18 @@
         "min_price": 5,
         "max_price": 250,
         "min_dollar_volume": 20000000,
-        "max_candidates": 15,
-        "skip_etfs": true
+        "max_candidates": 20,
+        "skip_etfs": true,
+        "core_watchlist": [
+            "NVDA", "AMD", "INTC", "MU", "MRVL", "PLTR", "ORCL", "CSCO", "DELL",
+            "T", "VZ", "DIS", "SNAP", "PINS",
+            "NKE", "SBUX", "TGT", "F", "GM", "DKNG", "CCL", "UBER", "ABNB",
+            "BAC", "WFC", "C", "SCHW", "PYPL", "SOFI", "HOOD",
+            "XOM", "CVX", "OXY", "SLB", "DVN",
+            "PFE", "MRK", "BMY", "CVS", "HIMS",
+            "BA", "DAL", "UAL", "AAL", "RIVN",
+            "FCX", "CLF", "NEM"
+        ]
     },
     "default_strategies": ["trend_continuation", "momentum_continuation", "mean_reversion_reclaim"],
     "use_spy_filter": true,

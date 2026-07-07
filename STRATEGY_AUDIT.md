@@ -26,5 +26,7 @@ bypasses it.
 | No margin: total notional ≤ cash | `risk.check_signal` | `test_total_notional_cannot_exceed_cash` ✅ |
 | Whole-share reality journaled | `risk.zero_size_reason` | `test_whole_share_rejection_is_journaled` ✅ |
 | Universe filters (price/volume/OTC/ETF) + ranking | `universe.filter_and_rank` | `test_universe_*` ✅ |
+| Exit sync idempotent, PnL vs journaled BUY, outcome linked | `orders.sync` | `tests/test_sync.py` ✅ |
+| Core-watch setup flags (pre-breakout / washout) + merge + cap 20 | `universe.classify_core_setup`, `merge_candidates` | `test_classify_*`, `test_merge_*`, `test_combined_output_capped_at_20` ✅ |
 
-Run `python -m pytest tests -q` to re-verify (46 tests, no network).
+Run `python -m pytest tests -q` to re-verify (56 tests, no network).

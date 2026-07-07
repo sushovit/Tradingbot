@@ -87,8 +87,19 @@ Per-ticker strategy overrides in `"strategies"` still apply; tickers without
 a risk profile default to **Moderate**. If the screener is unavailable or the
 file is stale, the bot falls back to the configured `ticker_profiles`.
 
-Config knobs (`bot_config.json → "universe"`): `min_price`, `max_price`,
-`min_dollar_volume`, `max_candidates`, `skip_etfs`.
+Candidates come from **two sources**, tagged in the output:
+- `movers` — Alpaca screener most-actives + top gainers/losers (yesterday's
+  action);
+- `core_watch` — a static ~48-name cross-sector watchlist in
+  `bot_config.json`, flagged only when a playbook setup is forming:
+  `pre_breakout` (within 3% of the 20-day high) or `washout_reclaim`
+  (≥ 10% off highs). Flagged-but-quiet names get a 1% move floor in the
+  ranking so a coiling base isn't drowned out by yesterday's movers.
+
+Combined output is capped at 20. Config knobs (`bot_config.json →
+"universe"`): `min_price`, `max_price`, `min_dollar_volume`,
+`max_candidates`, `skip_etfs`, `core_watchlist`, `pre_breakout_pct`,
+`washout_pct`.
 
 ## CEO order sheets — orders.py
 

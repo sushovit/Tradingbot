@@ -42,8 +42,11 @@ DEFAULTS = {
     "min_price": 5.0,
     "max_price": 250.0,
     "min_dollar_volume": 20_000_000.0,
-    "max_candidates": 15,
+    "max_candidates": 20,
     "skip_etfs": True,
+    "core_watchlist": [],
+    "pre_breakout_pct": 3.0,    # within 3% of the 20-day high
+    "washout_pct": 10.0,        # >= 10% off the 20-day high (reclaim candidate)
 }
 
 _ETF_NAME_MARKERS = ("ETF", "ETN", "TRUST", "FUND", "INDEX", "SHARES ")
@@ -61,13 +64,40 @@ def looks_like_etf(name: str) -> bool:
 
 
 # =============================================================================
-# PURE FILTER/RANK (unit tested, no network)
+# PURE FILTER/RANK + SETUP CLASSIFICATION (unit tested, no network)
 # =============================================================================
+
+def classify_core_setup(df, config: dict = None):
+    """Playbook-friendly state of a core-watchlist name from its daily bars:
+
+      "pre_breakout"     — last close within pre_breakout_pct of the 20-day high
+      "washout_reclaim"  — last close >= washout_pct below the 20-day high
+      None               — mid-range, nothing actionable
+
+    df: daily OHLCV, oldest->newest, needs >= 5 rows."""
+    cfg = _universe_config(config or {})
+    if df is None or len(df) < 5:
+        return None
+    window = df.tail(20)
+    high20 = float(window["high"].max())
+    last_close = float(df["close"].iloc[-1])
+    if high20 <= 0:
+        return None
+    if last_close >= high20 * (1 - cfg["pre_breakout_pct"] / 100.0):
+        return "pre_breakout"
+    if last_close <= high20 * (1 - cfg["washout_pct"] / 100.0):
+        return "washout_reclaim"
+    return None
+
 
 def filter_and_rank(candidates: list, config: dict) -> list:
     """candidates: [{symbol, price, avg_dollar_volume, change_pct,
-                     tradable, exchange, name}, ...]
-    Returns the ranked, filtered list capped at max_candidates."""
+                     tradable, exchange, name, source?, setup_flag?}, ...]
+    Returns the ranked, filtered list capped at max_candidates.
+
+    Score = avg dollar volume x |% move|. Core-watchlist names flagged on
+    setup get a 1% move floor so a quiet pre-breakout coil isn't drowned out
+    by yesterday's movers."""
     cfg = _universe_config(config)
     kept = []
     for c in candidates:
@@ -84,16 +114,37 @@ def filter_and_rank(candidates: list, config: dict) -> list:
             continue
         if adv < cfg["min_dollar_volume"]:
             continue
+        source = c.get("source", "movers")
+        move_mult = abs(change)
+        if source == "core_watch" and c.get("setup_flag"):
+            move_mult = max(move_mult, 1.0)
         kept.append({
             "symbol": c["symbol"],
             "price": round(price, 2),
             "avg_dollar_volume": round(adv, 0),
             "change_pct": round(change, 2),
-            "score": adv * abs(change),
+            "score": adv * move_mult,
+            "source": source,
+            "setup_flag": c.get("setup_flag"),
             "name": c.get("name", ""),
         })
     kept.sort(key=lambda x: x["score"], reverse=True)
     return kept[: int(cfg["max_candidates"])]
+
+
+def merge_candidates(movers: list, core: list) -> list:
+    """Union by symbol. A symbol in both keeps the movers entry (its screener
+    change % is authoritative) but inherits the core setup_flag."""
+    by_symbol = {}
+    for c in movers:
+        by_symbol[c["symbol"]] = dict(c, source=c.get("source", "movers"))
+    for c in core:
+        if c["symbol"] in by_symbol:
+            if c.get("setup_flag") and not by_symbol[c["symbol"]].get("setup_flag"):
+                by_symbol[c["symbol"]]["setup_flag"] = c["setup_flag"]
+        else:
+            by_symbol[c["symbol"]] = dict(c, source="core_watch")
+    return list(by_symbol.values())
 
 
 # =============================================================================
@@ -146,13 +197,62 @@ def fetch_candidates(broker, config: dict) -> list:
             "tradable": asset.get("tradable", True),
             "exchange": asset.get("exchange", ""),
             "name": asset.get("name", ""),
+            "source": "movers",
+        })
+    return candidates
+
+
+def fetch_core_candidates(broker, config: dict) -> list:
+    """Scan the static core watchlist for playbook setups: names coiling
+    within 3% of their 20-day high (pre-breakout) or washed out >= 10% off
+    highs (reclaim candidates). Only flagged names are returned."""
+    cfg = _universe_config(config)
+    watchlist = list(cfg.get("core_watchlist") or [])
+    if not watchlist:
+        return []
+
+    assets = {}
+    try:
+        assets = broker.get_assets_map(watchlist)
+    except Exception as e:
+        logger.warning(f"asset metadata unavailable for core watchlist: {e}")
+    bars = broker.get_daily_bars(watchlist, lookback_days=45)
+
+    candidates = []
+    for sym in watchlist:
+        df = bars.get(sym)
+        if df is None or df.empty or len(df) < 5:
+            continue
+        flag = classify_core_setup(df, config)
+        if flag is None:
+            continue
+        closes = df["close"]
+        asset = assets.get(sym, {})
+        candidates.append({
+            "symbol": sym,
+            "price": float(closes.iloc[-1]),
+            "avg_dollar_volume": float((df["close"] * df["volume"]).tail(20).mean()),
+            "change_pct": float((closes.iloc[-1] / closes.iloc[-2] - 1) * 100)
+            if len(closes) >= 2 else 0.0,
+            "tradable": asset.get("tradable", True),
+            "exchange": asset.get("exchange", ""),
+            "name": asset.get("name", ""),
+            "source": "core_watch",
+            "setup_flag": flag,
         })
     return candidates
 
 
 def refresh(broker, config: dict) -> list:
-    """Fetch + filter + write universe_today.json. Returns the candidates."""
-    ranked = filter_and_rank(fetch_candidates(broker, config), config)
+    """Fetch movers + core-watchlist setups, filter, rank, write
+    universe_today.json. Returns the candidates."""
+    movers = fetch_candidates(broker, config)
+    try:
+        core = fetch_core_candidates(broker, config)
+    except Exception as e:
+        logger.warning(f"core watchlist scan failed: {e}")
+        core = []
+    ranked = filter_and_rank(merge_candidates(movers, core), config)
     payload = {
         "generated_at": datetime.now(EASTERN_TZ).isoformat(),
         "date": datetime.now(EASTERN_TZ).strftime("%Y-%m-%d"),
@@ -202,12 +302,13 @@ def main():
 
     print(f"# Universe — {datetime.now(EASTERN_TZ).strftime('%Y-%m-%d %H:%M ET')} "
           f"({len(ranked)} candidates)\n")
-    print("| # | Ticker | Price | Avg $ vol (20d) | Move % | Name |")
-    print("|---|---|---|---|---|---|")
+    print("| # | Ticker | Price | Avg $ vol (20d) | Move % | Source | Setup | Name |")
+    print("|---|---|---|---|---|---|---|---|")
     for i, c in enumerate(ranked, 1):
         print(f"| {i} | {c['symbol']} | ${c['price']:,.2f} "
               f"| ${c['avg_dollar_volume'] / 1e6:,.0f}M | {c['change_pct']:+.1f}% "
-              f"| {c['name'][:40]} |")
+              f"| {c.get('source', 'movers')} | {c.get('setup_flag') or '—'} "
+              f"| {c['name'][:36]} |")
     print(f"\nWritten to {UNIVERSE_FILE}")
     return 0
 

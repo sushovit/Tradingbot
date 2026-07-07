@@ -12,6 +12,8 @@ Covers:
 import json
 import sqlite3
 
+import pytest
+
 import risk
 import universe
 from orders import validate_order
@@ -167,6 +169,78 @@ def test_universe_ranking_and_cap():
     assert ranked[0]["symbol"] == "HOT"
     scores = [c["score"] for c in ranked]
     assert scores == sorted(scores, reverse=True)
+
+
+# =============================================================================
+# Goal 8 — core watchlist setup flags + merge
+# =============================================================================
+
+def daily_df(closes, highs=None):
+    import pandas as pd
+    n = len(closes)
+    highs = highs or [c * 1.005 for c in closes]
+    idx = pd.date_range("2026-06-01", periods=n, freq="D")
+    return pd.DataFrame({"open": closes, "high": highs,
+                         "low": [c * 0.99 for c in closes],
+                         "close": closes, "volume": [1_000_000] * n}, index=idx)
+
+
+def test_classify_pre_breakout_within_3pct_of_high():
+    # 20-day high 100, last close 98 -> within 3%
+    closes = [90.0] * 19 + [98.0]
+    df = daily_df(closes, highs=[100.0] * 20)
+    assert universe.classify_core_setup(df, CONFIG) == "pre_breakout"
+
+
+def test_classify_washout_10pct_off_high():
+    # 20-day high 100, last close 85 -> 15% off highs
+    closes = [95.0] * 19 + [85.0]
+    df = daily_df(closes, highs=[100.0] * 20)
+    assert universe.classify_core_setup(df, CONFIG) == "washout_reclaim"
+
+
+def test_classify_midrange_returns_none():
+    # last close 95: only 5% off the high — neither coiled nor washed out
+    closes = [92.0] * 19 + [95.0]
+    df = daily_df(closes, highs=[100.0] * 20)
+    assert universe.classify_core_setup(df, CONFIG) is None
+
+
+def test_merge_dedupes_and_tags_sources():
+    movers = [make_candidate(symbol="NVDA", change_pct=5.0)]
+    core = [dict(make_candidate(symbol="NVDA", change_pct=0.5),
+                 source="core_watch", setup_flag="pre_breakout"),
+            dict(make_candidate(symbol="XOM", change_pct=0.2),
+                 source="core_watch", setup_flag="washout_reclaim")]
+    merged = universe.merge_candidates(movers, core)
+    by_sym = {c["symbol"]: c for c in merged}
+    assert len(merged) == 2
+    # overlap: movers entry wins but inherits the setup flag
+    assert by_sym["NVDA"]["source"] == "movers"
+    assert by_sym["NVDA"]["change_pct"] == 5.0
+    assert by_sym["NVDA"]["setup_flag"] == "pre_breakout"
+    assert by_sym["XOM"]["source"] == "core_watch"
+
+
+def test_flagged_core_names_get_move_floor_and_survive_ranking():
+    # A dead-quiet coiling core name should not score ~0.
+    core = [dict(make_candidate(symbol="COIL", change_pct=0.05,
+                                avg_dollar_volume=50e6),
+                 source="core_watch", setup_flag="pre_breakout")]
+    ranked = universe.filter_and_rank(core, CONFIG)
+    assert ranked[0]["score"] == pytest.approx(50e6 * 1.0)
+    assert ranked[0]["source"] == "core_watch"
+    assert ranked[0]["setup_flag"] == "pre_breakout"
+
+
+def test_combined_output_capped_at_20():
+    config = json.loads(json.dumps(CONFIG))
+    config["universe"]["max_candidates"] = 20
+    movers = [make_candidate(symbol=f"M{i:02d}", change_pct=3.0) for i in range(15)]
+    core = [dict(make_candidate(symbol=f"C{i:02d}", change_pct=1.5),
+                 source="core_watch", setup_flag="pre_breakout") for i in range(15)]
+    ranked = universe.filter_and_rank(universe.merge_candidates(movers, core), config)
+    assert len(ranked) == 20
 
 
 def test_load_universe_tickers_stale_file_returns_empty(tmp_path, monkeypatch):
