@@ -80,6 +80,12 @@ def init_db():
                 decision_id INTEGER
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         # Migration: older DBs may lack the source/agreement columns.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(decisions)")}
         if "source" not in cols:
@@ -87,6 +93,11 @@ def init_db():
             conn.execute("UPDATE decisions SET source='claude' WHERE source IS NULL OR source=''")
         if "agreement" not in cols:
             conn.execute("ALTER TABLE decisions ADD COLUMN agreement INTEGER")
+        # Migration: broker_order_id ties a journaled fill to its Alpaca order
+        # (sync idempotency).
+        tcols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
+        if "broker_order_id" not in tcols:
+            conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
         conn.commit()
 
 
@@ -130,18 +141,73 @@ def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
 
 def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
-              reason: str = "", decision_id=None) -> int:
+              reason: str = "", decision_id=None,
+              broker_order_id: str = None) -> int:
     """Journal one fill (BUY or SELL). Returns the trade id."""
     with _lock, _connect() as conn:
         cur = conn.execute(
             """INSERT INTO trades
-               (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason, decision_id)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason,
+                decision_id, broker_order_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (_now_et(), ticker, action.upper(), qty, price, pnl_usd, pnl_pct,
-             reason, decision_id),
+             reason, decision_id, broker_order_id),
         )
         conn.commit()
         return cur.lastrowid
+
+
+def get_meta(key: str, default=None):
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_meta(key: str, value: str):
+    with _lock, _connect() as conn:
+        conn.execute("INSERT INTO meta (key, value) VALUES (?,?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (key, str(value)))
+        conn.commit()
+
+
+def trade_exists_for_order(broker_order_id: str) -> bool:
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT 1 FROM trades WHERE broker_order_id=?",
+                           (str(broker_order_id),)).fetchone()
+        return row is not None
+
+
+def last_buy_for_ticker(ticker: str):
+    """Most recent journaled BUY for a ticker (dict) or None."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM trades WHERE ticker=? AND action='BUY' "
+            "ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
+        return dict(row) if row else None
+
+
+def find_unmatched_sell(ticker: str, qty: float, price: float,
+                        price_tol: float = 0.02):
+    """A SELL journaled without a broker_order_id that matches this fill
+    (same ticker/qty, price within tolerance) — e.g. journaled live by the
+    bot loop before sync ran. Returns the trade id or None."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, qty, price FROM trades WHERE ticker=? AND action='SELL' "
+            "AND broker_order_id IS NULL ORDER BY id DESC LIMIT 20",
+            (ticker,)).fetchall()
+    for r in rows:
+        if abs((r["qty"] or 0) - qty) < 1e-9 and abs((r["price"] or 0) - price) <= price_tol:
+            return r["id"]
+    return None
+
+
+def set_trade_order_id(trade_id: int, broker_order_id: str):
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE trades SET broker_order_id=? WHERE id=?",
+                     (str(broker_order_id), trade_id))
+        conn.commit()
 
 
 def link_outcome(decision_id: int, exit_trade_id: int,

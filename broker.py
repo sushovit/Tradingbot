@@ -125,6 +125,14 @@ class Broker:
                       GetOrderByIdRequest(nested=True),
                       what=f"get_order({order_id})")
 
+    def get_closed_orders_since(self, since_utc: datetime) -> list:
+        """Closed orders with a fill after `since_utc` (for exit sync)."""
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=since_utc,
+                               limit=500)
+        orders = _retry(self.trading.get_orders, req,
+                        what="get_closed_orders_since")
+        return [o for o in orders if o.filled_at is not None]
+
     def get_orders_filled_today(self) -> list:
         start_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0,
                                                        microsecond=0)

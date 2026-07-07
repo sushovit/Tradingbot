@@ -1,7 +1,8 @@
 """
-orders.py — CEO order-sheet ingestion.
+orders.py — CEO order-sheet ingestion + exit reconciliation.
 
     python orders.py ingest order_sheet.json [--dry-run]
+    python orders.py sync
 
 Validates a JSON order sheet, enforces the risk rules from risk.py /
 bot_config.json, executes valid orders through the Alpaca PAPER broker as
@@ -32,7 +33,7 @@ import json
 import math
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytz
 from dotenv import load_dotenv
@@ -145,8 +146,8 @@ def validate_order(order: dict, equity: float, open_positions: int,
     entry = order.get("entry")
     target = order.get("target")
     notional = order.get("notional_usd")
-    if entry is None or entry <= 0:
-        return False, "missing_entry"
+    if not isinstance(entry, (int, float)) or isinstance(entry, bool) or entry <= 0:
+        return False, "invalid_entry_price"
     if notional is None or notional <= 0:
         return False, "missing_notional_usd"
 
@@ -376,6 +377,105 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
     return exit_code
 
 
+# =============================================================================
+# EXIT RECONCILIATION — python orders.py sync
+# =============================================================================
+
+LAST_SYNC_KEY = "last_sync"
+SYNC_OVERLAP = timedelta(hours=1)      # re-scan window; order-id dedupe makes it safe
+DEFAULT_SYNC_LOOKBACK = timedelta(days=7)
+
+
+def _exit_reason_for_order(order) -> str:
+    otype = str(getattr(order, "order_type", None) or getattr(order, "type", "")).lower()
+    if "stop" in otype:
+        return "Stop Loss (synced)"
+    if "limit" in otype:
+        return "Profit Target (synced)"
+    return "Exit (synced)"
+
+
+def sync(broker=None) -> int:
+    """Reconcile broker SELL fills into the journal. Idempotent:
+
+    - every synced trade stores its Alpaca order id; already-seen ids are skipped
+    - live exits the bot already journaled (matched by ticker/qty/price) are
+      backfilled with the order id instead of duplicated
+    - last_sync (journal meta) narrows the query window, minus an overlap
+    """
+    journal.init_db()
+    if broker is None:
+        from broker import Broker
+        try:
+            broker = Broker()
+        except Exception as e:
+            print(f"CANNOT REACH BROKER (paper account): {e}")
+            return 1
+
+    last_sync = journal.get_meta(LAST_SYNC_KEY)
+    now_utc = datetime.now(timezone.utc)
+    if last_sync:
+        try:
+            since = datetime.fromisoformat(last_sync) - SYNC_OVERLAP
+        except ValueError:
+            since = now_utc - DEFAULT_SYNC_LOOKBACK
+    else:
+        since = now_utc - DEFAULT_SYNC_LOOKBACK
+
+    try:
+        closed = broker.get_closed_orders_since(since)
+    except Exception as e:
+        print(f"Could not fetch closed orders: {e}")
+        return 1
+
+    positions = _load_positions()
+    synced = 0
+    for order in closed:
+        side = str(getattr(order, "side", "")).lower()
+        if "sell" not in side:
+            continue
+        fill_price = getattr(order, "filled_avg_price", None)
+        if not fill_price:
+            continue
+        oid = str(order.id)
+        if journal.trade_exists_for_order(oid):
+            continue
+
+        ticker = order.symbol
+        qty = float(getattr(order, "filled_qty", 0) or 0)
+        price = float(fill_price)
+
+        # The bot may have journaled this exit live, without the order id —
+        # backfill instead of double-journaling.
+        existing = journal.find_unmatched_sell(ticker, qty, price)
+        if existing is not None:
+            journal.set_trade_order_id(existing, oid)
+            continue
+
+        buy = journal.last_buy_for_ticker(ticker)
+        entry = float(buy["price"]) if buy else price
+        decision_id = buy.get("decision_id") if buy else None
+        pnl_usd = (price - entry) * qty
+        pnl_pct = ((price / entry) - 1) * 100 if entry else 0.0
+        reason = _exit_reason_for_order(order)
+
+        trade_id = journal.log_trade(ticker, "SELL", qty, price,
+                                     pnl_usd=pnl_usd, pnl_pct=pnl_pct,
+                                     reason=reason, decision_id=decision_id,
+                                     broker_order_id=oid)
+        journal.link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
+        if positions.get(ticker, {}).get("in_position"):
+            positions[ticker] = {"in_position": False}
+        synced += 1
+        print(f"SYNCED SELL {ticker}: {qty:g} @ ${price:.2f} "
+              f"({reason}) PnL ${pnl_usd:+.2f}")
+
+    journal.set_meta(LAST_SYNC_KEY, now_utc.isoformat())
+    _save_positions(positions)
+    print(f"Sync complete: {synced} exit(s) journaled.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="CEO order-sheet ingestion (PAPER ONLY)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -386,10 +486,13 @@ def main():
     p_ingest.add_argument("--equity", type=float, default=None,
                           help="With --dry-run: validate offline against this "
                                "equity instead of contacting the broker")
+    sub.add_parser("sync", help="Reconcile broker SELL fills into the journal")
     args = parser.parse_args()
     if args.command == "ingest":
         sys.exit(ingest(args.sheet, dry_run=args.dry_run,
                         equity_override=args.equity))
+    if args.command == "sync":
+        sys.exit(sync())
 
 
 if __name__ == "__main__":

@@ -125,6 +125,19 @@ Validation rejects: missing stop, reward:risk < 1.5, notional > 30% of equity,
 exceeding max positions, expired `valid_until`, and `event_flow` orders without
 `hard_exit_date` (the bot force-closes those at that date's close, win or lose).
 
+### Exit reconciliation
+
+```powershell
+python orders.py sync
+```
+
+Fetches SELL fills from Alpaca (bracket legs that triggered while the bot was
+off, manual closes in the dashboard, etc.) and journals any that are missing —
+actual fill price, PnL against the journaled BUY, outcome linked back to the
+originating decision. Idempotent: every synced trade stores its Alpaca order
+id, so re-running never double-journals. `report.py` runs a sync
+automatically at startup and lists live stop/target legs under "Open orders".
+
 ## Account report — report.py
 
 ```powershell

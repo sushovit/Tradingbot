@@ -233,7 +233,7 @@ def reconcile_positions(broker, positions):
 
 
 def detect_filled_exit(broker, ticker, state):
-    """If one of the bracket exit legs filled, return (fill_price, reason)."""
+    """If one of the bracket exit legs filled, return (fill_price, reason, order_id)."""
     for key, reason in (("stop_order_id", "Stop Loss"), ("target_order_id", "Profit Target")):
         order_id = state.get(key)
         if not order_id:
@@ -244,11 +244,12 @@ def detect_filled_exit(broker, ticker, state):
             continue
         status = str(getattr(order, "status", "")).lower()
         if "filled" in status and getattr(order, "filled_avg_price", None):
-            return float(order.filled_avg_price), reason
-    return None, None
+            return float(order.filled_avg_price), reason, str(order_id)
+    return None, None, None
 
 
-def handle_position_exit(broker, positions, ticker, state, fill_price, reason, now_et):
+def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
+                         now_et, broker_order_id=None):
     """Journal a SELL from actual fill prices and clear local state."""
     entry_price = state.get("entry_price", fill_price)
     qty = state.get("shares_held", 0)
@@ -257,7 +258,8 @@ def handle_position_exit(broker, positions, ticker, state, fill_price, reason, n
 
     trade_id = journal.log_trade(ticker, "SELL", qty, fill_price,
                                  pnl_usd=pnl_usd, pnl_pct=pnl_pct, reason=reason,
-                                 decision_id=state.get("decision_id"))
+                                 decision_id=state.get("decision_id"),
+                                 broker_order_id=broker_order_id)
     journal.link_outcome(state.get("decision_id"), trade_id, pnl_usd, pnl_pct)
     append_trade_log(now_et.strftime('%Y-%m-%d %H:%M:%S'), ticker, "SELL",
                      f"${fill_price:.2f}", qty, pnl_usd, f"{pnl_pct:.2f}%", reason)
@@ -416,14 +418,15 @@ def live_bot_worker():
             if state.get("in_position"):
                 try:
                     # 1) Did a bracket exit leg fill? (stops live AT THE BROKER)
-                    fill_price, reason = detect_filled_exit(broker, ticker, state)
+                    fill_price, reason, exit_order_id = detect_filled_exit(broker, ticker, state)
                     if fill_price is None and broker_symbols is not None \
                             and ticker not in broker_symbols:
                         # Position gone but no leg marked filled — use last price.
                         fill_price, reason = current_price, "Exit (fill details unavailable)"
                     if fill_price is not None:
                         handle_position_exit(broker, positions, ticker, state,
-                                             fill_price, reason, now_et)
+                                             fill_price, reason, now_et,
+                                             broker_order_id=exit_order_id)
                         status_updates.append(f"{ticker}: SOLD ({reason})")
                         continue
 
@@ -435,9 +438,10 @@ def live_bot_worker():
                         at_close = (now_et.date() == exit_date
                                     and now_et.time() >= dttime(15, 55))
                         if past_date or at_close:
-                            broker.close_position(ticker)
+                            close_order = broker.close_position(ticker)
                             handle_position_exit(broker, positions, ticker, state,
-                                                 current_price, "Hard Exit Date", now_et)
+                                                 current_price, "Hard Exit Date", now_et,
+                                                 broker_order_id=str(getattr(close_order, "id", "")) or None)
                             status_updates.append(f"{ticker}: CLOSED (hard exit date)")
                             continue
 
@@ -445,9 +449,10 @@ def live_bot_worker():
                     manual_sell_command_file = f"sell_{ticker}.command"
                     if os.path.exists(manual_sell_command_file):
                         os.remove(manual_sell_command_file)
-                        broker.close_position(ticker)
+                        close_order = broker.close_position(ticker)
                         handle_position_exit(broker, positions, ticker, state,
-                                             current_price, "Manual Override", now_et)
+                                             current_price, "Manual Override", now_et,
+                                             broker_order_id=str(getattr(close_order, "id", "")) or None)
                         status_updates.append(f"{ticker}: SOLD (manual)")
                         continue
 

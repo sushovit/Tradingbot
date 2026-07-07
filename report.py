@@ -47,6 +47,13 @@ def build_report() -> str:
 
     journal.init_db()
 
+    # --- Reconcile any exits that filled while we weren't watching ---
+    try:
+        import orders
+        orders.sync(broker=broker)
+    except Exception as e:
+        lines.append(f"\n_Exit sync failed (report may miss recent exits): {e}_")
+
     # --- Account ---
     try:
         acct = broker.get_account()
@@ -78,6 +85,26 @@ def build_report() -> str:
                 lines.append(f"| {p.symbol} | {p.qty} | ${float(p.avg_entry_price):,.2f} "
                              f"| ${float(p.current_price):,.2f} "
                              f"| ${upnl:,.2f} ({upct:+.2f}%) |")
+    except BrokerError as e:
+        lines.append(f"_Unavailable: {e}_")
+
+    # --- Open orders (live bracket legs) ---
+    lines.append("\n## Open orders")
+    try:
+        open_orders = broker.get_open_orders()
+        if not open_orders:
+            lines.append("_None._")
+        else:
+            lines.append("| Ticker | Side | Type | Qty | Stop | Limit |")
+            lines.append("|---|---|---|---|---|---|")
+            for o in open_orders:
+                otype = str(getattr(o, "order_type", None) or getattr(o, "type", "")).split(".")[-1]
+                stop_p = getattr(o, "stop_price", None)
+                limit_p = getattr(o, "limit_price", None)
+                lines.append(f"| {o.symbol} | {str(o.side).split('.')[-1]} | {otype} "
+                             f"| {o.qty} "
+                             f"| {'$' + format(float(stop_p), ',.2f') if stop_p else '—'} "
+                             f"| {'$' + format(float(limit_p), ',.2f') if limit_p else '—'} |")
     except BrokerError as e:
         lines.append(f"_Unavailable: {e}_")
 
