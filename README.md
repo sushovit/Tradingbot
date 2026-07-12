@@ -133,8 +133,16 @@ Example sheet:
 ```
 
 Validation rejects: missing stop, reward:risk < 1.5, notional > 30% of equity,
-exceeding max positions, expired `valid_until`, and `event_flow` orders without
-`hard_exit_date` (the bot force-closes those at that date's close, win or lose).
+exceeding max positions, expired `valid_until`, non-numeric price fields, and
+`event_flow` orders without `hard_exit_date` (the bot force-closes those at
+that date's close, win or lose).
+
+Optional per-order field `abort_if_open_below` (playbook Rule #3): if price
+is already below that level at ingest, the entry is rejected and journaled as
+a rules pass — protects reclaim entries from gap-downs that invalidate the
+setup overnight. Journaled BUYs record the **actual average fill**, not the
+sheet's reference price; `sync` corrects any that were journaled before the
+fill confirmed.
 
 ### Exit reconciliation
 

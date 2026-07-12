@@ -31,6 +31,7 @@ them at hard_exit_date's close regardless of PnL.
 import sys
 import json
 import math
+import time
 import argparse
 import logging
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,7 @@ from dotenv import load_dotenv
 
 import risk
 import journal
+import universe
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -57,6 +59,9 @@ VALID_SETUPS = {"trend_continuation", "momentum_continuation",
 # =============================================================================
 # VALIDATION (pure functions — unit tested with a mocked broker)
 # =============================================================================
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 def validate_sheet(sheet: dict) -> list:
     """Top-level schema check. Returns a list of error strings (empty = ok)."""
@@ -137,19 +142,33 @@ def validate_order(order: dict, equity: float, open_positions: int,
     if action == "TIGHTEN_STOP":
         if order.get("stop") is None:
             return False, "missing_stop"
+        if not _is_number(order.get("stop")):
+            return False, "invalid_stop_price"
         return True, None
 
     # ---- BUY ----
+    # Type guards first: bad JSON must be a clean rejection, never a traceback.
     stop = order.get("stop")
     if stop is None:
         return False, "missing_stop"
+    if not _is_number(stop):
+        return False, "invalid_stop_price"
     entry = order.get("entry")
-    target = order.get("target")
-    notional = order.get("notional_usd")
-    if not isinstance(entry, (int, float)) or isinstance(entry, bool) or entry <= 0:
+    if entry is None:
+        return False, "missing_entry"
+    if not _is_number(entry) or entry <= 0:
         return False, "invalid_entry_price"
-    if notional is None or notional <= 0:
+    target = order.get("target")
+    if target is not None and not _is_number(target):
+        return False, "invalid_target_price"
+    notional = order.get("notional_usd")
+    if notional is None:
         return False, "missing_notional_usd"
+    if not _is_number(notional) or notional <= 0:
+        return False, "invalid_notional"
+    if (order.get("abort_if_open_below") is not None
+            and not _is_number(order.get("abort_if_open_below"))):
+        return False, "invalid_abort_level"
 
     ok, reason = risk.check_signal(
         entry=float(entry), stop=float(stop),
@@ -186,6 +205,16 @@ def check_no_new_trades(sheet: dict, equity: float) -> str:
 # =============================================================================
 # EXECUTION
 # =============================================================================
+
+def _load_universe_map() -> dict:
+    """{symbol: candidate row} from today's universe scan, for decision context."""
+    try:
+        with open(universe.UNIVERSE_FILE, "r") as f:
+            payload = json.load(f)
+        return {c["symbol"]: c for c in payload.get("candidates", [])}
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return {}
+
 
 def _load_positions() -> dict:
     try:
@@ -274,12 +303,33 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         elif "limit" in ltype:
             target_order_id = str(leg.id)
 
-    trade_id = journal.log_trade(ticker, "BUY", qty, entry,
+    # Journal the ACTUAL average fill, not the sheet's reference price.
+    # If the fill isn't confirmed in time, journal the reference — sync()
+    # corrects it from the broker record later (see _fix_buy_fills).
+    fill_price = entry
+    fill_confirmed = False
+    try:
+        for _ in range(8):
+            o = broker.get_order(bracket.id)
+            status = str(getattr(o, "status", "")).lower().split(".")[-1]
+            if status == "filled" and getattr(o, "filled_avg_price", None):
+                fill_price = float(o.filled_avg_price)
+                fill_confirmed = True
+                break
+            time.sleep(1)
+    except Exception as e:
+        logger.warning(f"{ticker}: could not confirm entry fill yet: {e}")
+    if not fill_confirmed:
+        logger.warning(f"{ticker}: entry fill unconfirmed — journaled reference "
+                       f"price; run 'python orders.py sync' to correct.")
+
+    trade_id = journal.log_trade(ticker, "BUY", qty, fill_price,
                                  reason=f"CEO {order.get('setup', 'discretionary')}",
-                                 decision_id=decision_id)
+                                 decision_id=decision_id,
+                                 broker_order_id=str(bracket.id))
     positions[ticker] = {
         "in_position": True,
-        "entry_price": entry,
+        "entry_price": fill_price,
         "shares_held": qty,
         "trailing_stop_price": stop,
         "profit_target_price": target,
@@ -295,7 +345,8 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
             f"stop ${stop:.2f}, target ${target:.2f}.")
 
 
-def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None) -> int:
+def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None,
+           broker=None) -> int:
     with open(sheet_path, "r") as f:
         sheet = json.load(f)
 
@@ -313,13 +364,13 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
         config = {}
     max_positions = config.get("max_positions", 3)
 
-    broker = None
-    if dry_run and equity_override is not None:
+    if dry_run and equity_override is not None and broker is None:
         equity = float(equity_override)   # offline validation, no broker needed
     else:
-        from broker import Broker  # imported here so validation tests need no alpaca creds
         try:
-            broker = Broker()
+            if broker is None:
+                from broker import Broker  # imported here so validation tests need no alpaca creds
+                broker = Broker()
             # Hard capital cap: never size off raw broker equity.
             equity = risk.effective_equity(broker.get_equity(), config)
         except Exception as e:
@@ -335,6 +386,8 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
     if block_reason:
         print(f"NO NEW TRADES: {block_reason} — BUY orders will be rejected.")
 
+    universe_map = _load_universe_map()
+
     exit_code = 0
     for order in sheet.get("orders", []):
         ticker = str(order.get("ticker", "?")).upper()
@@ -344,8 +397,28 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
         if ok and action == "BUY" and block_reason:
             ok, reason = False, f"no_new_trades_if:{block_reason}"
 
+        # Playbook Rule #3 (gap-abort): the CEO can mark an entry invalid if
+        # price has already gapped below the setup's structure.
+        abort_level = order.get("abort_if_open_below")
+        if ok and action == "BUY" and abort_level is not None \
+                and not dry_run and broker is not None:
+            setup = order.get("setup", "discretionary")
+            try:
+                price_now = broker.get_latest_price(ticker)
+                if price_now < float(abort_level):
+                    ok, reason = False, "gap_below_abort_level"
+                    journal.log_rules_pass(
+                        ticker, setup, "gap_below_abort_level",
+                        f"current {price_now:.2f} < abort level {float(abort_level):.2f}")
+            except Exception as e:
+                # Can't verify the gap rule -> protective default: don't enter.
+                ok, reason = False, "abort_level_unverifiable"
+                journal.log_rules_pass(ticker, setup, "abort_level_unverifiable",
+                                       f"no price data: {e}")
+
         context = {"order": order, "session": sheet.get("session"),
-                   "regime": sheet.get("regime"), "equity": equity}
+                   "regime": sheet.get("regime"), "equity": equity,
+                   "universe_context": universe_map.get(ticker)}
         verdict = {"approved": bool(ok),
                    "rejection_reason": reason,
                    "source": "ceo",
@@ -384,6 +457,14 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
 LAST_SYNC_KEY = "last_sync"
 SYNC_OVERLAP = timedelta(hours=1)      # re-scan window; order-id dedupe makes it safe
 DEFAULT_SYNC_LOOKBACK = timedelta(days=7)
+
+# One-off week-1 data corrections: BUYs journaled at the sheet's reference
+# price instead of the actual fill. {ticker: (recorded_bad_price, actual_fill)}
+WEEK1_FILL_CORRECTIONS = {
+    "MRVL": (243.27, 239.19),
+    "SPCX": (165.40, 164.21),
+    "FCX": (60.53, 60.65),   # still open — broker avg_entry_price 60.65
+}
 
 
 def _exit_reason_for_order(order) -> str:
@@ -428,8 +509,34 @@ def sync(broker=None) -> int:
         print(f"Could not fetch closed orders: {e}")
         return 1
 
+    corrected = journal.apply_fill_corrections(WEEK1_FILL_CORRECTIONS)
+    if corrected:
+        print(f"Corrected {corrected} journaled BUY fill price(s) (week-1 migration).")
+
     positions = _load_positions()
     synced = 0
+
+    # --- Pass 1: BUY fills — correct journaled entries to the actual fill ---
+    for order in closed:
+        side = str(getattr(order, "side", "")).lower()
+        fill_price = getattr(order, "filled_avg_price", None)
+        if "buy" not in side or not fill_price:
+            continue
+        oid = str(order.id)
+        price = float(fill_price)
+        existing = journal.get_trade_by_order_id(oid)
+        if existing is not None:
+            if journal.fix_buy_fill(existing["id"], price):
+                print(f"CORRECTED BUY {order.symbol}: journal -> actual fill ${price:.2f}")
+            continue
+        tid = journal.find_buy_without_order_id(
+            order.symbol, float(getattr(order, "filled_qty", 0) or 0))
+        if tid is not None:
+            journal.set_trade_order_id(tid, oid)
+            if journal.fix_buy_fill(tid, price):
+                print(f"CORRECTED BUY {order.symbol}: journal -> actual fill ${price:.2f}")
+
+    # --- Pass 2: SELL fills — journal any missing exits ---
     for order in closed:
         side = str(getattr(order, "side", "")).lower()
         if "sell" not in side:

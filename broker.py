@@ -125,6 +125,25 @@ class Broker:
                       GetOrderByIdRequest(nested=True),
                       what=f"get_order({order_id})")
 
+    # Order states that are still working at the broker. "held" is what
+    # Alpaca uses for bracket exit legs waiting on the parent/sibling —
+    # status=open queries do NOT return them, so reports must use this.
+    LIVE_ORDER_STATES = {"new", "accepted", "held", "partially_filled",
+                         "pending_new", "pending_replace", "accepted_for_bidding"}
+
+    def get_live_orders(self, ticker: str = None) -> list:
+        """Every order still working at the broker, INCLUDING held bracket
+        legs (stop/target waiting on the parent fill)."""
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500,
+                               symbols=[ticker] if ticker else None)
+        orders = _retry(self.trading.get_orders, req, what="get_live_orders")
+        live = []
+        for o in orders:
+            status = str(getattr(o, "status", "")).lower().split(".")[-1]
+            if status in self.LIVE_ORDER_STATES:
+                live.append(o)
+        return live
+
     def get_closed_orders_since(self, since_utc: datetime) -> list:
         """Closed orders with a fill after `since_utc` (for exit sync)."""
         req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=since_utc,

@@ -210,6 +210,78 @@ def set_trade_order_id(trade_id: int, broker_order_id: str):
         conn.commit()
 
 
+def find_buy_without_order_id(ticker: str, qty: float):
+    """Most recent journaled BUY for ticker/qty lacking a broker_order_id
+    (i.e. journaled at a reference price before the fill was known)."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, qty FROM trades WHERE ticker=? AND action='BUY' "
+            "AND broker_order_id IS NULL ORDER BY id DESC LIMIT 20",
+            (ticker,)).fetchall()
+    for r in rows:
+        if abs((r["qty"] or 0) - qty) < 1e-9:
+            return r["id"]
+    return None
+
+
+def fix_buy_fill(buy_trade_id: int, actual_price: float) -> bool:
+    """Correct a journaled BUY to its ACTUAL average fill price, then
+    recompute PnL on any linked SELLs and the decision outcome. Idempotent —
+    re-applying the same price is a no-op. Returns True if anything changed."""
+    with _lock, _connect() as conn:
+        buy = conn.execute("SELECT * FROM trades WHERE id=? AND action='BUY'",
+                           (buy_trade_id,)).fetchone()
+        if buy is None:
+            return False
+        if abs((buy["price"] or 0) - actual_price) < 0.005:
+            return False
+
+        conn.execute("UPDATE trades SET price=? WHERE id=?",
+                     (actual_price, buy_trade_id))
+
+        # Recompute realized PnL on SELLs that closed this entry.
+        sells = conn.execute(
+            "SELECT * FROM trades WHERE action='SELL' AND ticker=? AND id>? "
+            "AND (decision_id IS ? OR decision_id=?)",
+            (buy["ticker"], buy_trade_id, buy["decision_id"], buy["decision_id"]),
+        ).fetchall()
+        for s in sells:
+            pnl_usd = (s["price"] - actual_price) * (s["qty"] or 0)
+            pnl_pct = ((s["price"] / actual_price) - 1) * 100 if actual_price else 0.0
+            conn.execute("UPDATE trades SET pnl_usd=?, pnl_pct=? WHERE id=?",
+                         (pnl_usd, pnl_pct, s["id"]))
+            conn.execute(
+                "UPDATE decisions SET outcome_pnl_usd=?, outcome_pnl_pct=? "
+                "WHERE outcome_trade_id=?",
+                (pnl_usd, pnl_pct, s["id"]))
+        conn.commit()
+        return True
+
+
+def apply_fill_corrections(corrections: dict) -> int:
+    """One-off data migration: {ticker: (recorded_bad_price, actual_fill)}.
+    Only touches a BUY whose price still equals the known-bad recorded value,
+    so it is idempotent and can never clobber a later re-entry in the same
+    ticker. Returns rows changed."""
+    changed = 0
+    for ticker, (bad_price, actual) in (corrections or {}).items():
+        with _lock, _connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM trades WHERE ticker=? AND action='BUY' "
+                "AND ABS(price - ?) < 0.005 ORDER BY id DESC LIMIT 1",
+                (ticker, float(bad_price))).fetchone()
+        if row and fix_buy_fill(row["id"], float(actual)):
+            changed += 1
+    return changed
+
+
+def get_trade_by_order_id(broker_order_id: str):
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT * FROM trades WHERE broker_order_id=?",
+                           (str(broker_order_id),)).fetchone()
+        return dict(row) if row else None
+
+
 def link_outcome(decision_id: int, exit_trade_id: int,
                  pnl_usd: float, pnl_pct: float):
     """Tie a closed trade's realized PnL back to the decision that opened it."""
@@ -256,6 +328,15 @@ def todays_trades(date_str: str = None) -> list:
             "SELECT * FROM trades WHERE timestamp LIKE ? ORDER BY id",
             (f"{date_str}%",),
         ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def recent_sells(limit: int = 10) -> list:
+    """Most recent closed trades (SELL fills), newest first."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE action='SELL' ORDER BY id DESC LIMIT ?",
+            (int(limit),)).fetchall()
         return [dict(r) for r in rows]
 
 

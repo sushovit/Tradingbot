@@ -13,6 +13,14 @@ bypasses it.
 | Mean-reversion reclaim (≥10% washout, close > prior high + EMA9, 1.2× volume) | `strategies/mean_reversion_reclaim.py` | Below reclaim bar low | textbook fire ✅ · no-washout counterexample ✅ · stop at reclaim low ✅ · volume filter pass-journal ✅ | AMD |
 | Event / flow (index inclusions, scheduled catalysts) | `orders.py` (order sheets only — cannot be auto-detected) | CEO-provided stop, mandatory; forced close at `hard_exit_date` | missing hard_exit_date rejected ✅ · missing stop rejected ✅ (tests/test_risk_rules.py) | via order sheet |
 
+## Playbook rules
+
+| # | Rule | Where enforced | Test |
+|---|---|---|---|
+| 1 | Stop = thesis invalidation, never a fixed % | every strategy's `detect()` | stop-placement tests ✅ |
+| 2 | Same downstream pipeline for every signal (gatekeeper → risk → bracket → journal) | `live_bot_worker`, `orders.py` | pipeline tests ✅ |
+| 3 | **Gap-abort (from the 2026-07-10 MRVL loss):** a reclaim entry is invalid if the next session opens below the reclaim bar's midpoint. Bot side: `mean_reversion_reclaim` rejects with `gap_below_reclaim_mid`. Sheet side: optional `abort_if_open_below` field — price below it at ingest ⇒ reject + journal as rules pass (unverifiable price ⇒ protective reject). | `strategies/mean_reversion_reclaim.py`, `orders.ingest` | `test_reclaim_aborts_on_gap_below_midpoint`, `test_ingest_gap_abort_rejects_and_journals_pass` ✅ |
+
 ## Downstream pipeline verification
 
 | Gate | Where | Test |

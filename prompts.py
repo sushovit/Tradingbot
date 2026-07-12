@@ -21,6 +21,28 @@ GATEKEEPER_SYSTEM_PROMPT = (
     "Return ONLY a valid JSON object — no markdown, no extra text."
 )
 
+# Appended for the local model only. It is an OBSERVED junior analyst, not a
+# subordinate: its verdicts are journaled and compared against the senior
+# gatekeeper's, never used to control trades. It is not penalized for
+# disagreeing — it is penalized for confident wrongness.
+JUNIOR_ANALYST_ADDENDUM = (
+    "ROLE CONTEXT: You are a junior analyst whose verdicts are journaled and "
+    "compared against a senior gatekeeper's decisions over time. Your verdict "
+    "does not control the trade. You are NOT rewarded for agreeing with the "
+    "senior gatekeeper and NOT penalized for disagreeing — you are penalized "
+    "only for being confidently wrong. If the evidence is ambiguous or you "
+    "are unsure, say so: state the uncertainty in your reasoning and lower "
+    "your conviction_score rather than guessing with false confidence."
+)
+
+
+def get_system_prompt(role: str = "gatekeeper") -> str:
+    """Role-specific system prompt. 'gatekeeper' (Claude) is unchanged;
+    'junior_analyst' (local model) gets the observed-analyst framing."""
+    if role == "junior_analyst":
+        return GATEKEEPER_SYSTEM_PROMPT + "\n\n" + JUNIOR_ANALYST_ADDENDUM
+    return GATEKEEPER_SYSTEM_PROMPT
+
 
 def build_gatekeeper_user_prompt(
     ticker: str,

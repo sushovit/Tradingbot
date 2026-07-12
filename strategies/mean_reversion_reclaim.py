@@ -60,6 +60,16 @@ class MeanReversionReclaim(Strategy):
                              f"Reclaim volume {reclaim_bar['volume']:.0f} <= "
                              f"{VOLUME_MULT}x avg {avg_volume:.0f}")
 
+        # Playbook Rule #3 (gap-abort): a reclaim entry is invalid if the next
+        # session opens below the reclaim bar's midpoint — the reclaim failed
+        # overnight and buying the open is catching a falling knife.
+        reclaim_mid = (float(reclaim_bar['high']) + float(reclaim_bar['low'])) / 2.0
+        entry_bar_open = float(df['open'].iloc[-1])
+        if entry_bar_open < reclaim_mid:
+            return Rejection(self.name, ticker, "gap_below_reclaim_mid",
+                             f"Open {entry_bar_open:.2f} < reclaim bar midpoint "
+                             f"{reclaim_mid:.2f}")
+
         entry = float(df['close'].iloc[-1])
         stop = float(reclaim_bar['low'])     # thesis invalidation
         if stop >= entry:

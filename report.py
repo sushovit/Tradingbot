@@ -88,23 +88,25 @@ def build_report() -> str:
     except BrokerError as e:
         lines.append(f"_Unavailable: {e}_")
 
-    # --- Open orders (live bracket legs) ---
+    # --- Open orders (live bracket legs, INCLUDING held ones) ---
     lines.append("\n## Open orders")
     try:
-        open_orders = broker.get_open_orders()
-        if not open_orders:
+        live_orders = broker.get_live_orders()
+        if not live_orders:
             lines.append("_None._")
         else:
-            lines.append("| Ticker | Side | Type | Qty | Stop | Limit |")
-            lines.append("|---|---|---|---|---|---|")
-            for o in open_orders:
+            lines.append("| Ticker | Side | Type | Qty | Stop | Limit | Status |")
+            lines.append("|---|---|---|---|---|---|---|")
+            for o in live_orders:
                 otype = str(getattr(o, "order_type", None) or getattr(o, "type", "")).split(".")[-1]
+                status = str(getattr(o, "status", "")).split(".")[-1].lower()
                 stop_p = getattr(o, "stop_price", None)
                 limit_p = getattr(o, "limit_price", None)
                 lines.append(f"| {o.symbol} | {str(o.side).split('.')[-1]} | {otype} "
                              f"| {o.qty} "
                              f"| {'$' + format(float(stop_p), ',.2f') if stop_p else '—'} "
-                             f"| {'$' + format(float(limit_p), ',.2f') if limit_p else '—'} |")
+                             f"| {'$' + format(float(limit_p), ',.2f') if limit_p else '—'} "
+                             f"| {status} |")
     except BrokerError as e:
         lines.append(f"_Unavailable: {e}_")
 
@@ -123,6 +125,22 @@ def build_report() -> str:
                 lines.append(f"| {filled_at} | {o.symbol} | {str(o.side).split('.')[-1]} "
                              f"| {o.filled_qty} | {price} |")
     except BrokerError as e:
+        lines.append(f"_Unavailable: {e}_")
+
+    # --- Recent closed trades (fill-price corrected) ---
+    lines.append("\n## Recent closed trades")
+    try:
+        sells = journal.recent_sells(limit=10)
+        if not sells:
+            lines.append("_None._")
+        else:
+            lines.append("| Date | Ticker | Qty | Exit | PnL | Reason |")
+            lines.append("|---|---|---|---|---|---|")
+            for s in sells:
+                lines.append(f"| {s['timestamp'][:10]} | {s['ticker']} | {s['qty']:g} "
+                             f"| ${s['price']:,.2f} | ${s['pnl_usd']:+,.2f} "
+                             f"({s['pnl_pct']:+.2f}%) | {s['reason']} |")
+    except Exception as e:
         lines.append(f"_Unavailable: {e}_")
 
     # --- Journal ---

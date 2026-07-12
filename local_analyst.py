@@ -21,10 +21,13 @@ import logging
 import requests
 
 from prompts import (
-    GATEKEEPER_SYSTEM_PROMPT,
     GATEKEEPER_REQUIRED_KEYS,
     build_gatekeeper_user_prompt,
+    get_system_prompt,
 )
+
+# Observed junior analyst: journaled and compared, never trade authority.
+SYSTEM_PROMPT = get_system_prompt("junior_analyst")
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +134,7 @@ def get_gatekeeper_decision(
     last_err = None
     for attempt in range(max_retries):
         try:
-            raw = _call_ollama(GATEKEEPER_SYSTEM_PROMPT, user_prompt)
+            raw = _call_ollama(SYSTEM_PROMPT, user_prompt)
             return _validate_verdict(raw)
         except (requests.ConnectionError, requests.Timeout) as e:
             last_err = f"Ollama unreachable: {e}"
