@@ -696,166 +696,167 @@ def live_bot_worker():
 st.title("📈 Algorithmic Trading Suite")
 tab1, tab2, tab3 = st.tabs(["🤖 Live Trading Bot", "Backtesting Suite", "🔬 AI Analysis Tools"])
 
-with tab1:
-    st.header(f"Live Day Trading Bot")
-    is_running = os.path.exists(LOCK_FILE)
+# --- Dashboard helpers: observe + start/stop only. bot_config.json is the
+# single source of truth and is NEVER written from this UI. ---
+def load_active_config():
+    """Read bot_config.json (the source of truth). Returns (config, error)."""
     try:
-        with open(PORTFOLIO_STATE_FILE, 'r') as f: capital = json.load(f).get("capital", "Not set")
-    except (FileNotFoundError, json.JSONDecodeError): capital = "Not set (will use initial)"
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f), None
+    except FileNotFoundError:
+        return None, f"{CONFIG_FILE} not found — nothing for the bot to run."
+    except json.JSONDecodeError as e:
+        return None, f"{CONFIG_FILE} is not valid JSON: {e}"
 
-    caption_text = f"Bot is currently idle. Last known capital: **${capital:,.2f}**" if isinstance(capital, (int, float)) else "Bot is currently idle."
-    if is_running:
+
+def connect_broker():
+    """Broker handle for live account reads. Returns (broker, error)."""
+    try:
+        return Broker(), None
+    except Exception as e:
+        return None, str(e)
+
+
+with tab1:
+    st.header("Live Day Trading Bot")
+    st.caption("Dashboard — observe and start/stop only. Configuration lives in "
+               f"`{CONFIG_FILE}` (edited via git or a Claude session), never from here.")
+    is_running = os.path.exists(LOCK_FILE)
+
+    active_config, config_error = load_active_config()
+    broker, broker_err = connect_broker()
+
+    # --- Real effective capital, straight from the broker (hard-capped) ---
+    if broker_err:
+        st.warning(f"Broker unreachable — {broker_err}")
+    else:
         try:
-            with open(CONFIG_FILE, "r") as f: config = json.load(f)
-            caption_text = f"Actively monitoring **{len(config['ticker_profiles'])} tickers**. Current Capital: **${capital:,.2f}**"
-        except Exception: caption_text = "Bot is running..."
-    st.caption(caption_text)
+            broker_equity = broker.get_equity()
+            effective = risk.effective_equity(broker_equity, active_config or {})
+            cap = (active_config or {}).get("capital_cap_usd")
+            state = "🟢 Running" if is_running else "⚪ Idle"
+            if cap is not None:
+                st.metric(f"{state} · Effective Capital", f"${effective:,.2f}",
+                          help=f"min(capital_cap_usd ${cap:,.0f}, broker equity ${broker_equity:,.2f})")
+            else:
+                st.metric(f"{state} · Effective Capital (UNCAPPED)", f"${effective:,.2f}",
+                          help="capital_cap_usd missing from bot_config.json — sizing off full broker equity!")
+        except BrokerError as e:
+            st.warning(f"Could not read account equity: {e}")
 
-    with st.container(border=True):
-        st.subheader("Bot Configuration & Controls")
-        
-        with st.container(border=True):
-            st.markdown("##### Configuration Management")
-            
-            def get_current_config_from_ui():
-                ticker_profiles = {}
-                try:
-                    for item in st.session_state.ticker_profile_str.split(','):
-                        if ':' in item:
-                            ticker, profile = item.split(':')
-                            ticker, profile = ticker.strip().upper(), profile.strip().capitalize()
-                            if profile in ["Aggressive", "Moderate", "Conservative"] and ticker:
-                                ticker_profiles[ticker] = profile
-                except Exception: pass
-                
-                config_data = {
-                    "interval": st.session_state.live_interval, "initial_capital": st.session_state.initial_capital,
-                    "max_positions": st.session_state.max_positions,
-                    "use_spy_filter": st.session_state.use_spy_filter,
-                    "use_time_filter": st.session_state.use_time_filter,
-                    "use_confirmation_candle": st.session_state.use_confirmation_candle,
-                    "use_rsi_filter": st.session_state.use_rsi_filter,
-                    "rsi_threshold": st.session_state.rsi_threshold,
-                    "use_claude_filter": st.session_state.get('use_claude_filter', True),
-                    "claude_conviction_threshold": st.session_state.get('claude_conviction_threshold', 70),
-                    "risk_profiles": {}, "ticker_profiles": ticker_profiles
-                }
-                for p_name in ["Aggressive", "Moderate", "Conservative"]:
-                    config_data["risk_profiles"][p_name] = {
-                        "fast_ema": st.session_state.get(f"fast_{p_name}", 10), 
-                        "slow_ema": st.session_state.get(f"slow_{p_name}", 30), 
-                        "adx_threshold": st.session_state.get(f"adx_{p_name}", 25),
-                        "risk_per_trade_pct": st.session_state.get(f"risk_{p_name}", 1.0), 
-                        "rr_ratio": st.session_state.get(f"rr_{p_name}", 2.0), 
-                        "atr_multiplier": st.session_state.get(f"atr_{p_name}", 2.0),
-                        "trailing_stop_type": st.session_state.get(f"tstype_{p_name}", 'Percentage'), 
-                        "trailing_stop_value": st.session_state.get(f"tsval_{p_name}", 3.0),
-                        "use_volume_filter": st.session_state.get(f"vol_{p_name}", True)
-                    }
-                return config_data
+    # --- Start / Stop (never create or modify bot_config.json) ---
+    ctrl1, ctrl2 = st.columns(2)
+    start_clicked = ctrl1.button("▶️ Start Bot", use_container_width=True,
+                                 disabled=is_running or config_error is not None)
+    stop_clicked = ctrl2.button("⏹️ Stop Bot", use_container_width=True,
+                                disabled=not is_running)
+    if config_error and not is_running:
+        st.error(f"Cannot start — {config_error} "
+                 f"Edit {CONFIG_FILE} (git / Claude session), then reload this page.")
 
-            c1, c2 = st.columns([2,1])
-            with c1: config_name = st.text_input("Configuration Name", "MyDefaultSetup", key="config_name")
-            with c2:
-                if st.button("💾 Save Configuration", use_container_width=True, disabled=is_running):
-                    if config_name:
-                        filepath = os.path.join(CONFIGS_DIR, f"{config_name}.json")
-                        with open(filepath, 'w') as f: json.dump(get_current_config_from_ui(), f, indent=4)
-                        st.toast(f"Configuration '{config_name}' saved!", icon="💾")
-                    else: st.warning("Please enter a name for the configuration.")
+    if start_clicked:
+        # Config already exists on disk — rotate the prior session's trade log
+        # so this session's view starts clean, then launch the worker thread.
+        if os.path.exists(TRADE_LOG_FILE):
+            os.rename(TRADE_LOG_FILE,
+                      f"trades_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        n = len(active_config.get("ticker_profiles", {})) if active_config else 0
+        write_status(f"Bot starting ({n} configured tickers; universe scan pending)...")
+        with open(LOCK_FILE, "w") as f: pass
+        threading.Thread(target=live_bot_worker, daemon=True).start()
+        st.toast("Bot started!", icon="✅"); a_time.sleep(1); st.rerun()
 
-            saved_configs = [f.replace('.json', '') for f in os.listdir(CONFIGS_DIR) if f.endswith('.json')]
-            if saved_configs:
-                c1, c2 = st.columns([2,1])
-                with c1: selected_config = st.selectbox("Load Saved Configuration", options=saved_configs, index=0, key="selected_config")
-                with c2:
-                    if st.button("📂 Load Configuration", use_container_width=True, disabled=is_running):
-                        filepath = os.path.join(CONFIGS_DIR, f"{selected_config}.json")
-                        with open(filepath, 'r') as f: loaded_data = json.load(f)
-                        
-                        for key, value in loaded_data.items():
-                            if key == "ticker_profiles":
-                                st.session_state.ticker_profile_str = ", ".join([f"{k}:{v}" for k, v in value.items()])
-                            elif key == "risk_profiles":
-                                for p_name, p_data in value.items():
-                                    for p_key, p_val in p_data.items():
-                                        session_key_part = p_key.replace('_ema', '').replace('_threshold','').replace('_per_trade_pct','').replace('_ratio','').replace('_multiplier','').replace('_type','').replace('_value','')
-                                        st.session_state[f"{session_key_part}_{p_name}"] = p_val
-                            else:
-                                st.session_state[key] = value
-
-                        st.toast(f"Configuration '{selected_config}' loaded!", icon="📂")
-                        a_time.sleep(0.5); st.rerun()
-
-        with st.form("live_bot_config_form"):
-            st.markdown("###### 1. General Configuration")
-            c1, c2, c3 = st.columns(3)
-            st.number_input("Display Capital Cache (USD) — real equity comes from Alpaca", 100, 1000000, 1000, 100, key='initial_capital', disabled=is_running)
-            st.number_input("Max Simultaneous Positions", 1, 10, 3, 1, key='max_positions', disabled=is_running)
-            st.selectbox("Candle Interval", [1, 5, 15], format_func=lambda x: f"{x} minute(s)", key='live_interval', disabled=is_running)
-            
-            st.markdown("###### 2. Global Filters & Entry Criteria")
-            c1, c2, c3, c4 = st.columns(4)
-            st.toggle("SPY Market Filter", value=True, key='use_spy_filter', disabled=is_running)
-            st.toggle("Primary Hours Filter", value=True, key='use_time_filter', disabled=is_running)
-            st.toggle("Confirmation Candle", value=False, key='use_confirmation_candle', disabled=is_running)
-            st.toggle("RSI Filter", value=True, key='use_rsi_filter', disabled=is_running)
-            
-            c1, c2 = st.columns(2)
-            st.slider("RSI Threshold", 0, 100, 50, 1, key='rsi_threshold', disabled=is_running or not st.session_state.get('use_rsi_filter', True))
-            st.toggle("Enable Claude Gatekeeper", value=True, key='use_claude_filter', disabled=is_running,
-                      help="Claude analyzes every potential entry for market regime, S/R context, volume quality, and news before approving.")
-            st.slider("Conviction Threshold", 50, 95, 70, 5, key='claude_conviction_threshold', disabled=is_running,
-                      help="Minimum Claude conviction score (0-100) required to approve a trade. Higher = fewer but higher-quality trades.")
-
-            st.markdown("###### 3. Per-Stock Risk Profiles")
-            # Risk profile UI would go here
-
-            st.markdown("###### 4. Ticker Assignments")
-            st.text_area("Assign Profiles", "NVDA:Aggressive, TSLA:Aggressive, AMD:Moderate", key='ticker_profile_str', disabled=is_running, height=100)
-            
-            start_button = st.form_submit_button("▶️ Start Bot", disabled=is_running, use_container_width=True)
-
-    c1_btn, c2_btn = st.columns([8,2]);
-    if c1_btn.button("⏹️ Stop Bot", disabled=not is_running, use_container_width=True):
+    if stop_clicked:
         if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
         st.toast("Bot stopping...", icon="⚠️"); a_time.sleep(1); st.rerun()
-    if c2_btn.button("🔄 Reset Capital", disabled=is_running, use_container_width=True):
-        with open(PORTFOLIO_STATE_FILE, 'w') as f: json.dump({"capital": st.session_state.initial_capital}, f)
-        st.toast(f"Capital reset to ${st.session_state.initial_capital:,.2f} for next session.", icon="🔄"); a_time.sleep(1); st.rerun()
 
-    if start_button:
-        config_data = get_current_config_from_ui()
-        if not config_data['ticker_profiles']: st.error("Please assign at least one ticker to a valid profile.")
-        else:
-            initial_positions = {ticker: {"in_position": False} for ticker in config_data['ticker_profiles'].keys()}
-            write_positions(initial_positions)
-            with open(CONFIG_FILE, 'w') as f: json.dump(config_data, f, indent=4)
-            if not os.path.exists(PORTFOLIO_STATE_FILE):
-                with open(PORTFOLIO_STATE_FILE, 'w') as f: json.dump({"capital": config_data['initial_capital']}, f)
-            
-            with open(LOCK_FILE, "w") as f: pass
-            if os.path.exists(TRADE_LOG_FILE): os.rename(TRADE_LOG_FILE, f"trades_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-            
-            write_status(f"Bot starting for {len(config_data['ticker_profiles'])} tickers...")
-            thread = threading.Thread(target=live_bot_worker, daemon=True)
-            thread.start()
-            st.toast(f"Bot started!", icon="✅"); a_time.sleep(1); st.rerun()
+    st.divider()
 
-    st.subheader("Live Status"); status_message = "Bot is Idle.";
+    # --- Live status line ---
+    st.subheader("Live Status")
+    status_message = "Bot is Idle."
     if is_running:
         if os.path.exists(STATUS_FILE):
             try:
                 with open(STATUS_FILE, "r") as f: status_message = f.read()
             except Exception: pass
-        else: status_message = "Bot is initializing..."
+        else:
+            status_message = "Bot is initializing..."
     st.info(status_message)
+
+    # --- Open positions (broker is the source of truth) ---
+    st.subheader("📊 Open Positions")
+    if broker_err:
+        st.caption("Broker unreachable — cannot list positions.")
+    else:
+        try:
+            positions_list = broker.get_positions()
+            if positions_list:
+                rows = []
+                for p in positions_list:
+                    pl = getattr(p, "unrealized_pl", None)
+                    plpc = getattr(p, "unrealized_plpc", None)
+                    rows.append({
+                        "Ticker": p.symbol,
+                        "Qty": float(p.qty),
+                        "Avg Entry": float(p.avg_entry_price),
+                        "Current": float(getattr(p, "current_price", 0) or 0),
+                        "Mkt Value": float(getattr(p, "market_value", 0) or 0),
+                        "Unreal. P/L $": float(pl) if pl is not None else 0.0,
+                        "P/L %": (float(plpc) * 100) if plpc is not None else 0.0,
+                    })
+                st.dataframe(
+                    pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                    column_config={
+                        "Avg Entry": st.column_config.NumberColumn(format="$%.2f"),
+                        "Current": st.column_config.NumberColumn(format="$%.2f"),
+                        "Mkt Value": st.column_config.NumberColumn(format="$%.2f"),
+                        "Unreal. P/L $": st.column_config.NumberColumn(format="$%.2f"),
+                        "P/L %": st.column_config.NumberColumn(format="%.2f%%"),
+                    })
+            else:
+                st.caption("No open positions.")
+        except BrokerError as e:
+            st.caption(f"Could not fetch positions: {e}")
+
+    # --- Session trade log ---
     st.subheader("📋 Current Session Trade Log")
     if os.path.exists(TRADE_LOG_FILE):
         try:
-            st.dataframe(pd.read_csv(TRADE_LOG_FILE), use_container_width=True)
+            st.dataframe(pd.read_csv(TRADE_LOG_FILE), use_container_width=True,
+                         hide_index=True)
         except Exception: st.caption("Trade log is being updated.")
-    else: st.caption("Trade log for this session is empty.")
+    else:
+        st.caption("Trade log for this session is empty.")
+
+    # --- Read-only view of the active config (verify what the bot loaded) ---
+    st.subheader("⚙️ Active Configuration (read-only)")
+    if config_error:
+        st.error(config_error)
+    else:
+        tp = active_config.get("ticker_profiles", {})
+        left = {
+            "analyst_mode": active_config.get("analyst_mode", "— (defaults to shadow)"),
+            "capital_cap_usd": active_config.get("capital_cap_usd", "⚠️ MISSING (uncapped!)"),
+            "daily_loss_limit_pct": active_config.get("daily_loss_limit_pct", "— (defaults to 3.0)"),
+            "interval (min)": active_config.get("interval", "—"),
+            "max_positions": active_config.get("max_positions", "—"),
+        }
+        right = {
+            "use_spy_filter": active_config.get("use_spy_filter", "—"),
+            "use_time_filter": active_config.get("use_time_filter", "—"),
+            "use_claude_filter": active_config.get("use_claude_filter", "—"),
+            "claude_conviction_threshold": active_config.get("claude_conviction_threshold", "—"),
+        }
+        col_l, col_r = st.columns(2)
+        with col_l:
+            for k, v in left.items(): st.write(f"**{k}:** {v}")
+        with col_r:
+            for k, v in right.items(): st.write(f"**{k}:** {v}")
+        st.write("**configured tickers:** "
+                 + (", ".join(f"{k}:{v}" for k, v in tp.items()) or "— (universe-driven)"))
+        with st.expander("Full bot_config.json"):
+            st.json(active_config)
 
 with tab2:
     st.header("Backtesting Suite")
