@@ -20,6 +20,7 @@ positions.json
 universe_today.json
 sheet.json
 configs/
+reports/
 
 # Local tooling state
 .claude/settings.local.json
