@@ -8,7 +8,23 @@ sheets). No entry path may bypass these checks.
 import math
 
 MIN_REWARD_RISK = 1.5
-MAX_NOTIONAL_PCT_OF_EQUITY = 30.0
+# Per-position notional cap fallback when bot_config.json lacks
+# "max_position_pct" — policy lives in CONFIG, this is only the safe default.
+DEFAULT_MAX_POSITION_PCT = 0.30
+
+
+def max_position_pct(config: dict) -> float:
+    """Per-position notional cap as a FRACTION of equity, from
+    bot_config.json "max_position_pct" (e.g. 0.25 = 25%). Falls back to
+    0.30 for old configs or invalid values."""
+    try:
+        value = float((config or {}).get("max_position_pct",
+                                         DEFAULT_MAX_POSITION_PCT))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_POSITION_PCT
+    if not (0.0 < value <= 1.0):
+        return DEFAULT_MAX_POSITION_PCT
+    return value
 
 
 def effective_equity(broker_equity: float, config: dict) -> float:
@@ -35,18 +51,21 @@ def check_signal(entry: float, stop, target, equity: float,
                  notional_usd: float = None,
                  open_positions: int = 0, max_positions: int = 3,
                  daily_pnl: float = 0.0, daily_loss_limit_usd: float = None,
-                 open_notional_usd: float = 0.0):
+                 open_notional_usd: float = 0.0,
+                 position_cap_pct: float = None):
     """Validate one prospective long entry. Returns (ok: bool, reason: str|None).
 
     Rules:
       - a stop is mandatory (thesis invalidation must be defined)
       - reward:risk must be >= 1.5
-      - notional must not exceed 30% of equity
+      - notional must not exceed position_cap_pct of equity (config
+        "max_position_pct"; default 30%)
       - NO MARGIN: open notional + new notional must not exceed equity (cash)
       - must not exceed max simultaneous positions
       - the daily-loss circuit breaker must not be tripped
 
     `equity` must already be the EFFECTIVE equity (see effective_equity)."""
+    cap_pct = position_cap_pct if position_cap_pct else DEFAULT_MAX_POSITION_PCT
     if stop is None or (isinstance(stop, float) and math.isnan(stop)):
         return False, "missing_stop"
     if target is None or (isinstance(target, float) and math.isnan(target)):
@@ -61,8 +80,8 @@ def check_signal(entry: float, stop, target, equity: float,
         return False, f"reward_risk_below_{MIN_REWARD_RISK}"
 
     if notional_usd is not None and equity > 0:
-        if notional_usd > equity * (MAX_NOTIONAL_PCT_OF_EQUITY / 100.0):
-            return False, "notional_exceeds_30pct_equity"
+        if notional_usd > equity * cap_pct:
+            return False, "notional_exceeds_max_position_pct"
         # Never use margin buying power: total deployed cash <= equity.
         if open_notional_usd + notional_usd > equity:
             return False, "insufficient_cash_no_margin"
@@ -78,29 +97,34 @@ def check_signal(entry: float, stop, target, equity: float,
 
 def position_size(equity: float, risk_per_trade_pct: float,
                   entry: float, stop: float,
-                  open_notional_usd: float = 0.0) -> int:
+                  open_notional_usd: float = 0.0,
+                  position_cap_pct: float = None) -> int:
     """Risk-based sizing in WHOLE shares: (entry - stop) * shares equals the
     per-trade dollar risk budget. Returns 0 if geometry is invalid.
 
-    Notional is capped at 30% of equity AND at remaining cash (no margin).
+    Notional is capped at position_cap_pct of equity (config
+    "max_position_pct") AND at remaining cash (no margin).
     `equity` must already be the effective equity."""
+    cap_pct = position_cap_pct if position_cap_pct else DEFAULT_MAX_POSITION_PCT
     risk_per_share = entry - stop
     if risk_per_share <= 0 or equity <= 0:
         return 0
     dollar_risk = equity * (risk_per_trade_pct / 100.0)
     shares = math.floor(dollar_risk / risk_per_share)
-    max_notional = min(equity * (MAX_NOTIONAL_PCT_OF_EQUITY / 100.0),
+    max_notional = min(equity * cap_pct,
                        max(equity - open_notional_usd, 0.0))
     if shares * entry > max_notional:
         shares = math.floor(max_notional / entry)
     return max(shares, 0)
 
 
-def zero_size_reason(entry: float, equity: float) -> str:
+def zero_size_reason(entry: float, equity: float,
+                     position_cap_pct: float = None) -> str:
     """Why did sizing produce < 1 whole share? Journaled as a rules pass so we
     learn which tickers this account cannot afford (Alpaca brackets need
     whole shares)."""
-    if entry > equity * (MAX_NOTIONAL_PCT_OF_EQUITY / 100.0):
+    cap_pct = position_cap_pct if position_cap_pct else DEFAULT_MAX_POSITION_PCT
+    if entry > equity * cap_pct:
         return "price_too_high_for_account"
     return "size_zero"
 

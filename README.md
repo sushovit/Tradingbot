@@ -18,11 +18,13 @@ A Streamlit trading bot with:
   signal alongside Claude for later comparison (see below).
 - **SQLite journal** (`journal.py`) — every decision (taken *and* passed),
   every fill, and every outcome is recorded.
-- **Risk engine** (`risk.py`) — R:R ≥ 1.5, notional ≤ 30% of equity, risk-based
-  position sizing, max positions, and a daily-loss circuit breaker.
-- **Hard capital cap** — `capital_cap_usd` in `bot_config.json` (default $1,000)
-  caps the equity every sizing/validation path sees, regardless of the broker
-  balance: a $97k paper account trades like a $1,000 account. Margin is never
+- **Risk engine** (`risk.py`) — R:R ≥ 1.5, per-position notional capped at
+  `max_position_pct` of equity (config-driven; 0.30 fallback for old
+  configs), risk-based position sizing, max positions, and a daily-loss
+  circuit breaker.
+- **Hard capital cap** — `capital_cap_usd` in `bot_config.json` caps the
+  equity every sizing/validation path sees, regardless of the broker
+  balance: a $97k paper account trades like a small account. Margin is never
   used — total deployed notional can't exceed effective capital — and sizing
   is whole-share (tickers too expensive for the account are journaled as
   `price_too_high_for_account` passes).
@@ -132,8 +134,9 @@ Example sheet:
 }
 ```
 
-Validation rejects: missing stop, reward:risk < 1.5, notional > 30% of equity,
-exceeding max positions, expired `valid_until`, non-numeric price fields, and
+Validation rejects: missing stop, reward:risk < 1.5, notional above
+`max_position_pct` of equity, exceeding max positions, expired
+`valid_until`, non-numeric price fields, and
 `event_flow` orders without `hard_exit_date` (the bot force-closes those at
 that date's close, win or lose).
 

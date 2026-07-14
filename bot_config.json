@@ -1,13 +1,13 @@
 {
     "interval": 5,
-    "initial_capital": 1000,
-    "capital_cap_usd": 1000,
+    "capital_cap_usd": 2000,
+    "max_position_pct": 0.25,
     "max_positions": 3,
     "daily_loss_limit_pct": 3.0,
     "analyst_mode": "shadow",
     "universe": {
         "min_price": 5,
-        "max_price": 250,
+        "max_price": 480,
         "min_dollar_volume": 20000000,
         "max_candidates": 20,
         "skip_etfs": true,
@@ -32,47 +32,24 @@
     "claude_conviction_threshold": 70,
     "risk_profiles": {
         "Aggressive": {
-            "fast_ema": 9,
-            "slow_ema": 21,
-            "adx_threshold": 30,
-            "risk_per_trade_pct": 1.0,
-            "rr_ratio": 2.0,
-            "atr_multiplier": 1.5,
-            "trailing_stop_type": "ATR",
-            "trailing_stop_value": 2.0,
+            "fast_ema": 9, "slow_ema": 21, "adx_threshold": 30,
+            "risk_per_trade_pct": 1.0, "rr_ratio": 2.0, "atr_multiplier": 1.5,
+            "trailing_stop_type": "ATR", "trailing_stop_value": 2.0,
             "use_volume_filter": true
         },
         "Moderate": {
-            "fast_ema": 9,
-            "slow_ema": 21,
-            "adx_threshold": 28,
-            "risk_per_trade_pct": 0.75,
-            "rr_ratio": 2.0,
-            "atr_multiplier": 2.0,
-            "trailing_stop_type": "ATR",
-            "trailing_stop_value": 2.5,
-            "use_volume_filter": true
-        },
-        "Conservative": {
-            "fast_ema": 12,
-            "slow_ema": 26,
-            "adx_threshold": 30,
-            "risk_per_trade_pct": 0.5,
-            "rr_ratio": 2.5,
-            "atr_multiplier": 2.5,
-            "trailing_stop_type": "ATR",
-            "trailing_stop_value": 3.0,
+            "fast_ema": 9, "slow_ema": 21, "adx_threshold": 28,
+            "risk_per_trade_pct": 0.75, "rr_ratio": 2.0, "atr_multiplier": 2.0,
+            "trailing_stop_type": "ATR", "trailing_stop_value": 2.5,
             "use_volume_filter": true
         }
     },
     "ticker_profiles": {
         "NVDA": "Aggressive",
-        "TSLA": "Aggressive",
         "AMD": "Moderate"
     },
     "strategies": {
         "NVDA": ["trend_continuation", "momentum_continuation"],
-        "TSLA": ["trend_continuation", "momentum_continuation"],
         "AMD": ["trend_continuation", "mean_reversion_reclaim"]
     }
 }

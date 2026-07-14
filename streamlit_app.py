@@ -356,6 +356,7 @@ def live_bot_worker():
             claude_conviction_threshold = config.get("claude_conviction_threshold", 70)
             analyst_mode = config.get("analyst_mode", "shadow")
             daily_loss_limit_pct = config.get("daily_loss_limit_pct", 3.0)
+            position_cap_pct = risk.max_position_pct(config)
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
             logger.error(f"Could not load/parse config, skipping iteration: {e}")
             a_time.sleep(30)
@@ -605,7 +606,8 @@ def live_bot_worker():
                 signal.entry, signal.stop, signal.target, equity,
                 open_positions=open_positions_count, max_positions=max_positions,
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
-                open_notional_usd=open_notional)
+                open_notional_usd=open_notional,
+                position_cap_pct=position_cap_pct)
             if not ok:
                 journal_pass_once(ticker, signal.setup_name, reject_reason,
                                   f"entry={signal.entry:.2f} stop={signal.stop:.2f} "
@@ -650,11 +652,13 @@ def live_bot_worker():
             # --- Risk-based sizing (whole shares), then bracket order AT THE BROKER ---
             qty = risk.position_size(equity, risk_profile['risk_per_trade_pct'],
                                      signal.entry, signal.stop,
-                                     open_notional_usd=open_notional)
+                                     open_notional_usd=open_notional,
+                                     position_cap_pct=position_cap_pct)
             if qty < 1:
                 # Whole-share reality: journal WHY (tells us which tickers this
                 # account can't afford).
-                zero_reason = risk.zero_size_reason(signal.entry, equity)
+                zero_reason = risk.zero_size_reason(signal.entry, equity,
+                                                    position_cap_pct=position_cap_pct)
                 journal_pass_once(ticker, signal.setup_name, zero_reason,
                                   f"entry={signal.entry:.2f} equity={equity:.2f}")
                 status_updates.append(f"{ticker}: Pass ({zero_reason})")
@@ -664,7 +668,8 @@ def live_bot_worker():
                 notional_usd=qty * signal.entry,
                 open_positions=open_positions_count, max_positions=max_positions,
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
-                open_notional_usd=open_notional)
+                open_notional_usd=open_notional,
+                position_cap_pct=position_cap_pct)
             if not ok:
                 journal_pass_once(ticker, signal.setup_name, reject_reason, "")
                 status_updates.append(f"{ticker}: Pass ({reject_reason})")

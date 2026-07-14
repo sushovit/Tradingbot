@@ -82,16 +82,18 @@ def validate_sheet(sheet: dict) -> list:
 
 def validate_order(order: dict, equity: float, open_positions: int,
                    max_positions: int, now_et: datetime = None,
-                   open_notional_usd: float = 0.0):
+                   open_notional_usd: float = 0.0,
+                   position_cap_pct: float = None):
     """Validate one order against the risk rules. Returns (ok, reason).
 
     `equity` must be the EFFECTIVE equity (risk.effective_equity — capped by
-    capital_cap_usd, never raw broker equity).
+    capital_cap_usd, never raw broker equity). `position_cap_pct` comes from
+    config via risk.max_position_pct (default 30%).
 
     Rules enforced for BUY:
       - stop is mandatory (any order missing a stop is rejected)
       - target/stop reward:risk must be >= 1.5
-      - notional must not exceed 30% of equity
+      - notional must not exceed max_position_pct of equity
       - open + new notional must not exceed equity (cash only, no margin)
       - notional must buy at least 1 whole share (Alpaca bracket requirement)
       - must not exceed max_positions
@@ -175,7 +177,8 @@ def validate_order(order: dict, equity: float, open_positions: int,
         target=float(target) if target is not None else None,
         equity=equity, notional_usd=float(notional),
         open_positions=open_positions, max_positions=max_positions,
-        open_notional_usd=open_notional_usd)
+        open_notional_usd=open_notional_usd,
+        position_cap_pct=position_cap_pct)
     if not ok:
         return ok, reason
 
@@ -398,7 +401,8 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
         ticker = str(order.get("ticker", "?")).upper()
         action = str(order.get("action", "?")).upper()
         ok, reason = validate_order(order, equity, open_positions, max_positions,
-                                    open_notional_usd=open_notional)
+                                    open_notional_usd=open_notional,
+                                    position_cap_pct=risk.max_position_pct(config))
         if ok and action == "BUY" and block_reason:
             ok, reason = False, f"no_new_trades_if:{block_reason}"
 

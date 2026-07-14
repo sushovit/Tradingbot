@@ -28,7 +28,7 @@ bypasses it.
 | R:R < 1.5 rejected | `risk.check_signal` | `test_low_rr_signal_rejected_downstream` ✅ |
 | Rejected signals journaled as passes (source="rules") | `journal.log_rules_pass` | `test_rejected_signals_are_journaled_as_passes` ✅ |
 | Per-ticker strategy enablement | `bot_config.json` `"strategies"` | `test_per_ticker_strategy_config` ✅ |
-| Notional > 30% equity rejected | `risk.check_signal` | `test_oversized_notional_rejected` ✅ |
+| Notional > max_position_pct of equity rejected (config-driven, 0.30 default) | `risk.check_signal` | `test_oversized_notional_rejected`, `test_pct25_cap_on_2000_rejects_501_accepts_499`, `test_default_30pct_when_key_missing` ✅ |
 | Max positions enforced | `risk.check_signal` | `test_max_positions_rejected` ✅ |
 | Hard capital cap (broker $97k → $1,000) | `risk.effective_equity` | `test_effective_equity_caps_broker_balance` ✅ |
 | No margin: total notional ≤ cash | `risk.check_signal` | `test_total_notional_cannot_exceed_cash` ✅ |

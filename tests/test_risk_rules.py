@@ -52,10 +52,10 @@ def test_bad_reward_risk_rejected():
 
 
 def test_oversized_notional_rejected():
-    # 40% of equity > 30% cap
+    # 40% of equity > default 30% cap
     ok, reason = validate_order(buy_order(notional_usd=400), EQUITY, 0, MAX_POSITIONS, NOW)
     assert not ok
-    assert reason == "notional_exceeds_30pct_equity"
+    assert reason == "notional_exceeds_max_position_pct"
 
 
 def test_max_positions_rejected():
@@ -99,6 +99,44 @@ def test_exits_always_allowed_even_at_max_positions():
     for action in ("SELL", "CLOSE", "TAKE_PARTIAL"):
         ok, _ = validate_order(buy_order(action=action), EQUITY, 3, MAX_POSITIONS, NOW)
         assert ok
+
+
+# =============================================================================
+# Config-driven per-position notional cap (max_position_pct)
+# =============================================================================
+
+def test_max_position_pct_read_from_config():
+    import risk
+    assert risk.max_position_pct({"max_position_pct": 0.25}) == 0.25
+    # Garbage falls back to the safe default, never crashes.
+    assert risk.max_position_pct({"max_position_pct": "huge"}) == 0.30
+    assert risk.max_position_pct({"max_position_pct": 5.0}) == 0.30
+
+
+def test_pct25_cap_on_2000_rejects_501_accepts_499():
+    # New policy: 25% of $2,000 = $500 per position.
+    order_501 = buy_order(notional_usd=501, entry=100.0, stop=95.0, target=110.0)
+    ok, reason = validate_order(order_501, 2000.0, 0, MAX_POSITIONS, NOW,
+                                position_cap_pct=0.25)
+    assert not ok
+    assert reason == "notional_exceeds_max_position_pct"
+
+    order_499 = buy_order(notional_usd=499, entry=100.0, stop=95.0, target=110.0)
+    ok, reason = validate_order(order_499, 2000.0, 0, MAX_POSITIONS, NOW,
+                                position_cap_pct=0.25)
+    assert ok, f"expected acceptance, got: {reason}"
+
+
+def test_default_30pct_when_key_missing():
+    import risk
+    assert risk.max_position_pct({}) == 0.30
+    # $610 > 30% of $2,000 ($600) -> rejected; $590 accepted.
+    ok, reason = validate_order(buy_order(notional_usd=610, entry=100.0),
+                                2000.0, 0, MAX_POSITIONS, NOW)
+    assert not ok and reason == "notional_exceeds_max_position_pct"
+    ok, reason = validate_order(buy_order(notional_usd=590, entry=100.0),
+                                2000.0, 0, MAX_POSITIONS, NOW)
+    assert ok, f"expected acceptance, got: {reason}"
 
 
 def test_sheet_schema_validation():
