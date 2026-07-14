@@ -250,22 +250,54 @@ def detect_filled_exit(broker, ticker, state):
 
 def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
                          now_et, broker_order_id=None):
-    """Journal a SELL from actual fill prices and clear local state."""
+    """Journal a SELL from actual fill prices and clear local state.
+
+    Single-authority journaling: journal.record_exit keys idempotence on the
+    broker's order id, shared with orders.py sync — whichever path sees the
+    fill first journals it; this one skips silently if sync got there first."""
     entry_price = state.get("entry_price", fill_price)
     qty = state.get("shares_held", 0)
-    pnl_usd = (fill_price - entry_price) * qty
-    pnl_pct = ((fill_price / entry_price) - 1) * 100 if entry_price else 0.0
 
-    trade_id = journal.log_trade(ticker, "SELL", qty, fill_price,
-                                 pnl_usd=pnl_usd, pnl_pct=pnl_pct, reason=reason,
-                                 decision_id=state.get("decision_id"),
-                                 broker_order_id=broker_order_id)
-    journal.link_outcome(state.get("decision_id"), trade_id, pnl_usd, pnl_pct)
+    trade_id, pnl_usd, pnl_pct = journal.record_exit(
+        ticker, qty, fill_price, reason,
+        decision_id=state.get("decision_id"),
+        broker_order_id=broker_order_id,
+        entry_price=entry_price)
+    positions[ticker] = {"in_position": False}
+    if trade_id is None:
+        logger.info(f"{ticker}: exit already journaled (order {broker_order_id}) — "
+                    "state cleared, no duplicate row.")
+        return
+
     append_trade_log(now_et.strftime('%Y-%m-%d %H:%M:%S'), ticker, "SELL",
                      f"${fill_price:.2f}", qty, pnl_usd, f"{pnl_pct:.2f}%", reason)
     send_discord_notification(ticker, "SELL", fill_price, reason, pnl_pct)
     logger.info(f"EXIT {ticker} @ ${fill_price:.2f} ({reason}). PnL: ${pnl_usd:.2f}")
-    positions[ticker] = {"in_position": False}
+
+
+def resolve_exit_fill(broker, ticker):
+    """The position is gone but no tracked leg reports filled (leg ids lost,
+    replaced order, manual dashboard close...). Find the REAL exit fill from
+    the broker's closed orders. Returns (fill_price, reason, order_id) or
+    (None, None, None) — callers must NOT journal a phantom at last price."""
+    from datetime import timezone as _tz
+    try:
+        since = datetime.now(_tz.utc) - timedelta(days=3)
+        candidates = [o for o in broker.get_closed_orders_since(since)
+                      if o.symbol == ticker
+                      and "sell" in str(getattr(o, "side", "")).lower()
+                      and getattr(o, "filled_avg_price", None)]
+        if not candidates:
+            return None, None, None
+        latest = max(candidates, key=lambda o: o.filled_at)
+        otype = str(getattr(latest, "order_type", None)
+                    or getattr(latest, "type", "")).lower()
+        reason = ("Stop Loss" if "stop" in otype
+                  else "Profit Target" if "limit" in otype else "Exit")
+        return float(latest.filled_avg_price), f"{reason} (resolved)", str(latest.id)
+    except BrokerError as e:
+        logger.warning(f"{ticker}: could not resolve exit fill: {e}")
+        return None, None, None
 
 
 def live_bot_worker():
@@ -300,7 +332,11 @@ def live_bot_worker():
 
     logger.info("Live bot worker started against Alpaca PAPER account.")
 
+    cycle_count = 0                # liveness counter (status line, NOT the journal)
+    journaled_passes = set()       # (ticker, setup, filter, bar/day) already journaled
+
     while os.path.exists(LOCK_FILE):
+        cycle_count += 1
         try:
             with open(CONFIG_FILE, "r") as f: config = json.load(f)
 
@@ -396,6 +432,18 @@ def live_bot_worker():
         except BrokerError:
             broker_symbols = None  # unknown — don't infer exits this cycle
 
+        def journal_pass_once(t, setup_name, filter_name, details="", bar_key=None):
+            """Journal a rules pass ONCE per (ticker, setup, filter, bar/day).
+            The same rejection recurring every 30s cycle is noise, not signal —
+            launch day wrote 2,000+ duplicate rows before this dedupe."""
+            key = (t, setup_name, filter_name, bar_key or now_et.strftime("%Y-%m-%d"))
+            if key in journaled_passes:
+                return
+            if len(journaled_passes) > 20000:
+                journaled_passes.clear()
+            journaled_passes.add(key)
+            journal_rules_pass(t, setup_name, filter_name, details)
+
         status_updates = []
         for ticker in ticker_list:
             open_positions_count = sum(1 for s in positions.values() if s.get("in_position"))
@@ -421,8 +469,16 @@ def live_bot_worker():
                     fill_price, reason, exit_order_id = detect_filled_exit(broker, ticker, state)
                     if fill_price is None and broker_symbols is not None \
                             and ticker not in broker_symbols:
-                        # Position gone but no leg marked filled — use last price.
-                        fill_price, reason = current_price, "Exit (fill details unavailable)"
+                        # Position gone but no tracked leg marked filled.
+                        # NEVER journal a phantom at last price — resolve the
+                        # real fill, or clear state and let sync() journal it.
+                        fill_price, reason, exit_order_id = resolve_exit_fill(broker, ticker)
+                        if fill_price is None:
+                            logger.warning(f"{ticker}: position gone, fill unresolved — "
+                                           "state cleared; sync() will journal the real fill.")
+                            positions[ticker] = {"in_position": False}
+                            status_updates.append(f"{ticker}: Exited (fill pending sync)")
+                            continue
                     if fill_price is not None:
                         handle_position_exit(broker, positions, ticker, state,
                                              fill_price, reason, now_et,
@@ -492,6 +548,7 @@ def live_bot_worker():
                 or dttime(14, 0) <= now_et.time() < dttime(15, 0))
 
             signal_found = None
+            pass_notes = []
             for strat in enabled_strategies(ticker, config):
                 strat_df = daily_bars.get(ticker, pd.DataFrame()) \
                     if strat.timeframe == "daily" else df
@@ -506,37 +563,41 @@ def live_bot_worker():
                     continue
 
                 if isinstance(result, Rejection):
-                    # Detector fired but a deterministic filter killed it — journal the pass.
-                    journal_rules_pass(ticker, result.setup_name, result.filter_name,
-                                       result.details)
-                    status_updates.append(f"{ticker}: Pass ({result.setup_name}: {result.filter_name})")
+                    # Detector fired but a deterministic filter killed it —
+                    # journal the pass once per signal bar, not per cycle.
+                    bar_key = str(strat_df.index[-2]) if len(strat_df) >= 2 else None
+                    journal_pass_once(ticker, result.setup_name, result.filter_name,
+                                      result.details, bar_key=bar_key)
+                    pass_notes.append(f"Pass ({result.setup_name}: {result.filter_name})")
                 elif isinstance(result, Signal):
                     signal_found = result
                     break
 
             if signal_found is None:
-                status_updates.append(f"{ticker}: Waiting (No Signal)")
+                # One status line per ticker (no Pass + Waiting double-print).
+                status_updates.append(
+                    f"{ticker}: " + (pass_notes[0] if pass_notes else "Waiting (No Signal)"))
                 continue
 
             signal = signal_found
 
             # --- Global deterministic gates: journaled as passes too ---
             if breaker_tripped:
-                journal_rules_pass(ticker, signal.setup_name, "circuit_breaker",
-                                   f"daily PnL ${daily_pnl:.2f} <= -${loss_limit_usd:.2f}")
+                journal_pass_once(ticker, signal.setup_name, "circuit_breaker",
+                                  f"daily PnL ${daily_pnl:.2f} <= -${loss_limit_usd:.2f}")
                 status_updates.append(f"{ticker}: Pass (circuit breaker)")
                 continue
             if not is_market_bullish:
-                journal_rules_pass(ticker, signal.setup_name, "spy_bearish",
-                                   "SPY below its 20-EMA")
+                journal_pass_once(ticker, signal.setup_name, "spy_bearish",
+                                  "SPY below its 20-EMA")
                 status_updates.append(f"{ticker}: Pass (SPY bearish)")
                 continue
             if not is_primary_trading_hours:
-                journal_rules_pass(ticker, signal.setup_name, "outside_hours", "")
+                journal_pass_once(ticker, signal.setup_name, "outside_hours", "")
                 status_updates.append(f"{ticker}: Pass (outside hours)")
                 continue
             if open_positions_count >= max_positions:
-                journal_rules_pass(ticker, signal.setup_name, "max_positions", "")
+                journal_pass_once(ticker, signal.setup_name, "max_positions", "")
                 status_updates.append(f"{ticker}: Pass (max positions)")
                 continue
 
@@ -546,9 +607,9 @@ def live_bot_worker():
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
                 open_notional_usd=open_notional)
             if not ok:
-                journal_rules_pass(ticker, signal.setup_name, reject_reason,
-                                   f"entry={signal.entry:.2f} stop={signal.stop:.2f} "
-                                   f"target={signal.target:.2f}")
+                journal_pass_once(ticker, signal.setup_name, reject_reason,
+                                  f"entry={signal.entry:.2f} stop={signal.stop:.2f} "
+                                  f"target={signal.target:.2f}")
                 status_updates.append(f"{ticker}: Pass ({reject_reason})")
                 continue
 
@@ -594,8 +655,8 @@ def live_bot_worker():
                 # Whole-share reality: journal WHY (tells us which tickers this
                 # account can't afford).
                 zero_reason = risk.zero_size_reason(signal.entry, equity)
-                journal_rules_pass(ticker, signal.setup_name, zero_reason,
-                                   f"entry={signal.entry:.2f} equity={equity:.2f}")
+                journal_pass_once(ticker, signal.setup_name, zero_reason,
+                                  f"entry={signal.entry:.2f} equity={equity:.2f}")
                 status_updates.append(f"{ticker}: Pass ({zero_reason})")
                 continue
             ok, reject_reason = risk.check_signal(
@@ -605,7 +666,7 @@ def live_bot_worker():
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
                 open_notional_usd=open_notional)
             if not ok:
-                journal_rules_pass(ticker, signal.setup_name, reject_reason, "")
+                journal_pass_once(ticker, signal.setup_name, reject_reason, "")
                 status_updates.append(f"{ticker}: Pass ({reject_reason})")
                 continue
 
@@ -684,7 +745,8 @@ def live_bot_worker():
 
         write_positions(positions)
         breaker_note = " | ⛔ CIRCUIT BREAKER ACTIVE" if breaker_tripped else ""
-        write_status("Monitoring Live (Alpaca paper): " + " | ".join(status_updates) + breaker_note)
+        write_status(f"Cycle #{cycle_count} | Monitoring Live (Alpaca paper): "
+                     + " | ".join(status_updates) + breaker_note)
         a_time.sleep(30)
 
     logger.info("Bot worker thread has been stopped.")
@@ -746,9 +808,9 @@ with tab1:
 
     # --- Start / Stop (never create or modify bot_config.json) ---
     ctrl1, ctrl2 = st.columns(2)
-    start_clicked = ctrl1.button("▶️ Start Bot", use_container_width=True,
+    start_clicked = ctrl1.button("▶️ Start Bot", width='stretch',
                                  disabled=is_running or config_error is not None)
-    stop_clicked = ctrl2.button("⏹️ Stop Bot", use_container_width=True,
+    stop_clicked = ctrl2.button("⏹️ Stop Bot", width='stretch',
                                 disabled=not is_running)
     if config_error and not is_running:
         st.error(f"Cannot start — {config_error} "
@@ -806,7 +868,7 @@ with tab1:
                         "P/L %": (float(plpc) * 100) if plpc is not None else 0.0,
                     })
                 st.dataframe(
-                    pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                    pd.DataFrame(rows), width='stretch', hide_index=True,
                     column_config={
                         "Avg Entry": st.column_config.NumberColumn(format="$%.2f"),
                         "Current": st.column_config.NumberColumn(format="$%.2f"),
@@ -823,7 +885,7 @@ with tab1:
     st.subheader("📋 Current Session Trade Log")
     if os.path.exists(TRADE_LOG_FILE):
         try:
-            st.dataframe(pd.read_csv(TRADE_LOG_FILE), use_container_width=True,
+            st.dataframe(pd.read_csv(TRADE_LOG_FILE), width='stretch',
                          hide_index=True)
         except Exception: st.caption("Trade log is being updated.")
     else:
@@ -868,7 +930,7 @@ with tab3:
 
     ai_ticker = st.text_input("Enter Ticker Symbol for AI Analysis", "NVDA", key="ai_ticker").upper()
 
-    if st.button("🤖 Run Full AI Analysis", use_container_width=True):
+    if st.button("🤖 Run Full AI Analysis", width='stretch'):
         if not ai_ticker:
             st.error("Please enter a ticker symbol.")
         elif not os.getenv("ANTHROPIC_API_KEY"):

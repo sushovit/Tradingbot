@@ -99,6 +99,49 @@ def init_db():
         if "broker_order_id" not in tcols:
             conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
         conn.commit()
+    run_data_migrations()
+
+
+def run_data_migrations():
+    """One-off data repairs, each guarded by a meta key so it runs exactly
+    once per database. Safe on fresh/temp DBs (no matching rows = no-op)."""
+
+    # 2026-07-14: delete the phantom FCX exit from launch day. The bot's
+    # fallback path journaled a SELL at the last price with NO order id;
+    # sync then journaled the REAL stop fill (-$1.80) under its order id.
+    if get_meta("mig_20260714_phantom_fcx") is None:
+        with _lock, _connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM trades WHERE ticker='FCX' AND action='SELL' "
+                "AND broker_order_id IS NULL "
+                "AND reason='Exit (fill details unavailable)' "
+                "AND timestamp LIKE '2026-07-13%'")
+            if cur.rowcount:
+                logger.info(f"Migration: deleted {cur.rowcount} phantom FCX exit row(s).")
+            # Ensure the decision outcome points at a surviving SELL.
+            conn.execute("""
+                UPDATE decisions SET outcome_trade_id = NULL,
+                       outcome_pnl_usd = NULL, outcome_pnl_pct = NULL
+                WHERE outcome_trade_id IS NOT NULL
+                  AND outcome_trade_id NOT IN (SELECT id FROM trades)""")
+            conn.commit()
+        set_meta("mig_20260714_phantom_fcx", "done")
+
+    # 2026-07-14: purge the pass-log flood — the same deterministic rejection
+    # re-journaled every 30s cycle. Keep the FIRST row per
+    # (ticker, setup, filter, day); the worker now dedupes at write time.
+    if get_meta("mig_20260714_purge_pass_flood") is None:
+        with _lock, _connect() as conn:
+            cur = conn.execute("""
+                DELETE FROM decisions WHERE source='rules' AND id NOT IN (
+                    SELECT MIN(id) FROM decisions WHERE source='rules'
+                    GROUP BY ticker, setup_name,
+                             json_extract(verdict, '$.rejection_reason'),
+                             substr(timestamp, 1, 10))""")
+            if cur.rowcount:
+                logger.info(f"Migration: purged {cur.rowcount} duplicate rules-pass rows.")
+            conn.commit()
+        set_meta("mig_20260714_purge_pass_flood", "done")
 
 
 def log_decision(ticker: str, setup_name: str, context: dict, verdict: dict,
@@ -208,6 +251,29 @@ def set_trade_order_id(trade_id: int, broker_order_id: str):
         conn.execute("UPDATE trades SET broker_order_id=? WHERE id=?",
                      (str(broker_order_id), trade_id))
         conn.commit()
+
+
+def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
+                decision_id=None, broker_order_id: str = None,
+                entry_price: float = None):
+    """SINGLE-AUTHORITY exit journaling. Every path that sees a fill (bot
+    loop, orders.py sync, report startup sync) must come through here or
+    respect the same rule: idempotence keys on the BROKER's order id.
+    Whoever sees the fill first journals it; everyone else returns None.
+
+    Returns (trade_id, pnl_usd, pnl_pct), or (None, None, None) if this fill
+    is already journaled."""
+    if broker_order_id and trade_exists_for_order(broker_order_id):
+        return None, None, None
+    entry = entry_price if entry_price else fill_price
+    pnl_usd = (fill_price - entry) * qty
+    pnl_pct = ((fill_price / entry) - 1) * 100 if entry else 0.0
+    trade_id = log_trade(ticker, "SELL", qty, fill_price,
+                         pnl_usd=pnl_usd, pnl_pct=pnl_pct, reason=reason,
+                         decision_id=decision_id,
+                         broker_order_id=broker_order_id)
+    link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
+    return trade_id, pnl_usd, pnl_pct
 
 
 def find_buy_without_order_id(ticker: str, qty: float):

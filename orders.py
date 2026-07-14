@@ -238,17 +238,21 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         return f"HOLD {ticker}: acknowledged."
 
     if action in ("SELL", "CLOSE"):
-        broker.close_position(ticker)
+        close_order = broker.close_position(ticker)
         price = broker.get_latest_price(ticker)
         state = positions.get(ticker, {})
         entry = state.get("entry_price", price)
         qty = state.get("shares_held", 0)
-        pnl_usd = (price - entry) * qty
-        pnl_pct = ((price / entry) - 1) * 100 if entry else 0.0
-        trade_id = journal.log_trade(ticker, "SELL", qty, price, pnl_usd, pnl_pct,
-                                     reason=f"CEO {action}", decision_id=decision_id)
-        journal.link_outcome(state.get("decision_id"), trade_id, pnl_usd, pnl_pct)
+        # Single-authority journaling: keyed on the close order's id so the
+        # bot loop / sync can never journal this exit a second time.
+        oid = str(getattr(close_order, "id", "")) or None
+        trade_id, pnl_usd, pnl_pct = journal.record_exit(
+            ticker, qty, price, f"CEO {action}",
+            decision_id=state.get("decision_id") or decision_id,
+            broker_order_id=oid, entry_price=entry)
         positions[ticker] = {"in_position": False}
+        if trade_id is None:
+            return f"{action} {ticker}: closed (exit already journaled)."
         return f"{action} {ticker}: closed @ ~${price:.2f}."
 
     if action == "TIGHTEN_STOP":
@@ -275,13 +279,14 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         from alpaca.trading.enums import OrderSide, TimeInForce
         req = MarketOrderRequest(symbol=ticker, qty=qty_to_sell,
                                  side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
-        broker.trading.submit_order(req)
+        partial_order = broker.trading.submit_order(req)
         price = broker.get_latest_price(ticker)
         entry = state.get("entry_price", price)
         pnl_usd = (price - entry) * qty_to_sell
         pnl_pct = ((price / entry) - 1) * 100 if entry else 0.0
         journal.log_trade(ticker, "SELL", qty_to_sell, price, pnl_usd, pnl_pct,
-                          reason="CEO TAKE_PARTIAL", decision_id=decision_id)
+                          reason="CEO TAKE_PARTIAL", decision_id=decision_id,
+                          broker_order_id=str(getattr(partial_order, "id", "")) or None)
         state["shares_held"] = qty_held - qty_to_sell
         positions[ticker] = state
         return f"TAKE_PARTIAL {ticker}: sold {qty_to_sell} of {qty_held}."
