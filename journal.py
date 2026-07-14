@@ -93,6 +93,10 @@ def init_db():
             conn.execute("UPDATE decisions SET source='claude' WHERE source IS NULL OR source=''")
         if "agreement" not in cols:
             conn.execute("ALTER TABLE decisions ADD COLUMN agreement INTEGER")
+        if "replays" not in cols:
+            # How many times the re-ask loop replayed this same decision
+            # before the per-bar gatekeeper cache existed (analytics only).
+            conn.execute("ALTER TABLE decisions ADD COLUMN replays INTEGER DEFAULT 1")
         # Migration: broker_order_id ties a journaled fill to its Alpaca order
         # (sync idempotency).
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
@@ -127,6 +131,16 @@ def run_data_migrations():
             conn.commit()
         set_meta("mig_20260714_phantom_fcx", "done")
 
+    # 2026-07-14: collapse gatekeeper rows replicated by the re-ask loop —
+    # ONE decision (e.g. XOM's daily bar) was re-sent to the gatekeeper every
+    # cycle. Group by (source, ticker, setup, day, approved, stop): the stop
+    # is bar-anchored for every strategy, so replays share it while genuinely
+    # distinct signals differ. First occurrence kept, replay count recorded.
+    # Rows referenced by trades are never deleted.
+    if get_meta("mig_20260714_collapse_gatekeeper_replays") is None:
+        _collapse_gatekeeper_replays()
+        set_meta("mig_20260714_collapse_gatekeeper_replays", "done")
+
     # 2026-07-14: purge the pass-log flood — the same deterministic rejection
     # re-journaled every 30s cycle. Keep the FIRST row per
     # (ticker, setup, filter, day); the worker now dedupes at write time.
@@ -142,6 +156,49 @@ def run_data_migrations():
                 logger.info(f"Migration: purged {cur.rowcount} duplicate rules-pass rows.")
             conn.commit()
         set_meta("mig_20260714_purge_pass_flood", "done")
+
+
+def _decision_bar_key(row) -> tuple:
+    """Proxy for 'same signal bar': the stop is bar-anchored for every
+    strategy (reclaim/breakout bar low, ATR at the cross), while entry
+    drifts with each cycle's price."""
+    try:
+        stop = json.loads(row["context"] or "{}").get("stop")
+    except json.JSONDecodeError:
+        stop = None
+    stop_key = round(float(stop), 2) if isinstance(stop, (int, float)) else None
+    return (row["ticker"], row["setup_name"], row["timestamp"][:10], stop_key)
+
+
+def _collapse_gatekeeper_replays():
+    with _lock, _connect() as conn:
+        referenced = {r["decision_id"] for r in conn.execute(
+            "SELECT DISTINCT decision_id FROM trades WHERE decision_id IS NOT NULL")}
+        rows = conn.execute(
+            "SELECT id, source, ticker, setup_name, timestamp, approved, context "
+            "FROM decisions WHERE source IN ('claude','local','local_shadow') "
+            "ORDER BY id").fetchall()
+        groups = {}
+        for r in rows:
+            key = (r["source"], r["approved"]) + _decision_bar_key(r)
+            groups.setdefault(key, []).append(r["id"])
+
+        deleted = 0
+        for ids in groups.values():
+            if len(ids) < 2:
+                continue
+            keep = ids[0]
+            dupes = [i for i in ids[1:] if i not in referenced]
+            conn.execute("UPDATE decisions SET replays=? WHERE id=?",
+                         (len(ids), keep))
+            if dupes:
+                conn.execute(
+                    f"DELETE FROM decisions WHERE id IN ({','.join('?' * len(dupes))})",
+                    dupes)
+                deleted += len(dupes)
+        if deleted:
+            logger.info(f"Migration: collapsed {deleted} replayed gatekeeper rows.")
+        conn.commit()
 
 
 def log_decision(ticker: str, setup_name: str, context: dict, verdict: dict,
@@ -411,15 +468,28 @@ def agreement_report() -> dict:
 
     Shadow rows (source='local_shadow') carry the paired Claude verdict inside
     their context JSON as claude_approved / claude_conviction.
+
+    Stats count UNIQUE decisions — rows are grouped by (ticker, setup, day,
+    bar-anchored stop) and only the first occurrence scores. Without this,
+    one decision replayed 73 times by the old re-ask loop would count as 73
+    agreements and massively inflate the local model's record.
     """
     with _lock, _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM decisions WHERE source='local_shadow'"
+        raw_rows = conn.execute(
+            "SELECT * FROM decisions WHERE source='local_shadow' ORDER BY id"
         ).fetchall()
+
+    unique = {}
+    for r in raw_rows:
+        key = _decision_bar_key(r)
+        if key not in unique:
+            unique[key] = r
+    rows = list(unique.values())
 
     total = len(rows)
     report = {
-        "total_shadow_decisions": total,
+        "total_shadow_decisions": total,       # unique decisions
+        "raw_shadow_rows": len(raw_rows),      # incl. replays (pre-cache era)
         "agreement_pct": None,
         "local_approved_claude_rejected": 0,
         "claude_approved_local_rejected": 0,

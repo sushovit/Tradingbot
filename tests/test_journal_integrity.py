@@ -137,6 +137,86 @@ def test_phantom_exit_migration(temp_journal):
 
 
 # =============================================================================
+# Migration: gatekeeper replay collapse + unique-decision agreement stats
+# =============================================================================
+
+def _shadow_row(j, ticker, stop, approved=False, agreement=True,
+                conviction=35, claude_conviction=22, claude_approved=None):
+    if claude_approved is None:
+        claude_approved = approved
+    return j.log_decision(
+        ticker, "mean_reversion_reclaim",
+        {"setup": "mean_reversion_reclaim", "entry": stop + 2.0, "stop": stop,
+         "target": stop + 6.0, "claude_approved": claude_approved,
+         "claude_conviction": claude_conviction},
+        {"approved": approved, "conviction_score": conviction,
+         "market_regime": "Ranging", "crossover_quality": "Choppy",
+         "rejection_reason": None if approved else "ADX low",
+         "key_risk": "x", "reasoning": "y"},
+        source="local_shadow", agreement=agreement)
+
+
+def test_collapse_gatekeeper_replays_migration(temp_journal):
+    # The re-ask loop: ONE XOM decision journaled 5 times (same day, same
+    # bar-anchored stop), conviction jitter across replays.
+    for conviction in (28, 28, 22, 22, 18):
+        temp_journal.log_decision(
+            "XOM", "mean_reversion_reclaim",
+            {"setup": "mean_reversion_reclaim", "entry": 108.4, "stop": 106.10,
+             "target": 112.0},
+            {"approved": False, "conviction_score": conviction,
+             "market_regime": "Ranging", "crossover_quality": "Choppy",
+             "rejection_reason": "ADX low", "key_risk": "r", "reasoning": "s"},
+            source="claude")
+    # A genuinely distinct signal (different bar -> different stop) survives.
+    distinct = temp_journal.log_decision(
+        "XOM", "mean_reversion_reclaim",
+        {"setup": "mean_reversion_reclaim", "entry": 109.0, "stop": 107.55,
+         "target": 113.0},
+        {"approved": False, "conviction_score": 30, "market_regime": "Ranging",
+         "crossover_quality": "Choppy", "rejection_reason": "ADX low",
+         "key_risk": "r", "reasoning": "s"},
+        source="claude")
+    # An approved decision referenced by a trade must NEVER be deleted.
+    approved_id = temp_journal.log_decision(
+        "FCX", "mean_reversion_reclaim",
+        {"setup": "mean_reversion_reclaim", "entry": 60.65, "stop": 58.40,
+         "target": 64.90},
+        {"approved": True, "conviction_score": 80, "market_regime": "Trending",
+         "crossover_quality": "Clean", "rejection_reason": None,
+         "key_risk": "r", "reasoning": "s"},
+        source="claude")
+    temp_journal.log_trade("FCX", "BUY", 2, 60.65, decision_id=approved_id)
+
+    _reset_migration_flags(temp_journal)
+    temp_journal.run_data_migrations()
+
+    claude_rows = _rows(temp_journal,
+                        "SELECT * FROM decisions WHERE source='claude' ORDER BY id")
+    assert len(claude_rows) == 3          # collapsed replay + distinct + approved
+    assert claude_rows[0]["replays"] == 5  # replay count recorded on the keeper
+    assert claude_rows[0]["conviction_score"] == 28  # first occurrence kept
+    assert {r["id"] for r in claude_rows} >= {distinct, approved_id}
+
+
+def test_agreement_report_counts_unique_decisions(temp_journal):
+    # One decision replayed 3x (all agree)...
+    for _ in range(3):
+        _shadow_row(temp_journal, "XOM", stop=106.10, approved=False,
+                    agreement=True)
+    # ...plus one genuinely distinct decision where the local model DISAGREED
+    # (local approved what Claude rejected).
+    _shadow_row(temp_journal, "FIG", stop=22.80, approved=True,
+                claude_approved=False, agreement=False, claude_conviction=40)
+
+    rep = temp_journal.agreement_report()
+    assert rep["raw_shadow_rows"] == 4
+    assert rep["total_shadow_decisions"] == 2      # unique, not replayed
+    assert rep["agreement_pct"] == 50.0            # 1 agree of 2 unique
+    assert rep["local_approved_claude_rejected"] == 1
+
+
+# =============================================================================
 # Migration: pass-flood purge
 # =============================================================================
 
