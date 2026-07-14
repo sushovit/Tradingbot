@@ -62,10 +62,24 @@ os.makedirs(CONFIGS_DIR, exist_ok=True)
 # -----------------------------------------------------------------------------
 # --- HELPER FUNCTIONS ---
 # -----------------------------------------------------------------------------
-def write_status(message: str):
+def write_status(message: str, history: int = 3):
+    """Rolling status log: newest line first, last `history` cycle summaries
+    kept (floor.py reads them). Repeated identical messages just refresh the
+    timestamp instead of flooding the history."""
+    stamped = f"[{datetime.now(EASTERN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] {message}"
     try:
-        with open(STATUS_FILE, "w") as f:
-            f.write(message)
+        prior = []
+        try:
+            with open(STATUS_FILE, "r", encoding="utf-8") as f:
+                prior = [ln for ln in f.read().splitlines() if ln.strip()]
+        except (FileNotFoundError, UnicodeDecodeError):
+            pass
+        # Drop the previous line if it's the same message re-issued.
+        if prior and prior[0].split("] ", 1)[-1] == message:
+            prior = prior[1:]
+        lines = [stamped] + prior[: history - 1]
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
     except Exception as e:
         logger.error(f"Error writing to status file: {e}")
 
@@ -334,6 +348,9 @@ def live_bot_worker():
 
     cycle_count = 0                # liveness counter (status line, NOT the journal)
     journaled_passes = set()       # (ticker, setup, filter, bar/day) already journaled
+    gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
+                                   # never re-ask about the same signal bar (launch sessions
+                                   # burned 60+ Claude calls re-asking about one XOM bar)
 
     while os.path.exists(LOCK_FILE):
         cycle_count += 1
@@ -549,6 +566,7 @@ def live_bot_worker():
                 or dttime(14, 0) <= now_et.time() < dttime(15, 0))
 
             signal_found = None
+            signal_bar_key = None
             pass_notes = []
             for strat in enabled_strategies(ticker, config):
                 strat_df = daily_bars.get(ticker, pd.DataFrame()) \
@@ -572,6 +590,8 @@ def live_bot_worker():
                     pass_notes.append(f"Pass ({result.setup_name}: {result.filter_name})")
                 elif isinstance(result, Signal):
                     signal_found = result
+                    signal_bar_key = (str(strat_df.index[-2]) if len(strat_df) >= 2
+                                      else now_et.strftime("%Y-%m-%d"))
                     break
 
             if signal_found is None:
@@ -616,6 +636,12 @@ def live_bot_worker():
                 continue
 
             # --- AI gatekeeper (Claude authoritative; shadow journals local model) ---
+            # Never re-ask about a signal bar the gatekeeper already declined.
+            gate_key = (ticker, signal.setup_name, signal_bar_key)
+            if gate_key in gatekeeper_rejected:
+                status_updates.append(f"{ticker}: Gatekeeper blocked (cached this bar)")
+                continue
+
             decision_id = None
             if use_claude_filter:
                 try:
@@ -641,6 +667,12 @@ def live_bot_worker():
                         reason_msg = (verdict.get('rejection_reason')
                                       or verdict.get('error')
                                       or f"conviction={conviction}")
+                        if "error" not in verdict:
+                            # Genuine rejection: cache so this signal bar is
+                            # never re-sent. Errors are transient — retry OK.
+                            if len(gatekeeper_rejected) > 20000:
+                                gatekeeper_rejected.clear()
+                            gatekeeper_rejected.add(gate_key)
                         status_updates.append(f"{ticker}: Gatekeeper blocked ({reason_msg})")
                         logger.info(f"Gatekeeper blocked {ticker}: {verdict.get('reasoning', reason_msg)}")
                         continue
