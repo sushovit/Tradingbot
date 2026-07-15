@@ -1,15 +1,22 @@
 """
 floor.py — live-floor status dump. One command, paste-ready markdown.
 
-    python floor.py
+    python floor.py                       -> print to stdout
+    python floor.py --to-file             -> also write reports/floor_<stamp>.md
+    python floor.py --to-file --discord   -> also post to DISCORD_WEBHOOK_URL
 
 Sections: worker heartbeat age, last 3 cycle summaries, today's detector
 fires with filter outcomes, gatekeeper calls (verdict/conviction/shadow
 agreement), open positions with % distance to stop and target, and today's
 journal counts by source.
 
-Strictly read-only: reads journal.db + bot_status.log + positions.json +
-the broker. Creates no new state.
+Discord delivery is COPYABLE, not just readable: short reports post as one
+code-block message; long reports post a headline + the .md attached, plus a
+trimmed code block of the two densest sections (detector fires, gatekeeper
+calls) for mobile copy. One webhook post per run; webhook failure keeps the
+file, logs, and exits 0.
+
+Reads journal.db + bot_status.log + positions.json + the broker.
 """
 
 import os
@@ -48,14 +55,17 @@ def _conn():
 
 # ---------------------------------------------------------------- heartbeat
 
-def heartbeat_section() -> list:
+def heartbeat_section(stats: dict) -> list:
     lines = ["## Worker heartbeat"]
     running = os.path.exists(LOCK_FILE)
+    stats["running"] = running
+    stats["heartbeat_age"] = None
     if not os.path.exists(STATUS_FILE):
         lines.append(f"- Lock file: {'present' if running else 'absent'} — "
                      "no status log yet.")
         return lines
     age = int(datetime.now().timestamp() - os.path.getmtime(STATUS_FILE))
+    stats["heartbeat_age"] = age
     state = "🟢 running" if running else "⚪ not running (no lock file)"
     note = ""
     if running and age > 90:
@@ -82,8 +92,9 @@ def cycles_section() -> list:
 
 # ---------------------------------------------------------------- journal
 
-def detector_fires_section(conn, today) -> list:
+def detector_fires_section(conn, today, stats: dict) -> list:
     lines = ["\n## Detector fires today (deterministic filter outcomes)"]
+    stats["fires"] = 0
     if conn is None:
         lines.append("_journal.db not found._")
         return lines
@@ -93,6 +104,7 @@ def detector_fires_section(conn, today) -> list:
         "json_extract(context,'$.details') AS details "
         "FROM decisions WHERE source='rules' AND timestamp LIKE ? "
         "ORDER BY id", (f"{today}%",)).fetchall()
+    stats["fires"] = len(rows)
     if not rows:
         lines.append("_None — no detector fired into a filter today._")
         return lines
@@ -105,8 +117,9 @@ def detector_fires_section(conn, today) -> list:
     return lines
 
 
-def gatekeeper_section(conn, today) -> list:
+def gatekeeper_section(conn, today, stats: dict) -> list:
     lines = ["\n## Gatekeeper calls today"]
+    stats["gatekeeper"] = 0
     if conn is None:
         lines.append("_journal.db not found._")
         return lines
@@ -118,6 +131,7 @@ def gatekeeper_section(conn, today) -> list:
         "FROM decisions WHERE source IN "
         "('claude','local','local_shadow','smoke_test','ceo') "
         "AND timestamp LIKE ? ORDER BY id", (f"{today}%",)).fetchall()
+    stats["gatekeeper"] = len(rows)
     if not rows:
         lines.append("_None._")
         return lines
@@ -163,8 +177,9 @@ def counts_section(conn, today) -> list:
 
 # ---------------------------------------------------------------- broker
 
-def positions_section() -> list:
+def positions_section(stats: dict) -> list:
     lines = ["\n## Open positions (distance to stop / target)"]
+    stats["positions"] = 0
     try:
         from broker import Broker, BrokerError
         broker = Broker()
@@ -173,6 +188,7 @@ def positions_section() -> list:
         lines.append(f"_Broker unreachable: {e}_")
         return lines
 
+    stats["positions"] = len(broker_positions)
     if not broker_positions:
         lines.append("_None._")
         return lines
@@ -206,21 +222,108 @@ def positions_section() -> list:
     return lines
 
 
-def main() -> int:
+def build_report():
+    """Returns (markdown_text, stats, dense_lines) — dense_lines are the two
+    most information-dense sections for the mobile trim-post."""
     today = _today_et()
     now = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d %H:%M:%S ET")
-    out = [f"# Floor status — {now}"]
-    out += heartbeat_section()
-    out += cycles_section()
+    stats = {}
     conn = _conn()
-    out += detector_fires_section(conn, today)
-    out += gatekeeper_section(conn, today)
-    out += positions_section()
+    out = [f"# Floor status — {now}"]
+    out += heartbeat_section(stats)
+    out += cycles_section()
+    fires_lines = detector_fires_section(conn, today, stats)
+    gk_lines = gatekeeper_section(conn, today, stats)
+    out += fires_lines
+    out += gk_lines
+    out += positions_section(stats)
     out += counts_section(conn, today)
     if conn is not None:
         conn.close()
-    print("\n".join(out))
-    return 0
+    return "\n".join(out), stats, fires_lines + gk_lines
+
+
+DISCORD_MSG_LIMIT = 2000
+
+
+def _fit_snippet(lines, budget: int) -> str:
+    """Trim table rows (oldest first) until the snippet fits the budget.
+    Headers and separators survive; the most recent rows are kept."""
+    lines = [ln for ln in lines if ln.strip()]
+
+    def is_row(ln):
+        return (ln.startswith("| ") and "---" not in ln
+                and not ln.startswith("| Time"))
+
+    while len("\n".join(lines)) > budget:
+        for i, ln in enumerate(lines):
+            if is_row(ln):
+                del lines[i]
+                break
+        else:
+            return "\n".join(lines)[:budget]   # nothing left to trim
+    return "\n".join(lines)
+
+
+def post_discord(report: str, stats: dict, dense_lines: list,
+                 file_path: str = None):
+    """One webhook post per run. Failure keeps the file, logs, never raises."""
+    url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    if not url:
+        print("(no webhook configured — skipping Discord post)")
+        return
+    try:
+        from discord_webhook import DiscordWebhook
+
+        fenced = f"```markdown\n{report}\n```"
+        if len(fenced) <= DISCORD_MSG_LIMIT:
+            # Fits in one message: code block = clean select-copy on any client.
+            wh = DiscordWebhook(url=url, content=fenced)
+        else:
+            hb = stats.get("heartbeat_age")
+            state = "🟢" if stats.get("running") else "⚪"
+            headline = (f"🏛️ Floor {datetime.now(EASTERN_TZ).strftime('%H:%M ET')} — "
+                        f"{state} hb {hb if hb is not None else '?'}s | "
+                        f"fires {stats.get('fires', 0)} | "
+                        f"gatekeeper {stats.get('gatekeeper', 0)} | "
+                        f"open pos {stats.get('positions', 0)}")
+            # Mobile copy: trim-post the dense sections under the headline.
+            budget = DISCORD_MSG_LIMIT - len(headline) - 20  # fences + newlines
+            snippet = _fit_snippet(dense_lines, budget)
+            wh = DiscordWebhook(url=url,
+                                content=f"{headline}\n```markdown\n{snippet}\n```")
+            if file_path and os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    wh.add_file(file=f.read(),
+                                filename=os.path.basename(file_path))
+        resp = wh.execute()
+        print(f"Posted to Discord (HTTP {getattr(resp, 'status_code', '?')})")
+    except Exception as e:
+        kept = f" — report kept at {file_path}" if file_path else ""
+        print(f"(Discord post failed: {e}){kept}")
+
+
+def main() -> int:
+    to_file = "--to-file" in sys.argv
+    to_discord = "--discord" in sys.argv
+
+    report, stats, dense_lines = build_report()
+    print(report)
+
+    file_path = None
+    # --discord needs the file on disk when the report is attachment-sized.
+    if to_file or to_discord:
+        os.makedirs("reports", exist_ok=True)
+        stamp = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d_%H%M")
+        file_path = os.path.join("reports", f"floor_{stamp}.md")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(report)
+        print(f"\nWritten: {file_path}")
+
+    if to_discord:
+        post_discord(report, stats, dense_lines, file_path)
+
+    return 0   # webhook failure must never fail the scheduled run
 
 
 if __name__ == "__main__":

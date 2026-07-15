@@ -14,4 +14,5 @@ def run(script, timeout=180):
 
 run("report.py")
 run("universe.py")
+run("floor.py")
 print("--- end of scan ---")
