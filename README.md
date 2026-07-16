@@ -72,6 +72,14 @@ Open the **Live Trading Bot** tab, assign tickers to risk profiles, and press
 State survives restarts: on startup, `positions.json` is reconciled against
 `broker.get_positions()` — **the broker is the source of truth**.
 
+**Position ownership**: every position carries a `source` — `bot` (opened by
+the loop; fully managed, trailing stop ratchets), `ceo` (opened by an
+order sheet; **display-only** — the bot never replaces or cancels its legs,
+stops move only via `TIGHTEN_STOP` sheets), or `unknown`
+(reconciliation-adopted; display-only). The bot still observes all positions
+(exit-fill detection, `hard_exit_date` enforcement, manual overrides) —
+observation is not management.
+
 The daily-loss circuit breaker halts new entries when today's realized PnL
 (from the journal) drops below `daily_loss_limit_pct` of equity
 (default 3%, `bot_config.json`).

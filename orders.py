@@ -337,6 +337,9 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
                                  broker_order_id=str(bracket.id))
     positions[ticker] = {
         "in_position": True,
+        # Ownership: CEO positions are display-only for the bot. Its trailing
+        # logic must never replace this order's designed stop (Goal 11).
+        "source": "ceo",
         "entry_price": fill_price,
         "shares_held": qty,
         "trailing_stop_price": stop,

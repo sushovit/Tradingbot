@@ -29,6 +29,7 @@ import journal
 import risk
 import analyst
 import universe
+import position_mgmt
 from broker import Broker, BrokerError
 from strategies import enabled_strategies, Signal, Rejection
 
@@ -233,6 +234,8 @@ def reconcile_positions(broker, positions):
                 pass
             positions[symbol] = {
                 "in_position": True,
+                # Adopted with no local history: display-only, never managed.
+                "source": "unknown",
                 "entry_price": float(pos.avg_entry_price),
                 "shares_held": abs(float(pos.qty)),
                 "stop_order_id": stop_id,
@@ -530,31 +533,17 @@ def live_bot_worker():
                         status_updates.append(f"{ticker}: SOLD (manual)")
                         continue
 
-                    # 4) Trailing stop: ratchet the broker-side stop leg up.
-                    trailing_stop_type = risk_profile['trailing_stop_type']
-                    trailing_stop_value = risk_profile['trailing_stop_value']
-                    atr_series = ta.atr(df['high'], df['low'], df['close'], length=14)
-                    atr_value = (atr_series.dropna().iloc[-1]
-                                 if atr_series is not None and not atr_series.dropna().empty
-                                 else float('nan'))
-                    if trailing_stop_type == 'ATR' and not math.isnan(atr_value):
-                        new_stop = current_price - (atr_value * trailing_stop_value)
-                    else:
-                        new_stop = current_price * (1 - (trailing_stop_value / 100.0))
-
-                    if (new_stop > state.get("trailing_stop_price", 0)
-                            and new_stop < current_price and state.get("stop_order_id")):
-                        try:
-                            new_order = broker.replace_stop(state["stop_order_id"], new_stop)
-                            positions[ticker]["stop_order_id"] = str(new_order.id)
-                            positions[ticker]["trailing_stop_price"] = new_stop
-                            logger.info(f"{ticker}: trailing stop raised to ${new_stop:.2f}")
-                        except BrokerError as e:
-                            logger.warning(f"{ticker}: could not replace stop: {e}")
+                    # 4) Trailing stop: BOT positions only. CEO / unknown
+                    # positions are display-only — the bot never replaces
+                    # their legs (ownership boundary, Goal 11).
+                    position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
+                                                     state, df, risk_profile,
+                                                     current_price)
 
                     entry_price = state.get("entry_price", current_price)
                     pnl_percent = ((current_price / entry_price) - 1) * 100 if entry_price else 0.0
-                    status_updates.append(f"{ticker}: In Pos ({pnl_percent:+.2f}%)")
+                    owner = state.get("source", "unknown")
+                    status_updates.append(f"{ticker}: In Pos [{owner}] ({pnl_percent:+.2f}%)")
                 except BrokerError as e:
                     logger.error(f"{ticker}: broker error managing position: {e}")
                     status_updates.append(f"{ticker}: In Pos (broker retry)")
@@ -750,6 +739,7 @@ def live_bot_worker():
                                          decision_id=decision_id)
             positions[ticker] = {
                 "in_position": True,
+                "source": "bot",   # ownership: the bot manages ONLY its own entries
                 "entry_price": fill_price,
                 "shares_held": qty,
                 "trailing_stop_price": signal.stop,
