@@ -783,7 +783,8 @@ def live_bot_worker():
 # --- STREAMLIT UI ---
 # -----------------------------------------------------------------------------
 st.title("📈 Algorithmic Trading Suite")
-tab1, tab2, tab3 = st.tabs(["🤖 Live Trading Bot", "Backtesting Suite", "🔬 AI Analysis Tools"])
+tab1, tab2, tab3, tab4 = st.tabs(["🤖 Live Trading Bot", "Backtesting Suite",
+                                  "🔬 AI Analysis Tools", "🎓 Intern Desk"])
 
 # --- Dashboard helpers: observe + start/stop only. bot_config.json is the
 # single source of truth and is NEVER written from this UI. ---
@@ -1070,9 +1071,109 @@ with tab3:
                     with final_placeholder.container(border=True):
                          st.error("Could not make a final decision because one or more specialist agents failed.")
 
+with tab4:
+    import glob as _glob
+    import subprocess as _subprocess
+    import intern_desk
+
+    st.header("🎓 Intern Desk")
+    st.caption("Read-only. Trading stays CLI/scheduler-only; grades via "
+               "`python intern_desk.py grade ...`.")
+
+    # --- 1. Live run progress ---
+    status = intern_desk.read_status()
+    run_active = bool(status and status.get("active"))
+    if run_active:
+        done, total = status.get("done_count", 0), max(status.get("total", 1), 1)
+        st.progress(min(done / total, 1.0))
+        current = status.get("current_ticker") or "…"
+        st.markdown(f"**Interviewing {current} ({done}/{total})** — "
+                    f"model `{status.get('model', '?')}`")
+        lv = status.get("last_verdicts") or []
+        if lv:
+            st.caption(" · ".join(
+                f"{t}: {s}" + (f" ({c})" if c is not None else "")
+                for t, s, c in lv[-10:][::-1]))
+    elif status:
+        last = status.get("finished_at") or status.get("started_at") or "?"
+        st.caption(f"Desk idle — last run {str(last)[:16].replace('T', ' ')}")
+    else:
+        st.caption("Desk idle — no runs recorded yet.")
+
+    # The single allowed convenience: analysis-only run (never --trade).
+    if st.button("🧠 Run analysis now (no trading)", disabled=run_active):
+        _subprocess.Popen([r"tradingbot\Scripts\python.exe", "intern_desk.py"],
+                          cwd=os.getcwd(),
+                          creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0))
+        st.toast("Intern analysis started — progress appears above.", icon="🧠")
+        a_time.sleep(1); st.rerun()
+
+    st.divider()
+
+    # --- 2. Scoreboard (intern account) ---
+    st.subheader("📊 Scoreboard")
+    try:
+        _ib = Broker(account="intern")
+        _iacct = _ib.get_account()
+        _ieq = float(_iacct.equity)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Equity", f"${_ieq:,.2f}", delta=f"{_ieq - 2000.0:+,.2f} vs start")
+        c2.metric("Realized PnL (cum.)",
+                  f"${journal.desk_realized_pnl('INTERN'):+,.2f}")
+        _ipos = _ib.get_positions()
+        c3.metric("Open positions", len(_ipos))
+        if _ipos:
+            st.dataframe(pd.DataFrame([{
+                "Ticker": p.symbol, "Qty": float(p.qty),
+                "Entry": float(p.avg_entry_price),
+                "Current": float(getattr(p, "current_price", 0) or 0),
+                "Unreal. P/L $": float(getattr(p, "unrealized_pl", 0) or 0),
+            } for p in _ipos]), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.caption(f"Intern account unavailable: {e}")
+
+    # --- 3. Latest report ---
+    st.subheader("📄 Latest report")
+    _reports = sorted(_glob.glob(os.path.join("reports", "intern_*.md")))
+    if _reports:
+        try:
+            with open(_reports[-1], "r", encoding="utf-8") as f:
+                st.markdown(f.read())
+        except OSError as e:
+            st.caption(f"Could not read report: {e}")
+    else:
+        st.caption("No intern reports yet — first scheduled run is 15:35 ET.")
+
+    # --- 4. Verdict history + report card ---
+    st.subheader("🗂️ Verdict history & grades")
+    try:
+        _hist = journal.intern_history(limit=200)
+        if _hist:
+            card = intern_desk.build_report_card(_hist)
+            g1, g2, g3, g4 = st.columns(4)
+            g1.metric("Calls", card["total_calls"])
+            g2.metric("Graded", f"{card['graded']} "
+                      + (f"({card['grade_rate_pct']}%)" if card["grade_rate_pct"] is not None else ""))
+            g3.metric("Good", card["good"])
+            g4.metric("Good rate", f"{card['good_pct']}%" if card["good_pct"] is not None else "—")
+            st.dataframe(pd.DataFrame(_hist)[
+                ["date", "ticker", "stance", "conviction", "grade", "grade_note"]],
+                use_container_width=True, hide_index=True)
+        else:
+            st.caption("No intern calls recorded yet.")
+    except Exception as e:
+        st.caption(f"History unavailable: {e}")
+
 # --- FIX: Auto-refresh logic moved to the very end of the script ---
 is_running = os.path.exists(LOCK_FILE)
-if is_running:
-    a_time.sleep(15)
+intern_run_active = False
+try:
+    import intern_desk as _idesk
+    _st = _idesk.read_status()
+    intern_run_active = bool(_st and _st.get("active"))
+except Exception:
+    pass
+if is_running or intern_run_active:
+    a_time.sleep(10 if intern_run_active else 15)
     st.rerun()
 

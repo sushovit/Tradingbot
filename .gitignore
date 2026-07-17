@@ -18,6 +18,7 @@ server_startup.log
 portfolio_state.json
 positions.json
 intern_positions.json
+intern_status.json
 universe_today.json
 sheet.json
 configs/

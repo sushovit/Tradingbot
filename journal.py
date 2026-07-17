@@ -508,6 +508,15 @@ def intern_grade(date_str: str, ticker: str, grade: str, note: str = "") -> bool
         return cur.rowcount > 0
 
 
+def intern_history(limit: int = 200) -> list:
+    """All intern calls, newest first, with grades — the tab's history view."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM intern_grades ORDER BY date DESC, conviction DESC "
+            "LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def intern_calls(date_str: str = None) -> list:
     date_str = date_str or _today_et()
     with _lock, _connect() as conn:

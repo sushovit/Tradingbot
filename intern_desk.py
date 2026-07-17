@@ -48,6 +48,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 EASTERN_TZ = pytz.timezone("US/Eastern")
 UNIVERSE_FILE = "universe_today.json"
+STATUS_FILE = "intern_status.json"
+STATUS_FRESH_SECS = 60
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 LOCAL_MODEL = os.getenv("LOCAL_ANALYST_MODEL", "qwen3:4b")
 PER_TICKER_TIMEOUT = 20
@@ -112,6 +114,65 @@ def fetch_headlines(ticker: str) -> list:
         return [n["headline"] for n in news[:5]]
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------- run status
+
+def _write_status(status: dict):
+    """Rolling progress file for the dashboard. Best-effort — a status-write
+    failure must never affect the scan."""
+    try:
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(status, f)
+    except OSError as e:
+        logger.warning(f"could not write {STATUS_FILE}: {e}")
+
+
+def read_status(stale_secs: int = STATUS_FRESH_SECS):
+    """Parse intern_status.json for the dashboard.
+
+    Returns None if the file is missing or corrupt. Otherwise the payload
+    plus: active (bool — file fresher than stale_secs and run unfinished)
+    and age_secs."""
+    try:
+        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return None
+        age = time_now() - os.path.getmtime(STATUS_FILE)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    payload["age_secs"] = int(age)
+    payload["active"] = (age < stale_secs
+                         and payload.get("finished_at") is None
+                         and payload.get("done_count", 0) < payload.get("total", 0))
+    return payload
+
+
+def time_now() -> float:
+    """Wall clock, separated for tests."""
+    import time as _t
+    return _t.time()
+
+
+def build_report_card(rows: list) -> dict:
+    """Aggregate CEO grades into a report card. Pure — safe on empty input."""
+    card = {"total_calls": len(rows), "graded": 0, "good": 0, "bad": 0,
+            "ungradeable": 0, "grade_rate_pct": None, "good_pct": None,
+            "by_stance": {}}
+    for r in rows:
+        stance = r.get("stance") or "?"
+        card["by_stance"][stance] = card["by_stance"].get(stance, 0) + 1
+        grade = r.get("grade")
+        if grade in ("good", "bad", "ungradeable"):
+            card["graded"] += 1
+            card[grade] += 1
+    if card["total_calls"]:
+        card["grade_rate_pct"] = round(100 * card["graded"] / card["total_calls"], 1)
+    scored = card["good"] + card["bad"]
+    if scored:
+        card["good_pct"] = round(100 * card["good"] / scored, 1)
+    return card
 
 
 # ---------------------------------------------------------------- analysis
@@ -315,15 +376,31 @@ def run_desk(do_trade: bool = False) -> int:
         logger.warning(f"model warm-up failed (continuing): {e}")
 
     bars = fetch_daily_bars(tickers)
+    status = {"started_at": datetime.now(EASTERN_TZ).isoformat(),
+              "finished_at": None, "model": LOCAL_MODEL,
+              "current_ticker": None, "done_count": 0,
+              "total": len(tickers), "last_verdicts": []}
+    _write_status(status)
+
     verdicts, skipped = {}, {}
     for ticker in tickers:
+        status["current_ticker"] = ticker
+        _write_status(status)
         verdict, why = analyze_ticker(ticker, bars.get(ticker))
+        status["done_count"] += 1
         if verdict is None:
             skipped[ticker] = why
+            status["last_verdicts"] = (status["last_verdicts"]
+                                       + [[ticker, "skipped", None]])[-10:]
+            _write_status(status)
             logger.warning(f"{ticker}: skipped ({why})")
             print(f"  {ticker}: skipped ({why})")
             continue
         verdicts[ticker] = verdict
+        status["last_verdicts"] = (status["last_verdicts"]
+                                   + [[ticker, verdict["stance"],
+                                       verdict["conviction"]]])[-10:]
+        _write_status(status)
         print(f"  {ticker}: {verdict['stance']} conv={verdict['conviction']}")
         journal.log_decision(
             ticker, verdict.get("setup_name") or "intern_scan",
@@ -339,6 +416,10 @@ def run_desk(do_trade: bool = False) -> int:
             source="intern_desk")
         journal.intern_record(date_str, ticker, verdict["stance"],
                               verdict["conviction"])
+
+    status["current_ticker"] = None
+    status["finished_at"] = datetime.now(EASTERN_TZ).isoformat()
+    _write_status(status)
 
     report = build_markdown(date_str, verdicts, skipped)
 

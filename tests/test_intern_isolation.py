@@ -77,14 +77,16 @@ def test_intern_trader_pins_intern_account(fake_clients):
 # =============================================================================
 
 def test_main_desk_sources_never_reference_intern_account():
-    """orders.py's trading paths and the bot loop must never construct an
-    intern broker. (orders.sync's desk param defaults to main and is only
-    ever flipped by intern/report code paths.)"""
-    for fname in ("streamlit_app.py",):
-        with open(os.path.join(ROOT, fname), encoding="utf-8") as f:
-            src = f.read()
-        assert 'account="intern"' not in src and "account='intern'" not in src, \
-            f"{fname} reaches the intern account"
+    """orders.py's trading paths and the bot WORKER must never construct an
+    intern broker. The dashboard's Intern Desk tab may READ the intern
+    account (scoreboard) — display is not trading — so only the worker
+    section of streamlit_app.py is scanned."""
+    with open(os.path.join(ROOT, "streamlit_app.py"), encoding="utf-8") as f:
+        src = f.read()
+    worker_part = src.split("# --- STREAMLIT UI ---")[0]
+    assert 'account="intern"' not in worker_part \
+        and "account='intern'" not in worker_part, \
+        "bot worker reaches the intern account"
     # orders.py: only the sync() desk branch may mention intern; the order
     # EXECUTION path (execute_order + ingest, i.e. everything before the
     # exit-reconciliation section) must not.
