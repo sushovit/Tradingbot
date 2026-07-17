@@ -273,18 +273,34 @@ def post_discord(report: str, file_path: str, headline: str):
 
 # ---------------------------------------------------------------- commands
 
-def run_desk() -> int:
-    journal.init_db()
-    date_str = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+MAX_SCAN_TICKERS = 40
+
+
+def build_scan_list() -> list:
+    """Union of today's universe candidates (first) and the full
+    core_watchlist from bot_config.json, deduped, capped at 40."""
+    universe_syms = []
     try:
         with open(UNIVERSE_FILE, "r") as f:
-            candidates = json.load(f).get("candidates", [])
+            universe_syms = [c["symbol"] for c in json.load(f).get("candidates", [])]
     except (FileNotFoundError, json.JSONDecodeError):
-        print(f"{UNIVERSE_FILE} missing/invalid — run 'python universe.py' first.")
-        return 1
-    tickers = [c["symbol"] for c in candidates]
+        pass
+    watchlist = []
+    try:
+        with open("bot_config.json", "r") as f:
+            watchlist = json.load(f).get("universe", {}).get("core_watchlist", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return list(dict.fromkeys(universe_syms + watchlist))[:MAX_SCAN_TICKERS]
+
+
+def run_desk(do_trade: bool = False) -> int:
+    journal.init_db()
+    date_str = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    tickers = build_scan_list()
     if not tickers:
-        print("Universe is empty — nothing to scan.")
+        print("No tickers to scan — run 'python universe.py' first or add a "
+              "core_watchlist to bot_config.json.")
         return 1
 
     print(f"Intern desk scanning {len(tickers)} tickers with {LOCAL_MODEL}...")
@@ -325,6 +341,22 @@ def run_desk() -> int:
                               verdict["conviction"])
 
     report = build_markdown(date_str, verdicts, skipped)
+
+    # --- Trading desk (12b): his one entry/day + closes of his own book.
+    # Lazy import: the analysis path stays free of trading modules.
+    if do_trade:
+        import intern_trader
+        trade_lines = ["\n## Trading desk (intern account)"]
+        try:
+            trade_lines += intern_trader.close_own_positions(verdicts)
+        except Exception as e:
+            trade_lines.append(f"Close pass failed: {e}")
+        try:
+            trade_lines.append(intern_trader.execute_trade(verdicts))
+        except Exception as e:
+            trade_lines.append(f"Trade pass failed: {e}")
+        report += "\n" + "\n".join(trade_lines)
+
     os.makedirs("reports", exist_ok=True)
     file_path = os.path.join("reports", f"intern_{date_str}.md")
     with open(file_path, "w", encoding="utf-8") as f:
@@ -361,7 +393,13 @@ def main() -> int:
     args = sys.argv[1:]
     if args and args[0] == "grade":
         return grade_cmd(args[1:])
-    return run_desk()
+    if args and args[0] == "override-close":
+        if len(args) < 3:
+            print('Usage: python intern_desk.py override-close <ticker> "reason"')
+            return 1
+        import intern_trader
+        return intern_trader.override_close(args[1], args[2])
+    return run_desk(do_trade="--trade" in args)
 
 
 if __name__ == "__main__":

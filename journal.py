@@ -290,13 +290,31 @@ def trade_exists_for_order(broker_order_id: str) -> bool:
         return row is not None
 
 
-def last_buy_for_ticker(ticker: str):
-    """Most recent journaled BUY for a ticker (dict) or None."""
+def last_buy_for_ticker(ticker: str, reason_prefix: str = None):
+    """Most recent journaled BUY for a ticker (dict) or None. With
+    reason_prefix, only BUYs from that desk match (e.g. 'INTERN') — keeps
+    intern-account syncs from pairing against main-desk entries."""
+    with _lock, _connect() as conn:
+        if reason_prefix:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE ticker=? AND action='BUY' "
+                "AND reason LIKE ? ORDER BY id DESC LIMIT 1",
+                (ticker, f"{reason_prefix}%")).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE ticker=? AND action='BUY' "
+                "ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
+        return dict(row) if row else None
+
+
+def desk_realized_pnl(reason_prefix: str) -> float:
+    """Cumulative realized PnL for one desk's exits (reason prefix match)."""
     with _lock, _connect() as conn:
         row = conn.execute(
-            "SELECT * FROM trades WHERE ticker=? AND action='BUY' "
-            "ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
-        return dict(row) if row else None
+            "SELECT COALESCE(SUM(pnl_usd), 0) AS pnl FROM trades "
+            "WHERE action='SELL' AND reason LIKE ?",
+            (f"{reason_prefix}%",)).fetchone()
+        return float(row["pnl"])
 
 
 def find_unmatched_sell(ticker: str, qty: float, price: float,

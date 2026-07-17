@@ -488,24 +488,30 @@ def _exit_reason_for_order(order) -> str:
     return "Exit (synced)"
 
 
-def sync(broker=None) -> int:
+def sync(broker=None, desk: str = "main") -> int:
     """Reconcile broker SELL fills into the journal. Idempotent:
 
     - every synced trade stores its Alpaca order id; already-seen ids are skipped
     - live exits the bot already journaled (matched by ticker/qty/price) are
       backfilled with the order id instead of duplicated
     - last_sync (journal meta) narrows the query window, minus an overlap
+
+    desk="intern" syncs the intern account: BUY-pairing filters to
+    intern-desk trades and main positions.json is left alone.
     """
     journal.init_db()
+    is_intern = desk == "intern"
+    reason_prefix = "INTERN" if is_intern else None
     if broker is None:
         from broker import Broker
         try:
-            broker = Broker()
+            broker = Broker(account="intern" if is_intern else "main")
         except Exception as e:
             print(f"CANNOT REACH BROKER (paper account): {e}")
             return 1
 
-    last_sync = journal.get_meta(LAST_SYNC_KEY)
+    last_sync = journal.get_meta(f"{LAST_SYNC_KEY}_intern" if is_intern
+                                 else LAST_SYNC_KEY)
     now_utc = datetime.now(timezone.utc)
     if last_sync:
         try:
@@ -521,11 +527,12 @@ def sync(broker=None) -> int:
         print(f"Could not fetch closed orders: {e}")
         return 1
 
-    corrected = journal.apply_fill_corrections(WEEK1_FILL_CORRECTIONS)
-    if corrected:
-        print(f"Corrected {corrected} journaled BUY fill price(s) (week-1 migration).")
+    if not is_intern:
+        corrected = journal.apply_fill_corrections(WEEK1_FILL_CORRECTIONS)
+        if corrected:
+            print(f"Corrected {corrected} journaled BUY fill price(s) (week-1 migration).")
 
-    positions = _load_positions()
+    positions = {} if is_intern else _load_positions()
     synced = 0
 
     # --- Pass 1: BUY fills — correct journaled entries to the actual fill ---
@@ -541,6 +548,8 @@ def sync(broker=None) -> int:
             if journal.fix_buy_fill(existing["id"], price):
                 print(f"CORRECTED BUY {order.symbol}: journal -> actual fill ${price:.2f}")
             continue
+        if is_intern:
+            continue   # intern BUYs store their order id at entry
         tid = journal.find_buy_without_order_id(
             order.symbol, float(getattr(order, "filled_qty", 0) or 0))
         if tid is not None:
@@ -571,12 +580,14 @@ def sync(broker=None) -> int:
             journal.set_trade_order_id(existing, oid)
             continue
 
-        buy = journal.last_buy_for_ticker(ticker)
+        buy = journal.last_buy_for_ticker(ticker, reason_prefix=reason_prefix)
         entry = float(buy["price"]) if buy else price
         decision_id = buy.get("decision_id") if buy else None
         pnl_usd = (price - entry) * qty
         pnl_pct = ((price / entry) - 1) * 100 if entry else 0.0
         reason = _exit_reason_for_order(order)
+        if is_intern:
+            reason = f"INTERN {reason}"
 
         trade_id = journal.log_trade(ticker, "SELL", qty, price,
                                      pnl_usd=pnl_usd, pnl_pct=pnl_pct,
@@ -589,9 +600,12 @@ def sync(broker=None) -> int:
         print(f"SYNCED SELL {ticker}: {qty:g} @ ${price:.2f} "
               f"({reason}) PnL ${pnl_usd:+.2f}")
 
-    journal.set_meta(LAST_SYNC_KEY, now_utc.isoformat())
-    _save_positions(positions)
-    print(f"Sync complete: {synced} exit(s) journaled.")
+    journal.set_meta(f"{LAST_SYNC_KEY}_intern" if is_intern else LAST_SYNC_KEY,
+                     now_utc.isoformat())
+    if not is_intern:
+        _save_positions(positions)
+    print(f"Sync complete: {synced} exit(s) journaled." +
+          (" [intern]" if is_intern else ""))
     return 0
 
 

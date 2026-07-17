@@ -151,6 +151,44 @@ def build_report() -> str:
     except Exception as e:
         lines.append(f"_Journal unavailable: {e}_")
 
+    # --- Intern account (his public scoreboard) ---
+    lines.append("\n## Intern account")
+    try:
+        from broker import Broker as _B
+        intern_broker = _B(account="intern")
+        try:
+            import orders
+            orders.sync(broker=intern_broker, desk="intern")
+        except Exception as e:
+            lines.append(f"_Intern sync failed: {e}_")
+        iacct = intern_broker.get_account()
+        iequity = float(iacct.equity)
+        start_capital = 2000.0
+        delta = iequity - start_capital
+        lines.append(f"**Equity:** ${iequity:,.2f} "
+                     f"({delta:+,.2f} vs ${start_capital:,.0f} start) | "
+                     f"**Realized PnL (cumulative):** "
+                     f"${journal.desk_realized_pnl('INTERN'):+,.2f}")
+        ipos = intern_broker.get_positions()
+        if ipos:
+            lines.append("| Ticker | Qty | Entry | Current | Unrealized PnL |")
+            lines.append("|---|---|---|---|---|")
+            for p in ipos:
+                lines.append(f"| {p.symbol} | {p.qty} | ${float(p.avg_entry_price):,.2f} "
+                             f"| ${float(p.current_price):,.2f} "
+                             f"| ${float(p.unrealized_pl):,.2f} "
+                             f"({float(p.unrealized_plpc) * 100:+.2f}%) |")
+        else:
+            lines.append("_No open positions._")
+        ifills = [t for t in journal.todays_trades()
+                  if str(t.get("reason", "")).startswith("INTERN")]
+        if ifills:
+            lines.append("Today's intern fills: " + "; ".join(
+                f"{t['action']} {t['qty']:g} {t['ticker']} @ ${t['price']:,.2f}"
+                for t in ifills))
+    except Exception as e:
+        lines.append(f"_Intern account unavailable: {e}_")
+
     # --- Analyst shadow performance ---
     lines.append("\n## Analyst shadow performance")
     try:

@@ -76,15 +76,33 @@ def _retry(fn, *args, attempts: int = 3, what: str = "broker call", **kwargs):
     raise BrokerError(f"{what} failed after {attempts} attempts: {last_err}")
 
 
+VALID_ACCOUNTS = ("main", "intern")
+
+
 class Broker:
-    def __init__(self, api_key: str = None, secret_key: str = None):
+    """One PAPER account handle. account="main" (default) uses ALPACA_* keys;
+    account="intern" uses INTERN_ALPACA_* keys — the intern's separate book.
+    Each instance owns its own clients; no shared mutable state between
+    accounts."""
+
+    def __init__(self, api_key: str = None, secret_key: str = None,
+                 account: str = "main"):
         _assert_paper_only()
-        api_key = api_key or os.getenv("ALPACA_API_KEY")
-        secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
-        if not api_key or not secret_key:
+        if account not in VALID_ACCOUNTS:
+            raise ValueError(f"Unknown account '{account}' — use one of {VALID_ACCOUNTS}")
+        self.account = account
+        if account == "intern":
+            api_key = api_key or os.getenv("INTERN_ALPACA_API_KEY")
+            secret_key = secret_key or os.getenv("INTERN_ALPACA_SECRET_KEY")
+            key_names = "INTERN_ALPACA_API_KEY / INTERN_ALPACA_SECRET_KEY"
+        else:
+            api_key = api_key or os.getenv("ALPACA_API_KEY")
+            secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
+            key_names = "ALPACA_API_KEY / ALPACA_SECRET_KEY"
+        if not api_key or not secret_key or api_key.startswith("your-"):
             raise RuntimeError(
-                "ALPACA_API_KEY / ALPACA_SECRET_KEY not set in .env — "
-                "create paper-trading keys at https://app.alpaca.markets (Paper account)."
+                f"{key_names} not set in .env — create paper-trading keys at "
+                "https://app.alpaca.markets (Paper account)."
             )
         # paper=True is deliberate and non-configurable.
         self.trading = TradingClient(api_key, secret_key, paper=True)
@@ -321,3 +339,7 @@ class Broker:
         if df is None or df.empty:
             raise BrokerError(f"No recent price data for {ticker}")
         return float(df["close"].iloc[-1])
+
+
+def get_broker(account: str = "main") -> Broker:
+    return Broker(account=account)
