@@ -36,11 +36,61 @@ JUNIOR_ANALYST_ADDENDUM = (
 )
 
 
+# The intern desk is a DIFFERENT job from shadow-gatekeeping: an independent
+# daily scan, graded by the CEO on reasoning quality, not on agreement with
+# anyone. Same honesty contract: uncertainty stated beats confident wrongness.
+INTERN_DESK_ADDENDUM = (
+    "ROLE CONTEXT: You are a junior analyst producing your OWN independent "
+    "daily scan. Nobody trades on your word automatically — your calls are "
+    "recorded and graded later by a senior trader on the QUALITY OF YOUR "
+    "REASONING and whether your risk framing was honest, not on whether you "
+    "agreed with anyone. A 'no_trade' with a clear reason is a perfectly "
+    "good answer. If the evidence is mixed, say so and lower your "
+    "conviction; you are penalized only for confident wrongness. Every "
+    "long_setup or short_setup MUST state its invalidation level (the price "
+    "where the idea is wrong) — an idea without an invalidation is ungradeable."
+)
+
+INTERN_DESK_REQUIRED_KEYS = ["stance", "setup_name", "conviction",
+                             "invalidation", "key_risk", "reasoning"]
+
+
+def build_intern_desk_prompt(ticker: str, candle_data_str: str,
+                             metrics_str: str, news_str: str) -> str:
+    return f"""DAILY SCAN — {ticker} (daily bars, most recent last)
+
+=== LAST 20 DAILY CANDLES ===
+{candle_data_str}
+
+=== DERIVED METRICS ===
+{metrics_str}
+
+=== RECENT HEADLINES ===
+{news_str}
+
+Assess this ticker for the NEXT few sessions. Playbook setups you may cite:
+trend_continuation, momentum_continuation, mean_reversion_reclaim — or null
+if none applies.
+
+Return JSON with exactly these keys:
+{{
+  "stance": "long_setup" or "short_setup" or "no_trade",
+  "setup_name": "trend_continuation"|"momentum_continuation"|"mean_reversion_reclaim"|null,
+  "conviction": integer 0-100,
+  "invalidation": price level where the idea is wrong, or null for no_trade,
+  "key_risk": one short phrase,
+  "reasoning": at most 3 sentences
+}}"""
+
+
 def get_system_prompt(role: str = "gatekeeper") -> str:
     """Role-specific system prompt. 'gatekeeper' (Claude) is unchanged;
-    'junior_analyst' (local model) gets the observed-analyst framing."""
+    'junior_analyst' (local shadow) gets the observed-analyst framing;
+    'intern_desk' gets the independent-scan framing."""
     if role == "junior_analyst":
         return GATEKEEPER_SYSTEM_PROMPT + "\n\n" + JUNIOR_ANALYST_ADDENDUM
+    if role == "intern_desk":
+        return GATEKEEPER_SYSTEM_PROMPT + "\n\n" + INTERN_DESK_ADDENDUM
     return GATEKEEPER_SYSTEM_PROMPT
 
 

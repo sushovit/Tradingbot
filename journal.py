@@ -86,6 +86,18 @@ def init_db():
                 value TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS intern_grades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                stance TEXT,
+                conviction INTEGER,
+                grade TEXT,
+                grade_note TEXT,
+                UNIQUE(date, ticker)
+            )
+        """)
         # Migration: older DBs may lack the source/agreement columns.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(decisions)")}
         if "source" not in cols:
@@ -451,6 +463,39 @@ def todays_trades(date_str: str = None) -> list:
             "SELECT * FROM trades WHERE timestamp LIKE ? ORDER BY id",
             (f"{date_str}%",),
         ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def intern_record(date_str: str, ticker: str, stance: str, conviction):
+    """One row per (date, ticker) intern call. Re-running the desk updates
+    stance/conviction but PRESERVES any grade the CEO already gave."""
+    with _lock, _connect() as conn:
+        conn.execute(
+            """INSERT INTO intern_grades (date, ticker, stance, conviction)
+               VALUES (?,?,?,?)
+               ON CONFLICT(date, ticker) DO UPDATE SET
+                 stance=excluded.stance, conviction=excluded.conviction""",
+            (date_str, ticker.upper(), stance,
+             int(conviction) if isinstance(conviction, (int, float)) else None))
+        conn.commit()
+
+
+def intern_grade(date_str: str, ticker: str, grade: str, note: str = "") -> bool:
+    """CEO session grade for one intern call. Returns False if no such row."""
+    with _lock, _connect() as conn:
+        cur = conn.execute(
+            "UPDATE intern_grades SET grade=?, grade_note=? WHERE date=? AND ticker=?",
+            (grade, note, date_str, ticker.upper()))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def intern_calls(date_str: str = None) -> list:
+    date_str = date_str or _today_et()
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM intern_grades WHERE date=? ORDER BY conviction DESC",
+            (date_str,)).fetchall()
         return [dict(r) for r in rows]
 
 
