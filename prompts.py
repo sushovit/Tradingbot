@@ -72,14 +72,26 @@ Assess this ticker for the NEXT few sessions. Playbook setups you may cite:
 trend_continuation, momentum_continuation, mean_reversion_reclaim — or null
 if none applies.
 
-Return JSON with exactly these keys:
+CONVICTION CALIBRATION — score LAST, after your reasoning, so the score
+follows from the reasoning. Anchors:
+  30 = setup exists but weak / contra-regime
+  50 = valid setup, meaningful doubts
+  65 = good setup, one clear concern
+  75 = strong setup, minor concerns
+  85+ = exceptional confluence
+Use the FULL range; two verdicts should rarely share the same score.
+Conviction applies to WHATEVER stance you take: for no_trade it is your
+confidence that standing aside is correct (a dead, choppy chart is a
+HIGH-conviction no_trade) — never default it to 0.
+
+Return JSON with exactly these keys, in this order:
 {{
   "stance": "long_setup" or "short_setup" or "no_trade",
   "setup_name": "trend_continuation"|"momentum_continuation"|"mean_reversion_reclaim"|null,
-  "conviction": integer 0-100,
   "invalidation": price level where the idea is wrong, or null for no_trade,
   "key_risk": one short phrase,
-  "reasoning": at most 3 sentences
+  "reasoning": at most 3 sentences,
+  "conviction": integer 0-100 (calibrated per the anchors above, scored AFTER reasoning)
 }}"""
 
 
