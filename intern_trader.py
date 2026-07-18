@@ -65,6 +65,13 @@ def _today_et() -> str:
     return datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
 
 
+def is_trading_day(dt=None) -> bool:
+    """Weekend guard: no entries when the market is closed (weekday check;
+    exchange holidays still fall through to the broker's rejection)."""
+    dt = dt or datetime.now(EASTERN_TZ)
+    return dt.weekday() < 5
+
+
 def _journal_intern_rejection(ticker: str, setup_name, reason: str,
                               context: dict) -> None:
     journal.log_decision(
@@ -105,6 +112,16 @@ def _intern_daily_pnl(broker) -> float:
 def execute_trade(verdicts: dict, broker: Broker = None) -> str:
     """The intern's one allowed entry per day. Returns a report line."""
     journal.init_db()
+
+    # Weekend runs are analysis-only: --trade must no-op cleanly, journaled.
+    if not is_trading_day():
+        journal.log_decision(
+            "NONE", "intern_trade", {"date": _today_et()},
+            {"approved": False, "rejection_reason": "market_closed",
+             "reasoning": "Non-trading day — analysis only, no entry attempted.",
+             "source": "intern"},
+            source="intern")
+        return "Trade: skipped — market closed (non-trading day)."
 
     if already_traded_today():
         return "Trade: skipped — already entered a position today (1/day max)."

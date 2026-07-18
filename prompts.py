@@ -46,13 +46,21 @@ INTERN_DESK_ADDENDUM = (
     "REASONING and whether your risk framing was honest, not on whether you "
     "agreed with anyone. A 'no_trade' with a clear reason is a perfectly "
     "good answer. If the evidence is mixed, say so and lower your "
-    "conviction; you are penalized only for confident wrongness. Every "
+    "conviction. You are NOT penalized for a confident YES that is "
+    "well-reasoned; you are penalized for scores that don't match your "
+    "stated reasoning — in either direction. Every "
     "long_setup or short_setup MUST state its invalidation level (the price "
     "where the idea is wrong) — an idea without an invalidation is ungradeable."
 )
 
 INTERN_DESK_REQUIRED_KEYS = ["stance", "setup_name", "conviction",
                              "invalidation", "key_risk", "reasoning"]
+
+# Bump when the intern prompt's SEMANTICS change, so training-data exports
+# can segment rows. v1: no_trade conviction implicitly 0. v2 (2026-07-18):
+# conviction = confidence in the STATED stance (no_trade included), new
+# anchor ladder, reasoning-first derivation, rebalanced honesty framing.
+INTERN_PROMPT_VERSION = 2
 
 
 def build_intern_desk_prompt(ticker: str, candle_data_str: str,
@@ -72,17 +80,26 @@ Assess this ticker for the NEXT few sessions. Playbook setups you may cite:
 trend_continuation, momentum_continuation, mean_reversion_reclaim — or null
 if none applies.
 
-CONVICTION CALIBRATION — score LAST, after your reasoning, so the score
-follows from the reasoning. Anchors:
-  30 = setup exists but weak / contra-regime
-  50 = valid setup, meaningful doubts
-  65 = good setup, one clear concern
-  75 = strong setup, minor concerns
-  85+ = exceptional confluence
-Use the FULL range; two verdicts should rarely share the same score.
-Conviction applies to WHATEVER stance you take: for no_trade it is your
-confidence that standing aside is correct (a dead, choppy chart is a
-HIGH-conviction no_trade) — never default it to 0.
+CONVICTION CALIBRATION — score conviction 0-100 using the FULL range.
+Anchors:
+  15 = barely a setup, mostly noise
+  30 = setup exists but weak or contra-regime
+  50 = valid setup with meaningful doubts
+  60 = decent setup, several concerns
+  70 = good setup, one clear concern
+  80 = strong setup, minor concerns
+  90+ = exceptional confluence, rare
+Your score must FOLLOW from your reasoning: state reasoning first, then
+derive the number. The anchors are reference points, NOT a menu — almost
+every honest score falls BETWEEN anchors (e.g. 43, 58, 67, 77, 82).
+Two different tickers should rarely receive identical scores; if your last
+few scores look alike, re-derive this one from its own reasoning.
+no_trade verdicts carry your real conviction IN the no-trade call, scored
+on the same ladder applied to your confidence that standing aside is
+correct — never auto-zero.
+You are not penalized for a confident YES that is well-reasoned; you are
+penalized for scores that don't match your stated reasoning — in either
+direction.
 
 Return JSON with exactly these keys, in this order:
 {{

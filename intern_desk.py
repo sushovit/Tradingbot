@@ -37,7 +37,7 @@ from dotenv import load_dotenv
 
 import journal
 from prompts import (get_system_prompt, build_intern_desk_prompt,
-                     INTERN_DESK_REQUIRED_KEYS)
+                     INTERN_DESK_REQUIRED_KEYS, INTERN_PROMPT_VERSION)
 
 load_dotenv()
 logging.basicConfig(level=logging.WARNING)
@@ -404,7 +404,11 @@ def run_desk(do_trade: bool = False) -> int:
         print(f"  {ticker}: {verdict['stance']} conv={verdict['conviction']}")
         journal.log_decision(
             ticker, verdict.get("setup_name") or "intern_scan",
-            {"metrics": verdict.pop("metrics", {}), "date": date_str},
+            # prompt_version segments training-data exports: v1 rows have
+            # no_trade conviction ~0; v2+ conviction = confidence in the
+            # stated stance (see prompts.INTERN_PROMPT_VERSION).
+            {"metrics": verdict.pop("metrics", {}), "date": date_str,
+             "prompt_version": INTERN_PROMPT_VERSION},
             {"approved": verdict["stance"] == "long_setup",
              "conviction_score": verdict["conviction"],
              "stance": verdict["stance"],

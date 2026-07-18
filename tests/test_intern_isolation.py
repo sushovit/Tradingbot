@@ -152,6 +152,12 @@ def test_bot_management_ignores_non_bot_sources():
 # (d)(e)(f) intern trade-path rejections — all journaled
 # =============================================================================
 
+@pytest.fixture(autouse=True)
+def _pretend_trading_day(monkeypatch):
+    """Trade-path tests simulate a trading day regardless of when the suite
+    runs (the weekend guard has its own dedicated tests)."""
+    monkeypatch.setattr(intern_trader, "is_trading_day", lambda dt=None: True)
+
 def _rules_rows(j):
     conn = sqlite3.connect(j.DB_FILE)
     conn.row_factory = sqlite3.Row

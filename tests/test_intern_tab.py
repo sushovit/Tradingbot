@@ -99,3 +99,54 @@ def pytest_approx(v):
 
 def test_intern_history_empty(temp_journal):
     assert temp_journal.intern_history() == []
+
+
+# =============================================================================
+# Conviction calibration v2 — prompt version + weekend guard
+# =============================================================================
+
+def test_prompt_version_exported_and_v2():
+    import prompts
+    assert prompts.INTERN_PROMPT_VERSION == 2
+    assert intern_desk.INTERN_PROMPT_VERSION == 2
+    # The v2 anchors and rebalanced framing are actually in the prompt.
+    p = prompts.build_intern_desk_prompt("NVDA", "candles", "metrics", "news")
+    for anchor in ("15 = barely a setup", "70 = good setup, one clear concern",
+                   "90+ = exceptional confluence", "never auto-zero",
+                   "scores that don't match your stated reasoning"):
+        assert anchor in p, f"missing anchor text: {anchor}"
+
+
+def test_weekend_guard_trade_is_clean_noop(temp_journal, monkeypatch):
+    import sqlite3
+    from datetime import datetime
+    import intern_trader
+
+    # Saturday 2026-07-18 in ET.
+    monkeypatch.setattr(intern_trader, "is_trading_day", lambda dt=None: False)
+
+    class NeverBroker:
+        def __getattr__(self, name):
+            raise AssertionError("broker must not be touched on a weekend")
+
+    line = intern_trader.execute_trade(
+        {"NVDA": {"stance": "long_setup", "setup_name": "momentum_continuation",
+                  "conviction": 95, "invalidation": 90.0, "key_risk": "r",
+                  "reasoning": "great"}},
+        broker=NeverBroker())
+    assert "market closed" in line
+
+    conn = sqlite3.connect(temp_journal.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM decisions WHERE source='intern'").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert "market_closed" in rows[0]["verdict"]
+
+
+def test_weekday_is_trading_day():
+    import intern_trader
+    from datetime import datetime
+    assert intern_trader.is_trading_day(datetime(2026, 7, 17)) is True   # Fri
+    assert intern_trader.is_trading_day(datetime(2026, 7, 18)) is False  # Sat
+    assert intern_trader.is_trading_day(datetime(2026, 7, 19)) is False  # Sun
