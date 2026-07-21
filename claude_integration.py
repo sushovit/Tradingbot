@@ -6,15 +6,33 @@ import time
 import logging
 from datetime import datetime, timedelta
 
+from dotenv import load_dotenv
+
 from prompts import (
     GATEKEEPER_SYSTEM_PROMPT,
     build_gatekeeper_user_prompt,
 )
 
+# Load .env at import time so the key is available regardless of whether the
+# importing module has called load_dotenv() yet (it may import us first).
+load_dotenv()
+
 # --- Configuration ---
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 logger = logging.getLogger(__name__)
+
+# Client is built lazily and cached, reading the key fresh so a late-loaded
+# .env or a rotated key is picked up without a module reload.
+_claude_client = None
+
+
+def _get_client():
+    """Return a cached Anthropic client, or None if no API key is configured."""
+    global _claude_client
+    if _claude_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if api_key:
+            _claude_client = anthropic.Anthropic(api_key=api_key)
+    return _claude_client
 
 
 # =============================================================================
@@ -23,13 +41,14 @@ logger = logging.getLogger(__name__)
 
 def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> dict:
     """Calls Claude claude-sonnet-4-6 synchronously with retry logic. Returns a parsed dict."""
-    if not ANTHROPIC_API_KEY or not claude_client:
+    client = _get_client()
+    if not client:
         return {"error": "ANTHROPIC_API_KEY not found in environment variables."}
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = claude_client.messages.create(
+            response = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=max_tokens,
                 system=system_prompt,
