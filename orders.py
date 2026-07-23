@@ -52,6 +52,11 @@ CONFIG_FILE = "bot_config.json"
 POSITIONS_STATE_FILE = "positions.json"
 
 VALID_ACTIONS = {"BUY", "SELL", "HOLD", "TIGHTEN_STOP", "TAKE_PARTIAL", "CLOSE"}
+
+# Goal 13: a sheet built on a stale reference (5-day-old MRVL price, 7% off
+# live) must never reach the broker. Entries are checked against the LIVE
+# last trade at ingest.
+STALE_PRICE_TOLERANCE_PCT = 2.0
 VALID_SETUPS = {"trend_continuation", "momentum_continuation",
                 "mean_reversion_reclaim", "event_flow", "discretionary"}
 
@@ -408,6 +413,36 @@ def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None
                                     position_cap_pct=risk.max_position_pct(config))
         if ok and action == "BUY" and block_reason:
             ok, reason = False, f"no_new_trades_if:{block_reason}"
+
+        # Goal 13 price-freshness guard: EVERY entry is checked against the
+        # live last trade before anything reaches the broker.
+        if ok and action == "BUY" and not dry_run and broker is not None:
+            setup = order.get("setup", "discretionary")
+            try:
+                live = broker.get_latest_price(ticker)
+                entry_ref = float(order.get("entry"))
+                drift_pct = abs(live - entry_ref) / entry_ref * 100
+                if drift_pct > STALE_PRICE_TOLERANCE_PCT:
+                    ok, reason = False, "stale_reference_price"
+                    print(f"REJECTED {ticker}: sheet entry ${entry_ref:,.2f} vs "
+                          f"LIVE ${live:,.2f} ({drift_pct:+.1f}% drift > "
+                          f"{STALE_PRICE_TOLERANCE_PCT}%) — reference is stale.")
+                    journal.log_rules_pass(
+                        ticker, setup, "stale_reference_price",
+                        f"sheet entry {entry_ref:.2f} vs live {live:.2f} "
+                        f"({drift_pct:.1f}% drift)")
+                elif float(order.get("stop")) >= live:
+                    ok, reason = False, "stop_at_or_above_live_price"
+                    print(f"REJECTED {ticker}: stop ${float(order.get('stop')):,.2f} "
+                          f">= LIVE ${live:,.2f} — stop must be below live for longs.")
+                    journal.log_rules_pass(
+                        ticker, setup, "stop_at_or_above_live_price",
+                        f"stop {float(order.get('stop')):.2f} vs live {live:.2f}")
+            except Exception as e:
+                # No live quote -> protective default: don't enter.
+                ok, reason = False, "live_price_unavailable"
+                journal.log_rules_pass(ticker, setup, "live_price_unavailable",
+                                       f"quote fetch failed: {e}")
 
         # Playbook Rule #3 (gap-abort): the CEO can mark an entry invalid if
         # price has already gapped below the setup's structure.

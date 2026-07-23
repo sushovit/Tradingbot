@@ -63,6 +63,23 @@ def looks_like_etf(name: str) -> bool:
     return any(marker in upper for marker in _ETF_NAME_MARKERS)
 
 
+def prior_completed_close(df, today_str: str = None):
+    """Close of the last COMPLETED session. During market hours the newest
+    daily bar is today's partial bar — using it as the change base produces
+    wrong moves; mixing it with screener changes produced the Goal 13 stale-
+    price incident. Returns None if not derivable."""
+    if df is None or len(df) == 0:
+        return None
+    today_str = today_str or datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    try:
+        last_bar_day = str(df.index[-1])[:10]
+    except Exception:
+        return float(df["close"].iloc[-1])
+    if last_bar_day == today_str:
+        return float(df["close"].iloc[-2]) if len(df) >= 2 else None
+    return float(df["close"].iloc[-1])
+
+
 # =============================================================================
 # PURE FILTER/RANK + SETUP CLASSIFICATION (unit tested, no network)
 # =============================================================================
@@ -177,17 +194,23 @@ def fetch_candidates(broker, config: dict) -> list:
         logger.warning(f"asset metadata unavailable: {e}")
 
     bars = broker.get_daily_bars(ticker_list, lookback_days=30)
+    live_prices = {}
+    try:
+        live_prices = broker.get_latest_prices(ticker_list)
+    except Exception as e:
+        logger.warning(f"live prices unavailable, falling back to bars: {e}")
 
     candidates = []
     for sym in ticker_list:
         df = bars.get(sym)
         if df is None or df.empty or len(df) < 2:
             continue
-        closes = df["close"]
-        last_price = float(closes.iloc[-1])
+        # LIVE last trade is the price of record; bar close is only a fallback.
+        last_price = live_prices.get(sym) or float(df["close"].iloc[-1])
         avg_dollar_volume = float((df["close"] * df["volume"]).tail(20).mean())
-        change_pct = symbols[sym].get("change_pct") or float(
-            (closes.iloc[-1] / closes.iloc[-2] - 1) * 100)
+        prior = prior_completed_close(df)
+        change_pct = symbols[sym].get("change_pct") or (
+            float((last_price / prior - 1) * 100) if prior else 0.0)
         asset = assets.get(sym, {})
         candidates.append({
             "symbol": sym,
@@ -217,6 +240,11 @@ def fetch_core_candidates(broker, config: dict) -> list:
     except Exception as e:
         logger.warning(f"asset metadata unavailable for core watchlist: {e}")
     bars = broker.get_daily_bars(watchlist, lookback_days=45)
+    live_prices = {}
+    try:
+        live_prices = broker.get_latest_prices(watchlist)
+    except Exception as e:
+        logger.warning(f"live prices unavailable for watchlist: {e}")
 
     candidates = []
     for sym in watchlist:
@@ -226,14 +254,14 @@ def fetch_core_candidates(broker, config: dict) -> list:
         flag = classify_core_setup(df, config)
         if flag is None:
             continue
-        closes = df["close"]
         asset = assets.get(sym, {})
+        live = live_prices.get(sym) or float(df["close"].iloc[-1])
+        prior = prior_completed_close(df)
         candidates.append({
             "symbol": sym,
-            "price": float(closes.iloc[-1]),
+            "price": live,
             "avg_dollar_volume": float((df["close"] * df["volume"]).tail(20).mean()),
-            "change_pct": float((closes.iloc[-1] / closes.iloc[-2] - 1) * 100)
-            if len(closes) >= 2 else 0.0,
+            "change_pct": float((live / prior - 1) * 100) if prior else 0.0,
             "tradable": asset.get("tradable", True),
             "exchange": asset.get("exchange", ""),
             "name": asset.get("name", ""),

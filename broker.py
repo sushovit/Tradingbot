@@ -35,7 +35,7 @@ from alpaca.trading.requests import GetAssetsRequest
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.requests import (StockBarsRequest, MostActivesRequest,
-                                  MarketMoversRequest)
+                                  MarketMoversRequest, StockLatestTradeRequest)
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed, MostActivesBy, MarketType
 
@@ -333,7 +333,26 @@ class Broker:
                 result[ticker] = pd.DataFrame()
         return result
 
+    def get_latest_prices(self, tickers) -> dict:
+        """LIVE last-trade prices (IEX), one batch request. This is the
+        freshness source of truth — never cached bars (Goal 13 incident:
+        a 5-day-stale reference price nearly filled 7% off market)."""
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        req = StockLatestTradeRequest(symbol_or_symbols=list(tickers),
+                                      feed=DataFeed.IEX)
+        trades = _retry(self.data.get_stock_latest_trade, req,
+                        what="get_latest_prices")
+        return {sym: float(t.price) for sym, t in trades.items()}
+
     def get_latest_price(self, ticker: str) -> float:
+        """LIVE last-trade price; falls back to the freshest 1-min bar."""
+        try:
+            prices = self.get_latest_prices([ticker])
+            if ticker in prices and prices[ticker] > 0:
+                return prices[ticker]
+        except BrokerError:
+            pass
         bars = self.get_bars([ticker], timeframe_minutes=1, lookback_days=1)
         df = bars.get(ticker)
         if df is None or df.empty:

@@ -237,7 +237,9 @@ def test_ingest_gap_abort_rejects_and_journals_pass(temp_journal, tmp_path, monk
     sheet_path = tmp_path / "sheet.json"
     sheet_path.write_text(json.dumps(sheet))
 
-    broker = FakeExecBroker(latest_price=58.0)            # gapped below 59.0
+    # 58.9 is within the 2% freshness tolerance of the 60.0 entry (so the
+    # Goal 13 stale-price guard passes) but below the 59.0 abort level.
+    broker = FakeExecBroker(latest_price=58.9)
     orders.ingest(str(sheet_path), broker=broker)
 
     assert broker.submitted == []                         # never reached the broker
