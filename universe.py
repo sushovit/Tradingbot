@@ -328,8 +328,9 @@ def main():
         print("No candidates passed the filters (screener empty or market data unavailable).")
         return 1
 
-    print(f"# Universe — {datetime.now(EASTERN_TZ).strftime('%Y-%m-%d %H:%M ET')} "
-          f"({len(ranked)} candidates)\n")
+    import clockline
+    print(f"# Universe ({len(ranked)} candidates)")
+    print(clockline.two_zone_line() + "\n")
     print("| # | Ticker | Price | Avg $ vol (20d) | Move % | Source | Setup | Name |")
     print("|---|---|---|---|---|---|---|---|")
     for i, c in enumerate(ranked, 1):

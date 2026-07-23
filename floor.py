@@ -225,11 +225,11 @@ def positions_section(stats: dict) -> list:
 def build_report():
     """Returns (markdown_text, stats, dense_lines) — dense_lines are the two
     most information-dense sections for the mobile trim-post."""
+    import clockline
     today = _today_et()
-    now = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d %H:%M:%S ET")
     stats = {}
     conn = _conn()
-    out = [f"# Floor status — {now}"]
+    out = ["# Floor status", clockline.two_zone_line()]
     out += heartbeat_section(stats)
     out += cycles_section()
     fires_lines = detector_fires_section(conn, today, stats)

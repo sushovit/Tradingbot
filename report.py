@@ -36,9 +36,10 @@ def _load_config() -> dict:
 
 def build_report() -> str:
     from broker import Broker, BrokerError
+    import clockline
     lines = []
-    now_et = datetime.now(EASTERN_TZ)
-    lines.append(f"# Paper Account Report — {now_et.strftime('%Y-%m-%d %H:%M ET')}")
+    lines.append("# Paper Account Report")
+    lines.append(clockline.two_zone_line())
 
     try:
         broker = Broker()

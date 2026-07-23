@@ -282,7 +282,9 @@ def analyze_ticker(ticker: str, df: pd.DataFrame):
 # ---------------------------------------------------------------- report
 
 def build_markdown(date_str: str, verdicts: dict, skipped: dict) -> str:
+    import clockline
     lines = [f"# Intern desk — {date_str}",
+             clockline.two_zone_line(),
              f"_Model: {LOCAL_MODEL} (local). Independent scan; graded by the "
              f"CEO on reasoning quality. Not trade instructions._", ""]
     lines.append("| Ticker | Stance | Setup | Conv. | Invalidation | Reasoning |")

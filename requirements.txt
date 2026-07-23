@@ -10,3 +10,4 @@ finnhub-python
 discord-webhook
 requests
 pytest
+tzdata
