@@ -279,6 +279,39 @@ def analyze_ticker(ticker: str, df: pd.DataFrame):
     return verdict, None
 
 
+def apply_second_pass(verdicts: dict, date_str: str) -> str:
+    """Rank the 40-50 mid-band relative to each other (one extra call) and
+    adjust scores. Graceful: any failure leaves scores untouched."""
+    mid = {t: v for t, v in verdicts.items() if 40 <= v["conviction"] <= 50}
+    if len(mid) < 2:
+        return ""
+    listing = "\n".join(
+        f"- {t}: conviction {v['conviction']} — {v['reasoning'][:200]}"
+        for t, v in mid.items())
+    prompt = (f"These tickers all scored 40-50 in today's scan:\n{listing}\n\n"
+              "Rank these relative to each other and adjust scores to reflect "
+              "the ranking. Keep the same 0-100 scale; spread them out — no "
+              "two should share a score. Return JSON: "
+              '{"TICKER": adjusted_integer, ...} with exactly these tickers.')
+    try:
+        raw = _call_local_model(get_system_prompt("intern_desk"), prompt)
+        adjusted = 0
+        for t, score in (raw or {}).items():
+            t = str(t).upper()
+            if t in mid and isinstance(score, (int, float)) \
+                    and not isinstance(score, bool) and 0 <= score <= 100:
+                verdicts[t]["conviction"] = int(score)
+                journal.intern_record(date_str, t, verdicts[t]["stance"],
+                                      int(score))
+                adjusted += 1
+        if adjusted:
+            return (f"_Second pass: {adjusted} mid-band (40-50) scores "
+                    f"re-ranked relative to each other._")
+    except Exception as e:
+        logger.warning(f"second pass failed (scores unchanged): {e}")
+    return ""
+
+
 # ---------------------------------------------------------------- report
 
 def build_markdown(date_str: str, verdicts: dict, skipped: dict) -> str:
@@ -398,6 +431,24 @@ def run_desk(do_trade: bool = False) -> int:
             logger.warning(f"{ticker}: skipped ({why})")
             print(f"  {ticker}: skipped ({why})")
             continue
+        # v3 harness backstop: a setup that slipped through WITHOUT a numeric
+        # invalidation is rejected and journaled — the model was told to
+        # downgrade these to no_trade itself.
+        if verdict["stance"] in ("long_setup", "short_setup") \
+                and verdict["invalidation"] is None:
+            journal.log_decision(
+                ticker, verdict.get("setup_name") or "intern_scan",
+                {"date": date_str, "prompt_version": INTERN_PROMPT_VERSION},
+                {"approved": False, "rejection_reason": "missing_invalidation",
+                 "stance": verdict["stance"],
+                 "conviction_score": verdict["conviction"],
+                 "reasoning": verdict["reasoning"]},
+                source="intern_desk")
+            skipped[ticker] = "setup without invalidation (rejected)"
+            status["done_count"] = status["done_count"]  # no-op, clarity
+            print(f"  {ticker}: REJECTED (setup without invalidation)")
+            continue
+
         verdicts[ticker] = verdict
         status["last_verdicts"] = (status["last_verdicts"]
                                    + [[ticker, verdict["stance"],
@@ -423,11 +474,17 @@ def run_desk(do_trade: bool = False) -> int:
         journal.intern_record(date_str, ticker, verdict["stance"],
                               verdict["conviction"])
 
+    # v3 mid-band second pass: tickers scored 40-50 get ranked RELATIVE to
+    # each other in one extra call; scores adjust to reflect the ranking.
+    second_pass_note = apply_second_pass(verdicts, date_str)
+
     status["current_ticker"] = None
     status["finished_at"] = datetime.now(EASTERN_TZ).isoformat()
     _write_status(status)
 
     report = build_markdown(date_str, verdicts, skipped)
+    if second_pass_note:
+        report += f"\n\n{second_pass_note}"
 
     # --- Trading desk (12b): his one entry/day + closes of his own book.
     # Lazy import: the analysis path stays free of trading modules.
@@ -476,10 +533,52 @@ def grade_cmd(argv) -> int:
     return 1
 
 
+def grade_batch_cmd(path: str) -> int:
+    """Batch grades: one per line 'DATE TICKER grade \"note\"'. Idempotent —
+    re-running a file updates grades, never duplicates rows."""
+    import shlex
+    journal.init_db()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw_lines = f.readlines()
+    except OSError as e:
+        print(f"Cannot read {path}: {e}")
+        return 1
+
+    applied, missing, bad = 0, 0, 0
+    for n, raw in enumerate(raw_lines, 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            parts = []
+        if len(parts) < 3 or parts[2].lower() not in ("good", "bad",
+                                                      "ungradeable"):
+            print(f"  line {n}: unparseable — {line[:60]}")
+            bad += 1
+            continue
+        date_str, ticker, grade = parts[0], parts[1], parts[2].lower()
+        note = parts[3] if len(parts) > 3 else ""
+        if journal.intern_grade(date_str, ticker, grade, note):
+            applied += 1
+        else:
+            print(f"  line {n}: no intern call for {ticker.upper()} on {date_str}")
+            missing += 1
+    print(f"Batch grades: {applied} applied, {missing} unmatched, {bad} bad lines.")
+    return 0 if bad == 0 else 1
+
+
 def main() -> int:
     args = sys.argv[1:]
     if args and args[0] == "grade":
         return grade_cmd(args[1:])
+    if args and args[0] == "grade-batch":
+        if len(args) < 2:
+            print("Usage: python intern_desk.py grade-batch grades.txt")
+            return 1
+        return grade_batch_cmd(args[1])
     if args and args[0] == "override-close":
         if len(args) < 3:
             print('Usage: python intern_desk.py override-close <ticker> "reason"')

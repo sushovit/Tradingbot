@@ -60,7 +60,10 @@ INTERN_DESK_REQUIRED_KEYS = ["stance", "setup_name", "conviction",
 # can segment rows. v1: no_trade conviction implicitly 0. v2 (2026-07-18):
 # conviction = confidence in the STATED stance (no_trade included), new
 # anchor ladder, reasoning-first derivation, rebalanced honesty framing.
-INTERN_PROMPT_VERSION = 2
+# v3 (2026-07-26): ADX rubric verbatim, mandatory numeric invalidation
+# (downgrade to no_trade without one), ticker-specific numbers required in
+# reasoning, mid-band (40-50) relative-ranking second pass.
+INTERN_PROMPT_VERSION = 3
 
 
 def build_intern_desk_prompt(ticker: str, candle_data_str: str,
@@ -79,6 +82,18 @@ def build_intern_desk_prompt(ticker: str, candle_data_str: str,
 Assess this ticker for the NEXT few sessions. Playbook setups you may cite:
 trend_continuation, momentum_continuation, mean_reversion_reclaim — or null
 if none applies.
+
+ADX RUBRIC (use it verbatim): ADX below 20 = no trend; 20-25 = weak trend;
+25-40 = trending; above 40 = strong trend. NEVER describe a value above 25
+as low.
+
+INVALIDATION IS MANDATORY: every long_setup or short_setup MUST state a
+numeric invalidation price. If you cannot name one, the idea is not
+tradeable — downgrade it to no_trade yourself.
+
+DIFFERENTIATION: your reasoning must cite at least one ticker-specific
+number (a price level, an indicator value, or a volume figure). Writing
+identical sentences for different tickers is a violation.
 
 CONVICTION CALIBRATION — score conviction 0-100 using the FULL range.
 Anchors:

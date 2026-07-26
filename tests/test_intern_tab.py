@@ -105,10 +105,10 @@ def test_intern_history_empty(temp_journal):
 # Conviction calibration v2 — prompt version + weekend guard
 # =============================================================================
 
-def test_prompt_version_exported_and_v2():
+def test_prompt_version_exported_and_current():
     import prompts
-    assert prompts.INTERN_PROMPT_VERSION == 2
-    assert intern_desk.INTERN_PROMPT_VERSION == 2
+    assert prompts.INTERN_PROMPT_VERSION == 3
+    assert intern_desk.INTERN_PROMPT_VERSION == 3
     # The v2 anchors and rebalanced framing are actually in the prompt.
     p = prompts.build_intern_desk_prompt("NVDA", "candles", "metrics", "news")
     for anchor in ("15 = barely a setup", "70 = good setup, one clear concern",
