@@ -5,6 +5,11 @@
     "max_positions": 3,
     "daily_loss_limit_pct": 3.0,
     "analyst_mode": "shadow",
+    "models": {
+        "gatekeeper": "claude-sonnet-5",
+        "review": "claude-sonnet-5",
+        "fallback": "claude-sonnet-4-6"
+    },
     "universe": {
         "min_price": 5,
         "max_price": 480,

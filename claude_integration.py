@@ -17,6 +17,29 @@ from prompts import (
 # importing module has called load_dotenv() yet (it may import us first).
 load_dotenv()
 
+CONFIG_FILE = "bot_config.json"
+FALLBACK_MODEL = "claude-sonnet-4-6"
+
+
+def get_model(role: str = "gatekeeper") -> str:
+    """Model string from bot_config.json 'models' — no hardcoded model names
+    anywhere in the call paths (Goal 18)."""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            models = json.load(f).get("models", {})
+        return models.get(role) or FALLBACK_MODEL
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return FALLBACK_MODEL
+
+
+def get_fallback_model() -> str:
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f).get("models", {}).get("fallback",
+                                                      FALLBACK_MODEL)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return FALLBACK_MODEL
+
 # --- Configuration ---
 logger = logging.getLogger(__name__)
 
@@ -39,22 +62,34 @@ def _get_client():
 # CORE API HELPER
 # =============================================================================
 
+def extract_text(response) -> str:
+    """First TEXT block of a response. Newer models (sonnet-5) can put a
+    ThinkingBlock at content[0], which has no .text — indexing blindly
+    raised 'ThinkingBlock object has no attribute text'."""
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", None) == "text" or hasattr(block, "text"):
+            text = getattr(block, "text", None)
+            if text:
+                return text
+    return ""
+
 def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> dict:
     """Calls Claude claude-sonnet-4-6 synchronously with retry logic. Returns a parsed dict."""
     client = _get_client()
     if not client:
         return {"error": "ANTHROPIC_API_KEY not found in environment variables."}
 
+    model = get_model("gatekeeper")
     max_retries = 3
     for attempt in range(max_retries):
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model=model,
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}]
             )
-            text = response.content[0].text
+            text = extract_text(response)
             # Strip markdown code fences if present
             cleaned = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
             return json.loads(cleaned)
@@ -66,7 +101,18 @@ def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 1024
             else:
                 return {"error": f"API error after {max_retries} retries: {e}"}
         except anthropic.APIStatusError as e:
-            return {"error": f"Claude API status error {e.status_code}: {e.message}"}
+            # Model-not-found: log LOUDLY and fall back rather than halting
+            # the desk over a config typo or a retired model (Goal 18).
+            message = str(getattr(e, "message", e))
+            fallback = get_fallback_model()
+            if ("model" in message.lower() and e.status_code in (400, 404)
+                    and model != fallback):
+                logger.error(f"MODEL NOT FOUND: '{model}' rejected by the API "
+                             f"({message}). FALLING BACK to '{fallback}'. "
+                             f"Fix bot_config.json models.gatekeeper.")
+                model = fallback
+                continue
+            return {"error": f"Claude API status error {e.status_code}: {message}"}
         except json.JSONDecodeError as e:
             return {"error": f"Failed to parse Claude response as JSON: {e}"}
         except Exception as e:
