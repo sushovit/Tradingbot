@@ -353,6 +353,8 @@ def live_bot_worker():
     cycle_count = 0                # liveness counter (status line, NOT the journal)
     journaled_passes = set()       # (ticker, setup, filter, bar/day) already journaled
     daily_evaluated = {}           # (ticker, strat) -> last completed bar evaluated
+    gatekeeper_errors = {}         # (ticker, setup, bar) -> [count, next_retry_ts]
+    gatekeeper_alerted = set()     # keys we've already Discord-alerted about
     gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
                                    # never re-ask about the same signal bar (launch sessions
                                    # burned 60+ Claude calls re-asking about one XOM bar)
@@ -662,6 +664,13 @@ def live_bot_worker():
             if gate_key in gatekeeper_rejected:
                 status_updates.append(f"{ticker}: Gatekeeper blocked (cached this bar)")
                 continue
+            # Error backoff (Goal 21): after 3 consecutive errors on the same
+            # (ticker, setup, bar), retry only every 10 minutes.
+            err_state = gatekeeper_errors.get(gate_key)
+            if err_state and err_state[0] >= 3 and a_time.time() < err_state[1]:
+                status_updates.append(f"{ticker}: Gatekeeper backoff "
+                                      f"({err_state[0]} errors)")
+                continue
 
             decision_id = None
             if use_claude_filter:
@@ -683,6 +692,24 @@ def live_bot_worker():
                     approved = verdict.get('approved', False)
                     if isinstance(approved, str):
                         approved = approved.lower() == "true"
+                    if "error" in verdict:
+                        count = gatekeeper_errors.get(gate_key, [0, 0])[0] + 1
+                        gatekeeper_errors[gate_key] = [count, a_time.time() + 600]
+                        if count >= 3 and gate_key not in gatekeeper_alerted:
+                            gatekeeper_alerted.add(gate_key)
+                            logger.error(f"GATEKEEPER: {count} consecutive errors on "
+                                         f"{ticker}/{signal.setup_name} — backing off "
+                                         f"to 10-minute retries. {verdict['error']}")
+                            try:
+                                send_discord_notification(
+                                    ticker, "SELL", current_price,
+                                    f"⚠️ Gatekeeper erroring ({count}x): "
+                                    f"{str(verdict['error'])[:150]} — 10-min backoff")
+                            except Exception:
+                                pass
+                    elif gate_key in gatekeeper_errors:
+                        del gatekeeper_errors[gate_key]   # recovered
+
                     if "error" in verdict or not approved \
                             or conviction < claude_conviction_threshold:
                         reason_msg = (verdict.get('rejection_reason')

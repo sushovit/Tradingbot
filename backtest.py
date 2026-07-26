@@ -100,6 +100,119 @@ def spy_regime_series(spy_df: pd.DataFrame) -> pd.Series:
 
 # ============================================================ simulation
 
+# =========================================================== short lane
+# GOAL 20 — RESEARCH ONLY. These detectors exist in the backtest and NOWHERE
+# else: orders.py still rejects SELL-to-open, and no live path imports them.
+# A boardroom reviews these numbers before any live short exists.
+
+def detect_breakdown_continuation(window: pd.DataFrame):
+    """Mirror of momentum_continuation: close < prior 20-bar low on 1.5x
+    volume and a daily change worse than -3%. Stop ABOVE the breakdown high."""
+    if len(window) < 23:
+        return None
+    bar = window.iloc[-2]                       # last completed bar
+    prior = window.iloc[-23:-2]
+    prior_low = float(prior["low"].min())
+    avg_vol = float(prior["volume"].mean())
+    prev_close = float(window["close"].iloc[-3])
+    change = ((float(bar["close"]) / prev_close) - 1) * 100 if prev_close else 0
+    if float(bar["close"]) >= prior_low:
+        return None
+    if avg_vol <= 0 or float(bar["volume"]) <= avg_vol * 1.5:
+        return "volume_low"
+    if change >= -3.0:
+        return "change_too_small"
+    return {"stop_level": float(bar["high"]), "setup": "breakdown_continuation"}
+
+
+def detect_failed_reclaim(window: pd.DataFrame):
+    """Mirror of mean_reversion_reclaim: a name that rallied >= 10% off its
+    20-bar low then closes back BELOW the prior day's low on 1.2x volume.
+    Stop ABOVE the failure bar's high."""
+    if len(window) < 23:
+        return None
+    bar = window.iloc[-2]
+    prior_bar = window.iloc[-3]
+    w = window.iloc[-23:-2]
+    low_20 = float(w["low"].min())
+    high_since = float(w["high"].max())
+    if low_20 <= 0:
+        return None
+    runup = (high_since - low_20) / low_20 * 100
+    if runup < 10.0 or float(bar["close"]) >= float(prior_bar["low"]):
+        return None
+    avg_vol = float(w["volume"].mean())
+    if avg_vol <= 0 or float(bar["volume"]) <= avg_vol * 1.2:
+        return "volume_low"
+    return {"stop_level": float(bar["high"]), "setup": "failed_reclaim"}
+
+
+SHORT_DETECTORS = {"breakdown_continuation": detect_breakdown_continuation,
+                   "failed_reclaim": detect_failed_reclaim}
+
+
+def simulate_bracket_short(df: pd.DataFrame, entry_i: int, entry: float,
+                           stop: float, target: float):
+    """Short mechanics mirrored: stop ABOVE entry, target BELOW."""
+    for i in range(entry_i, len(df)):
+        bar = df.iloc[i]
+        o, h, l = float(bar["open"]), float(bar["high"]), float(bar["low"])
+        if i > entry_i and o >= stop:
+            return o, i, "gap_stop"
+        if i > entry_i and o <= target:
+            return o, i, "gap_target"
+        if h >= stop:
+            return stop, i, "stop"
+        if l <= target:
+            return target, i, "target"
+    return None, None, "open"
+
+
+def replay_short(symbol: str, df: pd.DataFrame, name: str, regime: pd.Series,
+                 target_r: float = 2.0) -> list:
+    detector = SHORT_DETECTORS[name]
+    trades, busy_until = [], -1
+    for i in range(WARMUP_BARS, len(df)):
+        if i <= busy_until:
+            continue
+        window = df.iloc[max(0, i - DETECT_WINDOW + 1):i + 1]
+        result = detector(window)
+        if not isinstance(result, dict):
+            continue
+        entry = float(df["open"].iloc[i])
+        stop = result["stop_level"]
+        if stop <= entry:
+            continue
+        target = entry - (stop - entry) * target_r
+        qty = risk.position_size(BASE_EQUITY, RISK_PCT, stop, entry,
+                                 position_cap_pct=POSITION_CAP)  # risk/share = stop-entry
+        if qty < 1:
+            continue
+        exit_price, exit_i, reason = simulate_bracket_short(df, i, entry, stop,
+                                                            target)
+        if exit_price is None:
+            break
+        busy_until = exit_i
+        r_mult = (entry - exit_price) / (stop - entry)     # short P/L
+        sig_day = df.index[i - 1]
+        in_regime = bool(regime.reindex([sig_day]).fillna(False).iloc[0]) \
+            if regime is not None else True
+        trades.append({
+            "symbol": symbol, "strategy": name,
+            "signal_date": str(sig_day)[:10],
+            "entry_date": str(df.index[i])[:10],
+            "exit_date": str(df.index[exit_i])[:10],
+            "entry": round(entry, 2), "stop": round(stop, 2),
+            "target": round(target, 2), "exit": round(float(exit_price), 2),
+            "qty": qty, "r": round(r_mult, 3),
+            "pnl_usd": round((entry - exit_price) * qty, 2),
+            "exit_reason": reason,
+            "regime": "trending" if in_regime else "chop",
+            "bars_held": exit_i - i,
+        })
+    return trades
+
+
 def simulate_bracket(df: pd.DataFrame, entry_i: int, entry: float,
                      stop: float, target: float):
     """Walk forward from the entry bar. Returns (exit_price, exit_i, reason)
@@ -365,6 +478,29 @@ def run_backtest(symbols, years=3, refresh=False, sweeps=True):
             st = aggregate(sim_pass(sigs, 2.0))
             lines.append(f"| ATR x{mult} | {st['trades']} "
                          f"| {st['win_rate']} | {st['expectancy_r']} |")
+
+    # ---- Goal 20: short-lane RESEARCH (backtest only, never live) ----
+    lines.append("\n## Short lane — RESEARCH ONLY (not wired live)")
+    lines.append("_orders.py still rejects SELL-to-open. A boardroom reviews "
+                 "these numbers before any live short exists._")
+    lines.append("| Strategy | Regime | Trades | Win% | Avg R | Expectancy | PF | MaxDD (R) |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    short_all = []
+    for name in SHORT_DETECTORS:
+        for sym, df in bars.items():
+            short_all.extend(replay_short(sym, df, name, regime, 2.0))
+    for name in SHORT_DETECTORS:
+        for reg in ("trending", "chop"):
+            st = aggregate([t for t in short_all
+                            if t["strategy"] == name and t["regime"] == reg])
+            lines.append(f"| {name} | {reg} | {st['trades']} | {st['win_rate']} "
+                         f"| {st['avg_r']} | {st['expectancy_r']} "
+                         f"| {st['profit_factor']} | {st['max_drawdown_r']} |")
+    for name in SHORT_DETECTORS:
+        by_regime = {reg: aggregate([t for t in short_all
+                                     if t["strategy"] == name and t["regime"] == reg])
+                     for reg in ("trending", "chop")}
+        lines.append("- " + verdict_line(name, by_regime))
 
     report = "\n".join(lines) + "\n"
     with open(REPORT_FILE, "w", encoding="utf-8") as f:

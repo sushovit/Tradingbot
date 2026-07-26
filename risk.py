@@ -118,6 +118,28 @@ def position_size(equity: float, risk_per_trade_pct: float,
     return max(shares, 0)
 
 
+# --- B-book: experimental half-risk slot (Goal 19) -------------------------
+# Tier A is the real book. Tier B is a sandbox: half risk, one open position,
+# one new entry per calendar week — journaled separately so A-book statistics
+# stay pure.
+TIER_B_RISK_PCT = 0.5
+TIER_B_MAX_OPEN = 1
+TIER_B_ENTRIES_PER_WEEK = 1
+
+
+def tier_risk_pct(tier: str, default_pct: float) -> float:
+    return TIER_B_RISK_PCT if str(tier).upper() == "B" else default_pct
+
+
+def check_tier_b(open_b_positions: int, b_entries_this_week: int):
+    """B-book gates. Returns (ok, reason)."""
+    if open_b_positions >= TIER_B_MAX_OPEN:
+        return False, "b_book_position_open"
+    if b_entries_this_week >= TIER_B_ENTRIES_PER_WEEK:
+        return False, "b_book_weekly_limit"
+    return True, None
+
+
 def zero_size_reason(entry: float, equity: float,
                      position_cap_pct: float = None) -> str:
     """Why did sizing produce < 1 whole share? Journaled as a rules pass so we

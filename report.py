@@ -26,6 +26,20 @@ logging.basicConfig(level=logging.WARNING)
 EASTERN_TZ = pytz.timezone("US/Eastern")
 
 
+def sessions_held(ticker: str):
+    """Trading sessions since the journaled BUY (Goal 21: >= 10 = review)."""
+    try:
+        import pandas as pd
+        buy = journal.last_buy_for_ticker(ticker)
+        if not buy:
+            return None
+        opened = pd.Timestamp(buy["timestamp"][:10])
+        return max(0, len(pd.bdate_range(opened,
+                                         datetime.now(EASTERN_TZ).date())) - 1)
+    except Exception:
+        return None
+
+
 def _load_config() -> dict:
     try:
         with open("bot_config.json", "r") as f:
@@ -71,21 +85,27 @@ def build_report() -> str:
         lines.append(f"\n**Account unavailable:** {e}")
         return "\n".join(lines)
 
-    # --- Open positions ---
+    # --- Open positions (with tier + sessions held; 10+ = REVIEW DUE) ---
     lines.append("\n## Open positions")
     try:
         positions = broker.get_positions()
         if not positions:
             lines.append("_None._")
         else:
-            lines.append("| Ticker | Qty | Entry | Current | Unrealized PnL |")
-            lines.append("|---|---|---|---|---|")
+            b_tickers = set(journal.open_b_tickers())
+            lines.append("| Ticker | Tier | Qty | Entry | Current | Unrealized PnL | Held |")
+            lines.append("|---|---|---|---|---|---|---|")
             for p in positions:
                 upnl = float(p.unrealized_pl)
                 upct = float(p.unrealized_plpc) * 100
-                lines.append(f"| {p.symbol} | {p.qty} | ${float(p.avg_entry_price):,.2f} "
+                tier = "B" if p.symbol in b_tickers else "A"
+                held = sessions_held(p.symbol)
+                held_txt = "—" if held is None else (
+                    f"{held}s" + (" **REVIEW DUE**" if held >= 10 else ""))
+                lines.append(f"| {p.symbol} | {tier} | {p.qty} "
+                             f"| ${float(p.avg_entry_price):,.2f} "
                              f"| ${float(p.current_price):,.2f} "
-                             f"| ${upnl:,.2f} ({upct:+.2f}%) |")
+                             f"| ${upnl:,.2f} ({upct:+.2f}%) | {held_txt} |")
     except BrokerError as e:
         lines.append(f"_Unavailable: {e}_")
 
@@ -149,6 +169,10 @@ def build_report() -> str:
     try:
         lines.append(f"- Decisions journaled today: **{journal.decision_count()}**")
         lines.append(f"- Realized PnL today: **${journal.daily_realized_pnl():,.2f}**")
+        lines.append(f"- Cumulative realized — A-book: "
+                     f"**${journal.tier_realized_pnl('A'):+,.2f}** | "
+                     f"B-book (experimental): "
+                     f"${journal.tier_realized_pnl('B'):+,.2f}")
     except Exception as e:
         lines.append(f"_Journal unavailable: {e}_")
 

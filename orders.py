@@ -51,7 +51,11 @@ EASTERN_TZ = pytz.timezone("US/Eastern")
 CONFIG_FILE = "bot_config.json"
 POSITIONS_STATE_FILE = "positions.json"
 
-VALID_ACTIONS = {"BUY", "SELL", "HOLD", "TIGHTEN_STOP", "TAKE_PARTIAL", "CLOSE"}
+# SET_STOP replaces TIGHTEN_STOP (Goal 21): moving a stop AWAY from price
+# widens risk and must be explicit — allow_widen + a reason. TIGHTEN_STOP
+# survives as an alias that can ONLY tighten.
+VALID_ACTIONS = {"BUY", "SELL", "HOLD", "SET_STOP", "TIGHTEN_STOP",
+                 "TAKE_PARTIAL", "CLOSE"}
 
 # Goal 13: a sheet built on a stale reference (5-day-old MRVL price, 7% off
 # live) must never reach the broker. Entries are checked against the LIVE
@@ -119,6 +123,10 @@ def validate_order(order: dict, equity: float, open_positions: int,
     if setup not in VALID_SETUPS:
         return False, f"invalid_setup:{setup}"
 
+    tier = str(order.get("tier", "A")).upper()
+    if tier not in ("A", "B"):
+        return False, f"invalid_tier:{tier}"
+
     # Event/flow: scheduled catalysts MUST carry a hard exit date.
     if setup == "event_flow":
         hard_exit = order.get("hard_exit_date")
@@ -146,11 +154,22 @@ def validate_order(order: dict, equity: float, open_positions: int,
     if action in ("SELL", "CLOSE", "TAKE_PARTIAL"):
         return True, None  # exits are always allowed
 
-    if action == "TIGHTEN_STOP":
-        if order.get("stop") is None:
+    if action in ("SET_STOP", "TIGHTEN_STOP"):
+        new_stop = order.get("stop")
+        if new_stop is None:
             return False, "missing_stop"
-        if not _is_number(order.get("stop")):
+        if not _is_number(new_stop):
             return False, "invalid_stop_price"
+        current_stop = order.get("current_stop")
+        if _is_number(current_stop) and float(new_stop) < float(current_stop):
+            # Widening risk: TIGHTEN_STOP may never do it; SET_STOP needs
+            # explicit allow_widen + a reason.
+            if action == "TIGHTEN_STOP":
+                return False, "tighten_stop_cannot_widen"
+            if not order.get("allow_widen"):
+                return False, "widen_requires_allow_widen"
+            if not str(order.get("reason", "")).strip():
+                return False, "widen_requires_reason"
         return True, None
 
     # ---- BUY ----
@@ -176,6 +195,25 @@ def validate_order(order: dict, equity: float, open_positions: int,
     if (order.get("abort_if_open_below") is not None
             and not _is_number(order.get("abort_if_open_below"))):
         return False, "invalid_abort_level"
+
+    # B-book gates: one open B position, one new B entry per calendar week,
+    # risk capped at 0.5% — A-book stats stay pure (Goal 19).
+    if tier == "B":
+        try:
+            week_start = (datetime.now(EASTERN_TZ)
+                          - timedelta(days=datetime.now(EASTERN_TZ).weekday())
+                          ).strftime("%Y-%m-%d")
+            ok, reason = risk.check_tier_b(len(journal.open_b_tickers()),
+                                           journal.b_entries_since(week_start))
+            if not ok:
+                return False, reason
+        except Exception as e:
+            logger.warning(f"B-book gate check failed: {e}")
+            return False, "b_book_check_failed"
+        max_b_notional = equity * (risk.TIER_B_RISK_PCT / 100.0) / \
+            max((float(entry) - float(stop)) / float(entry), 1e-9)
+        if float(notional) > max_b_notional * 1.05:
+            return False, "b_book_risk_exceeded"
 
     ok, reason = risk.check_signal(
         entry=float(entry), stop=float(stop),
@@ -263,19 +301,25 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
             return f"{action} {ticker}: closed (exit already journaled)."
         return f"{action} {ticker}: closed @ ~${price:.2f}."
 
-    if action == "TIGHTEN_STOP":
+    if action in ("SET_STOP", "TIGHTEN_STOP"):
         state = positions.get(ticker, {})
         stop_order_id = state.get("stop_order_id")
         new_stop = float(order["stop"])
         if not stop_order_id:
-            return f"TIGHTEN_STOP {ticker}: SKIPPED — no tracked stop order id."
+            return f"{action} {ticker}: SKIPPED — no tracked stop order id."
+        prior = state.get("trailing_stop_price")
+        widened = _is_number(prior) and new_stop < float(prior)
         new_order = broker.replace_stop(stop_order_id, new_stop)
         state["stop_order_id"] = str(new_order.id)
         state["trailing_stop_price"] = new_stop
         positions[ticker] = state
-        journal.log_trade(ticker, "TIGHTEN_STOP", state.get("shares_held", 0),
-                          new_stop, reason="CEO TIGHTEN_STOP", decision_id=decision_id)
-        return f"TIGHTEN_STOP {ticker}: stop moved to ${new_stop:.2f}."
+        journal.log_trade(ticker, "SET_STOP", state.get("shares_held", 0),
+                          new_stop,
+                          reason=f"CEO {action}" + (" (WIDENED)" if widened else ""),
+                          decision_id=decision_id,
+                          tier=str(state.get("tier", "A")).upper())
+        return (f"{action} {ticker}: stop moved to ${new_stop:.2f}"
+                + (" (WIDENED — risk increased)" if widened else "") + ".")
 
     if action == "TAKE_PARTIAL":
         state = positions.get(ticker, {})
@@ -336,12 +380,14 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         logger.warning(f"{ticker}: entry fill unconfirmed — journaled reference "
                        f"price; run 'python orders.py sync' to correct.")
 
+    tier = str(order.get("tier", "A")).upper()
     trade_id = journal.log_trade(ticker, "BUY", qty, fill_price,
                                  reason=f"CEO {order.get('setup', 'discretionary')}",
                                  decision_id=decision_id,
-                                 broker_order_id=str(bracket.id))
+                                 broker_order_id=str(bracket.id), tier=tier)
     positions[ticker] = {
         "in_position": True,
+        "tier": tier,
         # Ownership: CEO positions are display-only for the bot. Its trailing
         # logic must never replace this order's designed stop (Goal 11).
         "source": "ceo",
@@ -357,8 +403,8 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         "setup": order.get("setup", "discretionary"),
         "hard_exit_date": order.get("hard_exit_date"),
     }
-    return (f"BUY {ticker}: bracket submitted — {qty} sh @ ~${entry:.2f}, "
-            f"stop ${stop:.2f}, target ${target:.2f}.")
+    return (f"BUY {ticker} [tier {tier}]: bracket submitted — {qty} sh @ "
+            f"~${fill_price:.2f}, stop ${stop:.2f}, target ${target:.2f}.")
 
 
 def ingest(sheet_path: str, dry_run: bool = False, equity_override: float = None,

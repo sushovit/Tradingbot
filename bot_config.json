@@ -56,7 +56,7 @@
         }
     },
     "ticker_profiles": {
-        "NVDA": "Aggressive",
+        "NVDA": "Moderate",
         "AMD": "Moderate"
     },
     "strategies": {

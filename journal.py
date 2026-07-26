@@ -105,6 +105,11 @@ def init_db():
             conn.execute("UPDATE decisions SET source='claude' WHERE source IS NULL OR source=''")
         if "agreement" not in cols:
             conn.execute("ALTER TABLE decisions ADD COLUMN agreement INTEGER")
+        tcols_t = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
+        if "tier" not in tcols_t:
+            # B-book (Goal 19): tier tags every trade so A-book stats stay pure.
+            conn.execute("ALTER TABLE trades ADD COLUMN tier TEXT DEFAULT 'A'")
+            conn.execute("UPDATE trades SET tier='A' WHERE tier IS NULL")
         if "replays" not in cols:
             # How many times the re-ask loop replayed this same decision
             # before the per-bar gatekeeper cache existed (analytics only).
@@ -152,6 +157,20 @@ def run_data_migrations():
     if get_meta("mig_20260714_collapse_gatekeeper_replays") is None:
         _collapse_gatekeeper_replays()
         set_meta("mig_20260714_collapse_gatekeeper_replays", "done")
+
+    # 2026-07-26: purge the gatekeeper ERROR rows from the 2026-07-22 key
+    # outage (import-order bug). They are noise in the decision record; the
+    # incident itself is documented in git history. Guarded + idempotent.
+    if get_meta("mig_20260726_purge_key_outage_errors") is None:
+        with _lock, _connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM decisions WHERE source='claude' "
+                "AND timestamp LIKE '2026-07-22%' "
+                "AND json_extract(verdict, '$.error') LIKE '%ANTHROPIC_API_KEY%'")
+            if cur.rowcount:
+                logger.info(f"Migration: purged {cur.rowcount} key-outage ERROR rows.")
+            conn.commit()
+        set_meta("mig_20260726_purge_key_outage_errors", "done")
 
     # 2026-07-14: purge the pass-log flood — the same deterministic rejection
     # re-journaled every 30s cycle. Keep the FIRST row per
@@ -254,19 +273,55 @@ def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
 def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
               reason: str = "", decision_id=None,
-              broker_order_id: str = None) -> int:
+              broker_order_id: str = None, tier: str = "A") -> int:
     """Journal one fill (BUY or SELL). Returns the trade id."""
     with _lock, _connect() as conn:
         cur = conn.execute(
             """INSERT INTO trades
                (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason,
-                decision_id, broker_order_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                decision_id, broker_order_id, tier)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (_now_et(), ticker, action.upper(), qty, price, pnl_usd, pnl_pct,
-             reason, decision_id, broker_order_id),
+             reason, decision_id, broker_order_id, str(tier).upper()),
         )
         conn.commit()
         return cur.lastrowid
+
+
+def tier_realized_pnl(tier: str = "A") -> float:
+    """Realized PnL for ONE tier — A-book stats never include B rows."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl_usd), 0) AS pnl FROM trades "
+            "WHERE action='SELL' AND UPPER(COALESCE(tier,'A'))=?",
+            (str(tier).upper(),)).fetchone()
+        return float(row["pnl"])
+
+
+def b_entries_since(iso_date: str) -> int:
+    """Count of tier-B entries on/after a date (calendar-week gate)."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' "
+            "AND UPPER(COALESCE(tier,'A'))='B' AND timestamp >= ?",
+            (iso_date,)).fetchone()
+        return int(row["n"])
+
+
+def open_b_tickers() -> list:
+    """Tickers with a tier-B BUY that has no matching later SELL."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticker, MAX(id) AS last_buy FROM trades WHERE action='BUY' "
+            "AND UPPER(COALESCE(tier,'A'))='B' GROUP BY ticker").fetchall()
+        out = []
+        for r in rows:
+            sold = conn.execute(
+                "SELECT 1 FROM trades WHERE ticker=? AND action='SELL' AND id>?",
+                (r["ticker"], r["last_buy"])).fetchone()
+            if not sold:
+                out.append(r["ticker"])
+        return out
 
 
 def get_meta(key: str, default=None):

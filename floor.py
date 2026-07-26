@@ -199,11 +199,18 @@ def positions_section(stats: dict) -> list:
     except (FileNotFoundError, json.JSONDecodeError):
         local = {}
 
-    lines.append("| Ticker | Qty | Entry | Current | Unreal. PnL | → Stop | → Target |")
-    lines.append("|---|---|---|---|---|---|---|")
+    try:
+        import journal as _j
+        b_tickers = set(_j.open_b_tickers())
+    except Exception:
+        b_tickers = set()
+
+    lines.append("| Ticker | Tier | Qty | Entry | Current | Unreal. PnL | → Stop | → Target |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for p in broker_positions:
         current = float(getattr(p, "current_price", 0) or 0)
         state = local.get(p.symbol, {})
+        tier = "B" if p.symbol in b_tickers else state.get("tier", "A")
         stop = state.get("trailing_stop_price")
         target = state.get("profit_target_price")
         if current and stop:
@@ -216,7 +223,8 @@ def positions_section(stats: dict) -> list:
             to_target = "—"
         upnl = float(getattr(p, "unrealized_pl", 0) or 0)
         upct = float(getattr(p, "unrealized_plpc", 0) or 0) * 100
-        lines.append(f"| {p.symbol} | {p.qty} | ${float(p.avg_entry_price):,.2f} "
+        lines.append(f"| {p.symbol} | {tier} | {p.qty} "
+                     f"| ${float(p.avg_entry_price):,.2f} "
                      f"| ${current:,.2f} | ${upnl:+,.2f} ({upct:+.2f}%) "
                      f"| {to_stop} | {to_target} |")
     return lines
