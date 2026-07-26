@@ -23,6 +23,12 @@
         ]
     },
     "default_strategies": ["trend_continuation", "momentum_continuation", "mean_reversion_reclaim"],
+    "strategy_timeframes": {
+        "mean_reversion_reclaim": "daily",
+        "momentum_continuation": "daily",
+        "trend_continuation": "intraday"
+    },
+    "spy_filter_exempt": ["mean_reversion_reclaim"],
     "use_spy_filter": true,
     "use_time_filter": true,
     "use_confirmation_candle": true,

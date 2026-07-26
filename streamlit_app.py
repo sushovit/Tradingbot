@@ -30,6 +30,7 @@ import risk
 import analyst
 import universe
 import position_mgmt
+import daily_eval
 from broker import Broker, BrokerError
 from strategies import enabled_strategies, Signal, Rejection
 
@@ -351,6 +352,7 @@ def live_bot_worker():
 
     cycle_count = 0                # liveness counter (status line, NOT the journal)
     journaled_passes = set()       # (ticker, setup, filter, bar/day) already journaled
+    daily_evaluated = {}           # (ticker, strat) -> last completed bar evaluated
     gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
                                    # never re-ask about the same signal bar (launch sessions
                                    # burned 60+ Claude calls re-asking about one XOM bar)
@@ -558,9 +560,17 @@ def live_bot_worker():
             signal_bar_key = None
             pass_notes = []
             for strat in enabled_strategies(ticker, config):
+                timeframe = daily_eval.strategy_timeframe(strat.name, config,
+                                                          strat.timeframe)
+                is_daily = timeframe == "daily"
                 strat_df = daily_bars.get(ticker, pd.DataFrame()) \
-                    if strat.timeframe == "daily" else df
+                    if is_daily else df
                 if strat_df.empty:
+                    continue
+                # Daily strategies evaluate ONCE per completed session (Goal
+                # 15) — a new daily bar triggers exactly one evaluation.
+                if is_daily and not daily_eval.should_evaluate(
+                        daily_evaluated, ticker, strat.name, strat_df):
                     continue
                 context = {"ticker": ticker, "risk_profile": risk_profile,
                            "config": config}
@@ -569,6 +579,10 @@ def live_bot_worker():
                 except Exception as e:
                     logger.error(f"{ticker}: {strat.name} detector error: {e}")
                     continue
+                finally:
+                    if is_daily:
+                        daily_eval.mark_evaluated(daily_evaluated, ticker,
+                                                  strat.name, strat_df)
 
                 if isinstance(result, Rejection):
                     # Detector fired but a deterministic filter killed it —
@@ -578,6 +592,21 @@ def live_bot_worker():
                                       result.details, bar_key=bar_key)
                     pass_notes.append(f"Pass ({result.setup_name}: {result.filter_name})")
                 elif isinstance(result, Signal):
+                    # Rule #3 default for daily entries: abort if the session
+                    # open is below the signal bar's midpoint (auto-set).
+                    if is_daily:
+                        aborted, open_p, mid = daily_eval.gap_abort(
+                            strat_df, current_price)
+                        if aborted:
+                            bar_key = (str(strat_df.index[-2])
+                                       if len(strat_df) >= 2 else None)
+                            journal_pass_once(
+                                ticker, result.setup_name, "gap_below_signal_mid",
+                                f"open {open_p:.2f} < signal bar mid {mid:.2f}",
+                                bar_key=bar_key)
+                            pass_notes.append(
+                                f"Pass ({result.setup_name}: gap_below_signal_mid)")
+                            continue
                     signal_found = result
                     signal_bar_key = (str(strat_df.index[-2]) if len(strat_df) >= 2
                                       else now_et.strftime("%Y-%m-%d"))
@@ -597,7 +626,10 @@ def live_bot_worker():
                                   f"daily PnL ${daily_pnl:.2f} <= -${loss_limit_usd:.2f}")
                 status_updates.append(f"{ticker}: Pass (circuit breaker)")
                 continue
-            if not is_market_bullish:
+            # Backtest finding (Goal 14): reclaim performs BETTER in chop —
+            # the SPY filter is per-strategy now (config spy_filter_exempt).
+            if not is_market_bullish and signal.setup_name not in \
+                    config.get("spy_filter_exempt", []):
                 journal_pass_once(ticker, signal.setup_name, "spy_bearish",
                                   "SPY below its 20-EMA")
                 status_updates.append(f"{ticker}: Pass (SPY bearish)")
