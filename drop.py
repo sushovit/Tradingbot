@@ -21,7 +21,11 @@ import subprocess
 import sys
 import time
 
+from dotenv import load_dotenv
+
 import clockline
+
+load_dotenv()   # DISCORD_WEBHOOK_URL for the --discord notification
 
 DROP_DIR = "drop"
 SCRIPT_TIMEOUT = 180
@@ -93,7 +97,33 @@ def todays_intern_report() -> str:
         return f.read()
 
 
+def post_discord(session_path: str, latest_path: str, content: str):
+    """Ping Discord that the drop file is ready, with the file attached so a
+    phone can grab it too. One post per run; failure never fails the run."""
+    url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    if not url:
+        print("(no webhook configured - skipping Discord notification)")
+        return
+    try:
+        from discord_webhook import DiscordWebhook
+        headline = ""
+        for line in content.splitlines():
+            if "Effective capital" in line:
+                headline = " - " + line.replace("**", "").strip()
+                break
+        msg = (f"[DROP] Session file ready {clockline.two_zone_line()}{headline}\n"
+               f"Upload `drop\\latest.md` (attached below).")
+        wh = DiscordWebhook(url=url, content=msg[:1900])
+        with open(session_path, "rb") as f:
+            wh.add_file(file=f.read(), filename=os.path.basename(session_path))
+        resp = wh.execute()
+        print(f"Discord notified (HTTP {getattr(resp, 'status_code', '?')})")
+    except Exception as e:
+        print(f"(Discord notification failed: {e}) - file is still at {latest_path}")
+
+
 def main() -> int:
+    to_discord = "--discord" in sys.argv
     sections = []
     for script in SECTION_SCRIPTS:
         started = time.monotonic()
@@ -103,9 +133,12 @@ def main() -> int:
     print("collecting intern report ...", flush=True)
     sections.append(("intern desk (today)", todays_intern_report()))
 
-    session_path, latest_path = write_drop(assemble(sections))
+    content = assemble(sections)
+    session_path, latest_path = write_drop(content)
     print(f"\nWrote {session_path}")
     print(f"Wrote {latest_path} - upload this file.")
+    if to_discord:
+        post_discord(session_path, latest_path, content)
     return 0
 
 
