@@ -112,7 +112,8 @@ def test_happy_path_journals_and_posts(temp_journal, monkeypatch):
                         lambda b: {"text": "The book was flat today.",
                                    "model": "claude-sonnet-5"})
     posted = []
-    monkeypatch.setattr(review_bot, "post_discord", lambda c: posted.append(c))
+    monkeypatch.setattr(review_bot, "post_discord",
+                        lambda c, **kw: posted.append(c))
 
     assert review_bot.main() == 0
     assert posted and "flat today" in posted[0]

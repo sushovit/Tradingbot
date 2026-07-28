@@ -191,7 +191,10 @@ def request_review(bundle: dict) -> dict:
         try:
             resp = client.messages.create(
                 model=model,
-                max_tokens=2000,
+                # Sonnet 5 spends part of this budget on thinking tokens —
+                # the first live memo (2026-07-27) was cut mid-sentence at
+                # 1,229 chars with max_tokens=2000. Give the memo real room.
+                max_tokens=8000,
                 system=[{"type": "text", "text": REVIEW_SYSTEM_PROMPT,
                          "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_prompt}],
@@ -211,16 +214,21 @@ def request_review(bundle: dict) -> dict:
     return {"error": last_err or "unknown error"}
 
 
-def post_discord(content: str):
+def post_discord(content: str, attach_full: str = None, date: str = None):
     url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not url:
         print("(no webhook configured)")
         return
     try:
         from discord_webhook import DiscordWebhook
-        body = content if len(content) <= DISCORD_MSG_LIMIT else \
-            content[:DISCORD_MSG_LIMIT - 40] + "\n... (truncated)"
-        resp = DiscordWebhook(url=url, content=body).execute()
+        long_memo = len(content) > DISCORD_MSG_LIMIT
+        body = content if not long_memo else \
+            content[:DISCORD_MSG_LIMIT - 60] + "\n... (full memo attached)"
+        wh = DiscordWebhook(url=url, content=body)
+        if long_memo and attach_full:
+            wh.add_file(file=attach_full.encode("utf-8"),
+                        filename=f"review_{date or 'memo'}.md")
+        resp = wh.execute()
         print(f"Posted to Discord (HTTP {getattr(resp, 'status_code', '?')})")
     except Exception as e:
         print(f"(Discord post failed: {e})")
@@ -250,7 +258,9 @@ def main() -> int:
         {"approved": True, "rejection_reason": None, "reasoning": review[:4000]},
         source="review_bot")
     header = f"📋 Daily review — {bundle['date']}\n"
-    post_discord(header + review)
+    # Long memos exceed Discord's 2,000-char limit: post the head inline and
+    # attach the full text so nothing is lost.
+    post_discord(header + review, attach_full=review, date=bundle["date"])
     print(header + review)
     return 0
 
