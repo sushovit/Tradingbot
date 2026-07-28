@@ -64,8 +64,9 @@ def test_momentum_stop_at_breakout_bar_low():
     signal = MomentumContinuation().detect(momentum_textbook_df(), ctx())
     assert isinstance(signal, Signal)
     assert signal.stop == pytest.approx(100.2)   # invalidation: breakout bar low
-    # target is at least 2R
-    assert signal.target >= signal.entry + 2 * (signal.entry - signal.stop) - 1e-9
+    # target floor is 3R (boardroom 2026-07-28, was 2R)
+    assert signal.target == pytest.approx(
+        signal.entry + 3 * (signal.entry - signal.stop))
 
 
 def test_momentum_does_not_fire_on_chop():
@@ -112,6 +113,17 @@ def test_reclaim_stop_below_reclaim_bar_low():
     signal = MeanReversionReclaim().detect(reclaim_textbook_df(), ctx())
     assert isinstance(signal, Signal)
     assert signal.stop == pytest.approx(87.5)   # invalidation: reclaim bar low
+
+
+def test_reclaim_target_is_3r_floor_or_structural_high():
+    signal = MeanReversionReclaim().detect(reclaim_textbook_df(), ctx())
+    assert isinstance(signal, Signal)
+    r = signal.entry - signal.stop
+    floor_3r = signal.entry + 3 * r
+    high_20 = signal.extras["high_20"]
+    # Whichever is HIGHER: the 3R floor or the structural prior-high target.
+    assert signal.target == pytest.approx(max(high_20, floor_3r))
+    assert signal.target >= floor_3r - 1e-9
 
 
 def test_reclaim_does_not_fire_without_washout():

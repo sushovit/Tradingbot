@@ -628,14 +628,29 @@ def live_bot_worker():
                                   f"daily PnL ${daily_pnl:.2f} <= -${loss_limit_usd:.2f}")
                 status_updates.append(f"{ticker}: Pass (circuit breaker)")
                 continue
-            # Backtest finding (Goal 14): reclaim performs BETTER in chop —
-            # the SPY filter is per-strategy now (config spy_filter_exempt).
-            if not is_market_bullish and signal.setup_name not in \
-                    config.get("spy_filter_exempt", []):
-                journal_pass_once(ticker, signal.setup_name, "spy_bearish",
-                                  "SPY below its 20-EMA")
-                status_updates.append(f"{ticker}: Pass (SPY bearish)")
-                continue
+            # Rule #5 amendment (boardroom 2026-07-28): continuation setups
+            # stay regime-blocked; mean_reversion_reclaim is EXEMPT because
+            # chop is its best cell (backtest +0.38R vs +0.25R trending).
+            # Exempt fires taken in chop are tagged for later analysis.
+            if not is_market_bullish:
+                if signal.setup_name in config.get("spy_filter_exempt", []):
+                    tag_key = (ticker, signal.setup_name, "chop_reclaim",
+                               signal_bar_key)
+                    if tag_key not in journaled_passes:
+                        journaled_passes.add(tag_key)
+                        try:
+                            journal.log_signal_tag(
+                                ticker, signal.setup_name, "chop_reclaim",
+                                f"Rule #5 exemption: proceeding with SPY below "
+                                f"its 20-EMA (entry {signal.entry:.2f})")
+                        except Exception as e:
+                            logger.error(f"Failed to tag chop_reclaim: {e}")
+                    status_updates.append(f"{ticker}: chop_reclaim (Rule #5)")
+                else:
+                    journal_pass_once(ticker, signal.setup_name, "spy_bearish",
+                                      "SPY below its 20-EMA")
+                    status_updates.append(f"{ticker}: Pass (SPY bearish)")
+                    continue
             if not is_primary_trading_hours:
                 journal_pass_once(ticker, signal.setup_name, "outside_hours", "")
                 status_updates.append(f"{ticker}: Pass (outside hours)")

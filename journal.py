@@ -270,6 +270,35 @@ def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
     )
 
 
+def log_signal_tag(ticker: str, setup_name: str, tag: str,
+                   details: str = "") -> int:
+    """Tag a signal that was TAKEN under a named exemption (not a rejection).
+    Rule #5: reclaim fires accepted while SPY is below its 20-EMA are tagged
+    'chop_reclaim' so their outcomes can be analysed separately."""
+    return log_decision(
+        ticker, setup_name,
+        {"details": details, "tag": tag},
+        {"approved": True, "tag": tag, "rejection_reason": None,
+         "source": "rules"},
+        source="rules")
+
+
+def chop_reclaim_report() -> dict:
+    """Outcome scorecard for Rule #5 exemption fires."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticker, timestamp, outcome_pnl_usd FROM decisions "
+            "WHERE source='rules' AND json_extract(verdict,'$.tag')='chop_reclaim' "
+            "ORDER BY id").fetchall()
+    closed = [r for r in rows if r["outcome_pnl_usd"] is not None]
+    return {
+        "tagged": len(rows),
+        "closed": len(closed),
+        "realized_usd": round(sum(r["outcome_pnl_usd"] for r in closed), 2),
+        "tickers": [r["ticker"] for r in rows],
+    }
+
+
 def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
               reason: str = "", decision_id=None,

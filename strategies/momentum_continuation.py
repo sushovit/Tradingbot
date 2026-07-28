@@ -15,7 +15,10 @@ from .base import Strategy, Signal, Rejection
 VOLUME_MULT = 1.5
 MIN_CHANGE_PCT = 3.0
 LOOKBACK = 20
-MIN_TARGET_R = 2.0
+# Boardroom 2026-07-28: 3R floor. Backtest (3y daily): 3R targets beat 2R on
+# expectancy for every strategy — momentum +0.32R vs +0.16R — at the cost of
+# win rate (33% vs 39%).
+MIN_TARGET_R = 3.0
 
 
 class MomentumContinuation(Strategy):

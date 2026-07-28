@@ -18,7 +18,9 @@ from .base import Strategy, Signal, Rejection
 DRAWDOWN_PCT = 10.0
 VOLUME_MULT = 1.2
 LOOKBACK = 20
-MIN_TARGET_R = 2.0
+# Boardroom 2026-07-28: 3R floor (backtest: reclaim +0.38R at 3R vs +0.28R at
+# 2R). The structural prior-high target still wins when it exceeds 3R.
+MIN_TARGET_R = 3.0
 
 
 class MeanReversionReclaim(Strategy):
