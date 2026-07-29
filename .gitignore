@@ -14,6 +14,8 @@ __pycache__/
 *.csv
 bot.run
 bot_status.log
+.watchdog_alert
+intern_status.json
 server_startup.log
 portfolio_state.json
 positions.json
