@@ -73,7 +73,7 @@ def extract_text(response) -> str:
                 return text
     return ""
 
-def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> dict:
+def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> dict:
     """Calls Claude claude-sonnet-4-6 synchronously with retry logic. Returns a parsed dict."""
     client = _get_client()
     if not client:
@@ -114,6 +114,13 @@ def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 1024
                 continue
             return {"error": f"Claude API status error {e.status_code}: {message}"}
         except json.JSONDecodeError as e:
+            # A truncated/garbled response is transient, not a verdict — retry
+            # rather than blocking a live signal on one bad parse.
+            if attempt < max_retries - 1:
+                logger.warning(f"Claude JSON parse failed (attempt {attempt+1}), "
+                               f"retrying: {e}")
+                time.sleep(2 ** attempt)
+                continue
             return {"error": f"Failed to parse Claude response as JSON: {e}"}
         except Exception as e:
             return {"error": f"Unexpected error calling Claude: {e}"}
@@ -201,7 +208,11 @@ def get_gatekeeper_decision(
         setup_description=setup_description,
     )
 
-    result = call_claude_api(GATEKEEPER_SYSTEM_PROMPT, user_prompt, max_tokens=512)
+    # Sonnet 5 spends part of max_tokens on thinking, so the old 512 budget
+    # left too little for the verdict: on 2026-07-29 live signals were being
+    # blocked by "Unterminated string" JSON parse errors — the response was
+    # cut mid-string. Budget the thinking AND the JSON.
+    result = call_claude_api(GATEKEEPER_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
 
     # Normalise the approved field — Claude may return string "true"/"false"
     if "error" not in result:
