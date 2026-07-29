@@ -31,6 +31,7 @@ import analyst
 import universe
 import position_mgmt
 import daily_eval
+import safe_io
 from broker import Broker, BrokerError
 from strategies import enabled_strategies, Signal, Rejection
 
@@ -67,28 +68,30 @@ os.makedirs(CONFIGS_DIR, exist_ok=True)
 def write_status(message: str, history: int = 3):
     """Rolling status log: newest line first, last `history` cycle summaries
     kept (floor.py reads them). Repeated identical messages just refresh the
-    timestamp instead of flooding the history."""
+    timestamp instead of flooding the history.
+
+    Written ATOMICALLY (tmp + os.replace): the 2026-07-29 machine crash died
+    mid-write and left 1,284 NUL bytes here. That can no longer happen."""
     stamped = f"[{datetime.now(EASTERN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] {message}"
     try:
         prior = []
         try:
-            with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                prior = [ln for ln in f.read().splitlines() if ln.strip()]
-        except (FileNotFoundError, UnicodeDecodeError):
+            prior = safe_io.read_text_tolerant(STATUS_FILE).splitlines()
+        except (FileNotFoundError, OSError):
             pass
         # Drop the previous line if it's the same message re-issued.
         if prior and prior[0].split("] ", 1)[-1] == message:
             prior = prior[1:]
         lines = [stamped] + prior[: history - 1]
-        with open(STATUS_FILE, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        safe_io.atomic_write_text(STATUS_FILE, "\n".join(lines))
     except Exception as e:
         logger.error(f"Error writing to status file: {e}")
 
 def write_positions(positions_dict: dict):
+    """Atomic — position state must survive a crash mid-write."""
     try:
-        with open(POSITIONS_STATE_FILE, "w") as f:
-            json.dump(positions_dict, f, indent=4)
+        safe_io.atomic_write_text(POSITIONS_STATE_FILE,
+                                  json.dumps(positions_dict, indent=4))
     except Exception as e:
         logger.error(f"Error writing to positions file: {e}")
 

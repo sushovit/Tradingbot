@@ -119,11 +119,12 @@ def fetch_headlines(ticker: str) -> list:
 # ---------------------------------------------------------------- run status
 
 def _write_status(status: dict):
-    """Rolling progress file for the dashboard. Best-effort — a status-write
-    failure must never affect the scan."""
+    """Rolling progress file for the dashboard. Atomic (tmp + os.replace) so
+    a crash mid-write cannot leave a corrupted file. Best-effort — a
+    status-write failure must never affect the scan."""
     try:
-        with open(STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(status, f)
+        import safe_io
+        safe_io.atomic_write_text(STATUS_FILE, json.dumps(status))
     except OSError as e:
         logger.warning(f"could not write {STATUS_FILE}: {e}")
 

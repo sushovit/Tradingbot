@@ -76,11 +76,16 @@ def heartbeat_section(stats: dict) -> list:
 
 def cycles_section() -> list:
     lines = ["\n## Last cycle summaries"]
+    corrupted = False
     try:
-        with open(STATUS_FILE, "r", encoding="utf-8", errors="replace") as f:
-            entries = [ln for ln in f.read().splitlines() if ln.strip()]
-    except FileNotFoundError:
+        import safe_io
+        corrupted = safe_io.is_corrupted(STATUS_FILE)
+        entries = safe_io.read_text_tolerant(STATUS_FILE).splitlines()
+    except (FileNotFoundError, OSError):
         entries = []
+    if corrupted:
+        lines.append("_⚠️ Status file contains NUL bytes — a write was "
+                     "interrupted (machine crash). Showing what survived._")
     if not entries:
         lines.append("_No status history._")
         return lines
