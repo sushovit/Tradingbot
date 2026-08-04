@@ -85,7 +85,9 @@ def relaunch_worker() -> bool:
     """Start run_worker.py detached. It creates its own lock file."""
     try:
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen([PYTHON, WORKER_SCRIPT], cwd=os.getcwd(),
+        # --force is safe here: main() has already CONFIRMED no worker
+        # processes survive, so the heartbeat guard would be a false block.
+        subprocess.Popen([PYTHON, WORKER_SCRIPT, "--force"], cwd=os.getcwd(),
                          creationflags=creation)
         return True
     except Exception as e:
