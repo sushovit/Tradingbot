@@ -597,6 +597,18 @@ def live_bot_worker():
                                       result.details, bar_key=bar_key)
                     pass_notes.append(f"Pass ({result.setup_name}: {result.filter_name})")
                 elif isinstance(result, Signal):
+                    # Cache key: for DAILY strategies use the completed signal
+                    # bar's DATE, which is stable all session. Using index[-2]
+                    # shifted the moment today's partial bar appeared, which
+                    # re-armed the gatekeeper cache mid-session and re-asked
+                    # about an already-rejected setup (BA, 2026-07-29).
+                    if is_daily:
+                        signal_bar_key = daily_eval.completed_bar_date(strat_df) \
+                            or now_et.strftime("%Y-%m-%d")
+                    else:
+                        signal_bar_key = (str(strat_df.index[-2])
+                                          if len(strat_df) >= 2
+                                          else now_et.strftime("%Y-%m-%d"))
                     # Rule #3 default for daily entries: abort if the session
                     # open is below the signal bar's midpoint (auto-set).
                     if is_daily:
@@ -613,8 +625,6 @@ def live_bot_worker():
                                 f"Pass ({result.setup_name}: gap_below_signal_mid)")
                             continue
                     signal_found = result
-                    signal_bar_key = (str(strat_df.index[-2]) if len(strat_df) >= 2
-                                      else now_et.strftime("%Y-%m-%d"))
                     break
 
             if signal_found is None:

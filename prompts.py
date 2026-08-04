@@ -180,6 +180,11 @@ Setup: {setup_description}
 === RECENT NEWS HEADLINES (last 5 days) ===
 {news_str}
 
+=== ADX RUBRIC (use it verbatim) ===
+ADX below 20 = no trend; 20-25 = weak trend; 25-40 = trending; above 40 =
+strong trend. NEVER describe a value above 25 as low, and NEVER call a
+market "ranging" when ADX is above 25 — that is a contradiction.
+
 === DECISION RULES ===
 APPROVE only if ALL of:
   1. ADX > 25 (trending market, not ranging)

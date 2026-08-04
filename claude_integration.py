@@ -62,6 +62,20 @@ def _get_client():
 # CORE API HELPER
 # =============================================================================
 
+def strip_fences(text: str) -> str:
+    """Return the JSON object inside a model response.
+
+    Sonnet 5 sometimes wraps verdicts in ```json fences, and sometimes emits
+    a sentence before the object. Fences are stripped, then the outermost
+    {...} span is extracted — anything outside it is prose, not JSON."""
+    cleaned = re.sub(r'^\s*```(?:json)?\s*|\s*```\s*$', '', (text or "").strip(),
+                     flags=re.MULTILINE).strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end > start:
+        return cleaned[start:end + 1]
+    return cleaned
+
+
 def extract_text(response) -> str:
     """First TEXT block of a response. Newer models (sonnet-5) can put a
     ThinkingBlock at content[0], which has no .text — indexing blindly
@@ -90,9 +104,7 @@ def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 4000
                 messages=[{"role": "user", "content": user_prompt}]
             )
             text = extract_text(response)
-            # Strip markdown code fences if present
-            cleaned = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
-            return json.loads(cleaned)
+            return json.loads(strip_fences(text))
         except (anthropic.APIConnectionError, anthropic.RateLimitError) as e:
             if attempt < max_retries - 1:
                 wait = 2 ** attempt
@@ -114,14 +126,18 @@ def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 4000
                 continue
             return {"error": f"Claude API status error {e.status_code}: {message}"}
         except json.JSONDecodeError as e:
-            # A truncated/garbled response is transient, not a verdict — retry
+            # Log the RAW response so a parse failure is diagnosable instead
+            # of just "Unterminated string" with no evidence.
+            raw = locals().get("text", "")
+            logger.warning(f"Claude JSON parse failed (attempt {attempt+1}): {e}\n"
+                           f"RAW RESPONSE ({len(raw)} chars): {raw[:1500]}")
+            # Truncated/garbled output is transient, not a verdict — retry
             # rather than blocking a live signal on one bad parse.
             if attempt < max_retries - 1:
-                logger.warning(f"Claude JSON parse failed (attempt {attempt+1}), "
-                               f"retrying: {e}")
                 time.sleep(2 ** attempt)
                 continue
-            return {"error": f"Failed to parse Claude response as JSON: {e}"}
+            return {"error": f"Failed to parse Claude response as JSON: {e} "
+                             f"(raw head: {raw[:200]!r})"}
         except Exception as e:
             return {"error": f"Unexpected error calling Claude: {e}"}
     return {"error": "API call failed after all retries."}

@@ -111,6 +111,8 @@ def test_restart_sequence_kills_clears_relaunches_alerts(tmp_path, monkeypatch):
     actions = {"killed": 0, "launched": False, "alerts": []}
     monkeypatch.setattr(watchdog, "kill_stale_workers",
                         lambda: actions.__setitem__("killed", 2) or 2)
+    # Kill confirmed: no survivors, so launching one instance is safe.
+    monkeypatch.setattr(watchdog, "find_worker_pids", lambda: [])
     monkeypatch.setattr(watchdog, "relaunch_worker",
                         lambda: actions.__setitem__("launched", True) or True)
     monkeypatch.setattr(watchdog, "post_alert",

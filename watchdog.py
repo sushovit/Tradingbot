@@ -122,7 +122,21 @@ def main() -> int:
         print("(dry run — no action taken)")
         return 0
 
+    # KILL-THEN-LAUNCH, never launch-beside (2026-07-29 duplicate-worker
+    # incident): every existing worker dies and the kill is CONFIRMED before
+    # a new one starts.
     killed = kill_stale_workers()
+    for _ in range(10):
+        if not find_worker_pids():
+            break
+        time.sleep(1)
+    else:
+        print("ABORT: worker processes survived the kill — refusing to launch "
+              "a second instance beside them.")
+        post_alert("⚠️ Watchdog could not kill the stale worker — NOT "
+                   "launching a second instance. Manual intervention needed.")
+        return 1
+
     try:
         if os.path.exists(LOCK_FILE):
             os.remove(LOCK_FILE)
