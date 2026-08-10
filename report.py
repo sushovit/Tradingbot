@@ -93,6 +93,16 @@ def build_report() -> str:
             lines.append("_None._")
         else:
             b_tickers = set(journal.open_b_tickers())
+            # Live stops decide the risk-free exemption below.
+            live_stops = {}
+            try:
+                for o in broker.get_live_orders():
+                    otype = str(getattr(o, "order_type", None)
+                                or getattr(o, "type", "")).lower()
+                    if "stop" in otype and getattr(o, "stop_price", None):
+                        live_stops[o.symbol] = float(o.stop_price)
+            except Exception:
+                pass
             lines.append("| Ticker | Tier | Qty | Entry | Current | Unrealized PnL | Held |")
             lines.append("|---|---|---|---|---|---|---|")
             for p in positions:
@@ -100,8 +110,16 @@ def build_report() -> str:
                 upct = float(p.unrealized_plpc) * 100
                 tier = "B" if p.symbol in b_tickers else "A"
                 held = sessions_held(p.symbol)
+                # Risk-free (stop at or above entry) positions are exempt
+                # from the 10-session re-ratification nag — there is nothing
+                # left to re-underwrite.
+                entry_px = float(p.avg_entry_price)
+                risk_free = live_stops.get(p.symbol) is not None and \
+                    live_stops[p.symbol] >= entry_px
                 held_txt = "—" if held is None else (
-                    f"{held}s" + (" **REVIEW DUE**" if held >= 10 else ""))
+                    f"{held}s"
+                    + (" _(risk-free)_" if risk_free and held >= 10 else "")
+                    + (" **REVIEW DUE**" if held >= 10 and not risk_free else ""))
                 lines.append(f"| {p.symbol} | {tier} | {p.qty} "
                              f"| ${float(p.avg_entry_price):,.2f} "
                              f"| ${float(p.current_price):,.2f} "

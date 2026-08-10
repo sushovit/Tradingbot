@@ -63,7 +63,10 @@ INTERN_DESK_REQUIRED_KEYS = ["stance", "setup_name", "conviction",
 # v3 (2026-07-26): ADX rubric verbatim, mandatory numeric invalidation
 # (downgrade to no_trade without one), ticker-specific numbers required in
 # reasoning, mid-band (40-50) relative-ranking second pass.
-INTERN_PROMPT_VERSION = 3
+# v4 (2026-08-10): fixes the ADX-mono-42 collapse — >=2 distinct indicators
+# plus a price-structure reference per verdict, ADX directional context,
+# self-consistency clause tying the score to the cited numbers.
+INTERN_PROMPT_VERSION = 4
 
 
 def build_intern_desk_prompt(ticker: str, candle_data_str: str,
@@ -85,7 +88,19 @@ if none applies.
 
 ADX RUBRIC (use it verbatim): ADX below 20 = no trend; 20-25 = weak trend;
 25-40 = trending; above 40 = strong trend. NEVER describe a value above 25
-as low.
+as low. ADX measures trend STRENGTH, not DIRECTION — always pair it with
+price direction: a high ADX in a downtrend is strong evidence AGAINST a
+long, not for one.
+
+EVIDENCE REQUIREMENT: your reasoning must cite at least TWO DIFFERENT
+indicators (e.g. ADX and RSI, or RSI and volume) PLUS one price-structure
+reference (a specific level, the range it is trading in, or the trend line
+it is respecting). One indicator repeated is not two.
+
+SELF-CONSISTENCY: your conviction score must FOLLOW from the numbers you
+cite. A strong reading cited with a weak score — or a weak reading with a
+strong score — is a violation. If your numbers disagree with each other,
+say so and score in the middle.
 
 INVALIDATION IS MANDATORY: every long_setup or short_setup MUST state a
 numeric invalidation price. If you cannot name one, the idea is not
@@ -179,6 +194,15 @@ Setup: {setup_description}
 
 === RECENT NEWS HEADLINES (last 5 days) ===
 {news_str}
+
+=== SETUP-SPECIFIC GUIDANCE ===
+If the setup type is mean_reversion_reclaim: proximity to the 20-bar high
+is NOT a negative factor. Ratified calibration (3y backtest): reclaims that
+complete within 2% of the 20-bar high returned +0.208R, versus -0.05R for
+those with room — near-resistance completions are the BETTER half, because
+the target defaults to the achievable 3R floor. Do NOT reject or discount a
+reclaim for "little room to resistance". RSI overextension remains a valid
+rejection factor for every setup, including reclaims.
 
 === ADX RUBRIC (use it verbatim) ===
 ADX below 20 = no trend; 20-25 = weak trend; 25-40 = trending; above 40 =

@@ -322,6 +322,35 @@ def resolve_exit_fill(broker, ticker):
 
 
 def live_bot_worker():
+    """SUPERVISOR — the cycle loop must never die silently.
+
+    Three unattended hangs (Jul 24, Jul 28, Aug 7) showed the same shape:
+    the process alive, the heartbeat frozen. An unhandled exception escaping
+    the cycle body kills the loop while the process lingers. This wrapper
+    catches ANY escape, logs the traceback, writes a visible status, and
+    restarts the loop instead of leaving a zombie."""
+    crashes = 0
+    while os.path.exists(LOCK_FILE):
+        try:
+            _worker_loop()
+            return                      # clean exit: the lock was removed
+        except Exception as e:
+            crashes += 1
+            logger.exception(f"WORKER LOOP CRASHED (#{crashes}) — restarting in 30s")
+            try:
+                write_status(f"Loop crashed ({type(e).__name__}: {e}) — "
+                             f"auto-restarting (crash #{crashes})")
+                send_discord_notification(
+                    "WORKER", "SELL", 0.0,
+                    f"⚠️ Loop crashed ({type(e).__name__}: {str(e)[:120]}) — "
+                    f"auto-restarting")
+            except Exception:
+                pass
+            a_time.sleep(30)
+    logger.info("Bot worker supervisor exiting (lock removed).")
+
+
+def _worker_loop():
     try:
         broker = Broker()
     except Exception as e:

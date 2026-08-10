@@ -296,18 +296,33 @@ def apply_second_pass(verdicts: dict, date_str: str) -> str:
               '{"TICKER": adjusted_integer, ...} with exactly these tickers.')
     try:
         raw = _call_local_model(get_system_prompt("intern_desk"), prompt)
+        # The model reliably returns DUPLICATES (2026-08-06: 21 rows all
+        # scored 42 after "re-ranking"). Take its output as an ORDERING and
+        # force strictly distinct scores by rank position.
+        scored = [(str(t).upper(), float(s)) for t, s in (raw or {}).items()
+                  if str(t).upper() in mid and isinstance(s, (int, float))
+                  and not isinstance(s, bool) and 0 <= s <= 100]
+        if not scored:
+            return ""
+        # Stable sort: best first; ties broken by the original conviction so
+        # the ordering is deterministic rather than dict-order luck.
+        scored.sort(key=lambda kv: (-kv[1], -mid[kv[0]]["conviction"], kv[0]))
+        top, bottom = 55, 30                    # spread across the mid band
+        n = len(scored)
+        step = (top - bottom) / max(n - 1, 1)
         adjusted = 0
-        for t, score in (raw or {}).items():
-            t = str(t).upper()
-            if t in mid and isinstance(score, (int, float)) \
-                    and not isinstance(score, bool) and 0 <= score <= 100:
-                verdicts[t]["conviction"] = int(score)
-                journal.intern_record(date_str, t, verdicts[t]["stance"],
-                                      int(score))
-                adjusted += 1
+        for rank, (ticker, _) in enumerate(scored):
+            new_score = int(round(top - step * rank)) if n > 1 else \
+                mid[ticker]["conviction"]
+            verdicts[ticker]["conviction"] = new_score
+            journal.intern_record(date_str, ticker,
+                                  verdicts[ticker]["stance"], new_score)
+            adjusted += 1
+        distinct = len({verdicts[t]["conviction"] for t, _ in scored})
         if adjusted:
             return (f"_Second pass: {adjusted} mid-band (40-50) scores "
-                    f"re-ranked relative to each other._")
+                    f"re-ranked into {distinct} distinct values "
+                    f"({bottom}-{top} band)._")
     except Exception as e:
         logger.warning(f"second pass failed (scores unchanged): {e}")
     return ""
@@ -483,13 +498,39 @@ def run_desk(do_trade: bool = False) -> int:
     status["finished_at"] = datetime.now(EASTERN_TZ).isoformat()
     _write_status(status)
 
+    # A model outage is a FAILED run, never "no trade today (valid)".
+    unreachable = sum(1 for why in skipped.values()
+                      if "model call failed" in str(why).lower()
+                      or "unreachable" in str(why).lower())
+    run_failed = bool(tickers) and unreachable >= max(1, len(tickers) // 2)
+    if run_failed:
+        journal.log_decision(
+            "DESK", "intern_scan",
+            {"date": date_str, "scanned": len(verdicts),
+             "unreachable": unreachable, "total": len(tickers)},
+            {"approved": False, "rejection_reason": "model_unreachable",
+             "error": f"local model unreachable for {unreachable}/{len(tickers)} "
+                      f"tickers — run is INVALID, not a no-trade day"},
+            source="intern_desk")
+        logger.error(f"INTERN RUN FAILED: model unreachable for "
+                     f"{unreachable}/{len(tickers)} tickers")
+
     report = build_markdown(date_str, verdicts, skipped)
+    if run_failed:
+        report = (f"# ⚠️ RUN FAILED — local model unreachable for "
+                  f"{unreachable}/{len(tickers)} tickers\n"
+                  f"_This is an OUTAGE, not a no-trade day. Verdicts below "
+                  f"(if any) are partial and must not be graded._\n\n") + report
     if second_pass_note:
         report += f"\n\n{second_pass_note}"
 
     # --- Trading desk (12b): his one entry/day + closes of his own book.
     # Lazy import: the analysis path stays free of trading modules.
-    if do_trade:
+    if do_trade and run_failed:
+        report += ("\n\n## Trading desk (intern account)\n"
+                   "Trade: SKIPPED — the scan failed (model unreachable). "
+                   "No entry is taken on partial data.")
+    elif do_trade:
         import intern_trader
         trade_lines = ["\n## Trading desk (intern account)"]
         try:

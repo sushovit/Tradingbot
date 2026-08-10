@@ -9,7 +9,8 @@ import prompts
 
 
 def test_prompt_v3_contents():
-    assert prompts.INTERN_PROMPT_VERSION == 3
+    """v3 requirements must SURVIVE later versions (v4 adds, never removes)."""
+    assert prompts.INTERN_PROMPT_VERSION >= 3
     p = prompts.build_intern_desk_prompt("NVDA", "c", "m", "n")
     assert "ADX below 20 = no trend; 20-25 = weak trend" in p
     assert "NEVER describe a value above 25" in p
@@ -63,8 +64,10 @@ def test_second_pass_adjusts_midband(temp_journal, monkeypatch):
                         lambda sys_p, user_p: {"AAA": 38, "BBB": 52})
     note = intern_desk.apply_second_pass(verdicts, "2026-07-26")
     assert "2 mid-band" in note
-    assert verdicts["AAA"]["conviction"] == 38
-    assert verdicts["BBB"]["conviction"] == 52
+    # v4: the model's numbers are an ORDERING; scores are re-spread to be
+    # strictly distinct. BBB ranked above AAA, so it must score higher.
+    assert verdicts["BBB"]["conviction"] > verdicts["AAA"]["conviction"]
+    assert verdicts["AAA"]["conviction"] != verdicts["BBB"]["conviction"]
     assert verdicts["CCC"]["conviction"] == 80          # untouched
 
 

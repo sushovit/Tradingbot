@@ -32,3 +32,4 @@ drop/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 data/
+training_candidate.jsonl

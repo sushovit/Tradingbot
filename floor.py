@@ -210,14 +210,29 @@ def positions_section(stats: dict) -> list:
     except Exception:
         b_tickers = set()
 
+    # Stops/targets come from LIVE open orders — cached state goes stale the
+    # moment a stop is replaced (floor showed $59.60 while the broker held
+    # $61.78 on 2026-08-07).
+    live_stops, live_targets = {}, {}
+    try:
+        for o in broker.get_live_orders():
+            otype = str(getattr(o, "order_type", None)
+                        or getattr(o, "type", "")).lower()
+            if "stop" in otype and getattr(o, "stop_price", None):
+                live_stops[o.symbol] = float(o.stop_price)
+            elif "limit" in otype and getattr(o, "limit_price", None):
+                live_targets[o.symbol] = float(o.limit_price)
+    except Exception as e:
+        lines.append(f"_Live order read failed ({e}); showing cached levels._")
+
     lines.append("| Ticker | Tier | Qty | Entry | Current | Unreal. PnL | → Stop | → Target |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for p in broker_positions:
         current = float(getattr(p, "current_price", 0) or 0)
         state = local.get(p.symbol, {})
         tier = "B" if p.symbol in b_tickers else state.get("tier", "A")
-        stop = state.get("trailing_stop_price")
-        target = state.get("profit_target_price")
+        stop = live_stops.get(p.symbol, state.get("trailing_stop_price"))
+        target = live_targets.get(p.symbol, state.get("profit_target_price"))
         if current and stop:
             to_stop = f"-{(current - float(stop)) / current * 100:.1f}% (${float(stop):,.2f})"
         else:
