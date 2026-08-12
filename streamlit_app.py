@@ -968,7 +968,9 @@ with tab1:
                       f"trades_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
         n = len(active_config.get("ticker_profiles", {})) if active_config else 0
         write_status(f"Bot starting ({n} configured tickers; universe scan pending)...")
-        with open(LOCK_FILE, "w") as f: pass
+        # Lock records the owning PID so the watchdog/takeover can target it
+        # precisely instead of guessing at python processes.
+        safe_io.atomic_write_text(LOCK_FILE, str(os.getpid()))
         threading.Thread(target=live_bot_worker, daemon=True).start()
         st.toast("Bot started!", icon="✅"); a_time.sleep(1); st.rerun()
 

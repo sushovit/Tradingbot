@@ -51,8 +51,16 @@ def needs_restart(lock_exists: bool, age_secs, stale_secs: int = STALE_SECS):
     return False, f"healthy (heartbeat {int(age_secs)}s old)"
 
 
+def lock_owner_pid():
+    """The PID recorded in the lock file — the precise kill target."""
+    import run_worker
+    return run_worker.read_lock_pid(LOCK_FILE)
+
+
 def find_worker_pids() -> list:
-    """PIDs of running run_worker.py processes (Windows WMIC-free)."""
+    """PIDs of running run_worker.py processes. Used as a FALLBACK when the
+    lock records no PID (legacy lock) and as a survivor check after the
+    targeted kill."""
     pids = []
     try:
         out = subprocess.run(
@@ -70,10 +78,22 @@ def find_worker_pids() -> list:
 
 
 def kill_stale_workers() -> int:
+    """Kill the RECORDED owner by PID first (precise), then sweep for any
+    straggler that still matches run_worker.py."""
+    import run_worker
     killed = 0
+    owner = lock_owner_pid()
+    if owner:
+        print(f"killing recorded owner PID {owner}")
+        if run_worker.kill_pid(owner):
+            killed += 1
+        else:
+            print(f"WARNING: owner PID {owner} survived the kill")
     for pid in find_worker_pids():
+        if pid == owner:
+            continue
         try:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                            capture_output=True, timeout=30)
             killed += 1
         except Exception:
@@ -85,10 +105,10 @@ def relaunch_worker() -> bool:
     """Start run_worker.py detached. It creates its own lock file."""
     try:
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        # --force is safe here: main() has already CONFIRMED no worker
-        # processes survive, so the heartbeat guard would be a false block.
-        subprocess.Popen([PYTHON, WORKER_SCRIPT, "--force"], cwd=os.getcwd(),
-                         creationflags=creation)
+        # --force-takeover is safe here: main() has already CONFIRMED no
+        # worker survives, so the heartbeat guard would be a false block.
+        subprocess.Popen([PYTHON, WORKER_SCRIPT, "--force-takeover"],
+                         cwd=os.getcwd(), creationflags=creation)
         return True
     except Exception as e:
         print(f"relaunch failed: {e}")

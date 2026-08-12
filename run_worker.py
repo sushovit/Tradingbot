@@ -1,22 +1,30 @@
 """run_worker.py — start the live bot worker as a standalone process.
 
-Equivalent to the dashboard's Start button, but headless: creates the run
-lock and runs live_bot_worker() in THIS process.
+SINGLE-INSTANCE ENFORCEMENT (2026-08-10 priority override):
 
-SINGLETON GUARD (2026-07-29): two instances ran side by side and interleaved
-cycle numbers (#88 and #98 in one status file). Startup now REFUSES to launch
-if a live heartbeat exists — a status file written in the last 60 seconds
-means another worker is alive. Use --force only after killing the other one.
+  1. The heartbeat is read BEFORE anything starts. A heartbeat fresher
+     than 60s means another worker is alive -> print and EXIT non-zero.
+     The only way past it is --force-takeover, which KILLS the recorded
+     owner first and verifies the kill before proceeding.
+  2. The lock file holds the owning process's PID. The watchdog and any
+     takeover kill THAT pid — no guessing at python processes.
+  3. Status/heartbeat writes are atomic (safe_io: temp + os.replace), so
+     two processes can never interleave into a corrupted file (the
+     null-bytes incident of 2026-07-29).
 """
 
 import os
+import subprocess
 import sys
 import time
 
 HEARTBEAT_FRESH_SECS = 60
 STATUS_FILE = "bot_status.log"
 LOCK_FILE = "bot.run"
+KILL_WAIT_SECS = 15
 
+
+# ----------------------------------------------------------- heartbeat
 
 def live_heartbeat_age():
     """Seconds since the last status write, or None if there is no file."""
@@ -32,17 +40,100 @@ def another_worker_is_alive(fresh_secs: int = HEARTBEAT_FRESH_SECS) -> bool:
     return age is not None and age < fresh_secs
 
 
-def main() -> int:
-    force = "--force" in sys.argv
-    if another_worker_is_alive() and not force:
-        age = int(live_heartbeat_age())
-        print(f"REFUSING TO START: a live worker heartbeat is {age}s old "
-              f"(< {HEARTBEAT_FRESH_SECS}s) — another instance is running.\n"
-              f"Kill it first (or use --force if you are certain it is dead).")
-        return 1
+# ----------------------------------------------------------- lock / PID
 
-    with open(LOCK_FILE, "w"):
-        pass
+def read_lock_pid(lock_file: str = LOCK_FILE):
+    """PID recorded in the lock file, or None if absent/unreadable/empty."""
+    try:
+        with open(lock_file, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None                      # legacy empty lock from older builds
+    try:
+        return int(raw.split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def write_lock(pid: int = None, lock_file: str = LOCK_FILE):
+    """Claim the lock, recording the owning PID (atomic)."""
+    import safe_io
+    safe_io.atomic_write_text(lock_file, str(pid if pid is not None
+                                             else os.getpid()))
+
+
+def pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             capture_output=True, text=True, timeout=20).stdout
+        return str(pid) in out
+    except Exception:
+        return False
+
+
+def kill_pid(pid: int, wait_secs: int = KILL_WAIT_SECS) -> bool:
+    """Kill a PID (and its children) and CONFIRM it died."""
+    if not pid:
+        return True
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=30)
+    except Exception as e:
+        print(f"taskkill failed for PID {pid}: {e}")
+    for _ in range(wait_secs):
+        if not pid_alive(pid):
+            return True
+        time.sleep(1)
+    return not pid_alive(pid)
+
+
+# ----------------------------------------------------------- entry point
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    takeover = "--force-takeover" in argv
+
+    age = live_heartbeat_age()
+    if another_worker_is_alive():
+        owner = read_lock_pid()
+        if not takeover:
+            print(f"worker already running (heartbeat {int(age)}s ago) — "
+                  f"refusing to start."
+                  + (f" Owner PID {owner}." if owner else
+                     " No PID recorded in the lock file.")
+                  + "\nUse --force-takeover to kill it and take over.")
+            return 1
+        print(f"--force-takeover: heartbeat {int(age)}s ago, "
+              f"owner PID {owner if owner else 'unknown'}")
+        if owner:
+            if not kill_pid(owner):
+                print(f"ABORT: could not kill owner PID {owner} — refusing to "
+                      f"start a second instance beside it.")
+                return 2
+            print(f"owner PID {owner} killed; taking over.")
+        else:
+            # Legacy lock with no PID: fall back to the command-line scan.
+            # Proceeding blindly here would create the very duplicate this
+            # guard exists to prevent.
+            import watchdog
+            survivors = watchdog.find_worker_pids()
+            # Exclude SELF and our PARENT: a launch creates a parent+child
+            # python pair that both match "run_worker.py", so excluding only
+            # os.getpid() made the takeover kill itself (observed live).
+            mine = {os.getpid(), os.getppid()}
+            targets = [p for p in survivors if p not in mine]
+            print(f"no PID recorded (legacy lock); scanned and found "
+                  f"{len(targets)} worker process(es) to kill")
+            for pid in targets:
+                if not kill_pid(pid):
+                    print(f"ABORT: could not kill worker PID {pid}.")
+                    return 2
+
+    write_lock(os.getpid())
 
     import streamlit_app  # noqa: E402  (bare-mode import)
     streamlit_app.live_bot_worker()
