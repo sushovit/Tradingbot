@@ -134,6 +134,13 @@ def test_ceo_sheet_entry_tagged_ceo(temp_journal, tmp_path, monkeypatch):
         def get_order(self, order_id):
             return FakeBracket()
 
+        # Order-side dedupe interface (clean account: no dupes).
+        def get_positions(self):
+            return []
+
+        def get_live_orders(self, ticker=None):
+            return []
+
     positions = {}
     orders.execute_order(
         {"action": "BUY", "ticker": "BAC", "notional_usd": 430,

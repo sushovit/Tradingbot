@@ -29,6 +29,10 @@ class MeanReversionReclaim(Strategy):
 
     def detect(self, df, context: dict):
         ticker = context["ticker"]
+        # Ratified 2026-08-13: threshold comes from config (1.3x), with the
+        # module constant as the fallback the calibration study overrides.
+        vol_mult = (context.get("config", {}) or {}).get(
+            "volume_multipliers", {}).get(self.name, VOLUME_MULT)
 
         if df is None or len(df) < LOOKBACK + 2:
             return None
@@ -57,10 +61,10 @@ class MeanReversionReclaim(Strategy):
             return Rejection(self.name, ticker, "below_ema9",
                              "Reclaim bar closed below EMA9")
         avg_volume = float(window['volume'].mean())
-        if avg_volume <= 0 or float(reclaim_bar['volume']) <= avg_volume * VOLUME_MULT:
+        if avg_volume <= 0 or float(reclaim_bar['volume']) <= avg_volume * vol_mult:
             return Rejection(self.name, ticker, "volume_low",
                              f"Reclaim volume {reclaim_bar['volume']:.0f} <= "
-                             f"{VOLUME_MULT}x avg {avg_volume:.0f}")
+                             f"{vol_mult}x avg {avg_volume:.0f}")
 
         # Playbook Rule #3 (gap-abort): a reclaim entry is invalid if the next
         # session opens below the reclaim bar's midpoint — the reclaim failed

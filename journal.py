@@ -158,6 +158,38 @@ def run_data_migrations():
         _collapse_gatekeeper_replays()
         set_meta("mig_20260714_collapse_gatekeeper_replays", "done")
 
+    # 2026-08-13: exits synced before record_exit knew about tiers were all
+    # booked to the A-book. Re-point every SELL at its entry's tier so
+    # A-book statistics stop carrying B-book results (PLTR, 2026-08-11).
+    if get_meta("mig_20260813_exit_tier_backfill") is None:
+        fixed = 0
+        with _lock, _connect() as conn:
+            sells = conn.execute(
+                "SELECT id, ticker, decision_id, tier FROM trades "
+                "WHERE action='SELL'").fetchall()
+            for s in sells:
+                row = None
+                if s["decision_id"] is not None:
+                    row = conn.execute(
+                        "SELECT tier FROM trades WHERE action='BUY' AND "
+                        "decision_id=? ORDER BY id DESC LIMIT 1",
+                        (s["decision_id"],)).fetchone()
+                if row is None or not row["tier"]:
+                    row = conn.execute(
+                        "SELECT tier FROM trades WHERE action='BUY' AND "
+                        "ticker=? AND id<? ORDER BY id DESC LIMIT 1",
+                        (s["ticker"], s["id"])).fetchone()
+                want = str(row["tier"]).upper() if row and row["tier"] else "A"
+                if str(s["tier"] or "A").upper() != want:
+                    conn.execute("UPDATE trades SET tier=? WHERE id=?",
+                                 (want, s["id"]))
+                    fixed += 1
+            conn.commit()
+        if fixed:
+            logger.info(f"Migration: re-tiered {fixed} exit row(s) to match "
+                        f"their entries.")
+        set_meta("mig_20260813_exit_tier_backfill", "done")
+
     # 2026-07-26: purge the gatekeeper ERROR rows from the 2026-07-22 key
     # outage (import-order bug). They are noise in the decision record; the
     # incident itself is documented in git history. Guarded + idempotent.
@@ -424,9 +456,25 @@ def set_trade_order_id(trade_id: int, broker_order_id: str):
         conn.commit()
 
 
+def entry_tier(ticker: str, decision_id=None) -> str:
+    """Tier of the BUY this exit closes. Exits must inherit it — booking a
+    B-book loss to the A-book corrupts A-book statistics (PLTR, 2026-08-11)."""
+    with _lock, _connect() as conn:
+        if decision_id is not None:
+            row = conn.execute(
+                "SELECT tier FROM trades WHERE action='BUY' AND decision_id=? "
+                "ORDER BY id DESC LIMIT 1", (decision_id,)).fetchone()
+            if row and row["tier"]:
+                return str(row["tier"]).upper()
+        row = conn.execute(
+            "SELECT tier FROM trades WHERE action='BUY' AND ticker=? "
+            "ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
+        return str(row["tier"]).upper() if row and row["tier"] else "A"
+
+
 def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
                 decision_id=None, broker_order_id: str = None,
-                entry_price: float = None):
+                entry_price: float = None, tier: str = None):
     """SINGLE-AUTHORITY exit journaling. Every path that sees a fill (bot
     loop, orders.py sync, report startup sync) must come through here or
     respect the same rule: idempotence keys on the BROKER's order id.
@@ -439,10 +487,14 @@ def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
     entry = entry_price if entry_price else fill_price
     pnl_usd = (fill_price - entry) * qty
     pnl_pct = ((fill_price / entry) - 1) * 100 if entry else 0.0
+    # Inherit the entry's tier unless the caller states one.
+    resolved_tier = (str(tier).upper() if tier
+                     else entry_tier(ticker, decision_id))
     trade_id = log_trade(ticker, "SELL", qty, fill_price,
                          pnl_usd=pnl_usd, pnl_pct=pnl_pct, reason=reason,
                          decision_id=decision_id,
-                         broker_order_id=broker_order_id)
+                         broker_order_id=broker_order_id,
+                         tier=resolved_tier)
     link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
     return trade_id, pnl_usd, pnl_pct
 

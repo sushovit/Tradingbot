@@ -26,6 +26,34 @@ from broker import BrokerError
 logger = logging.getLogger(__name__)
 
 
+def duplicate_entry_exists(broker, ticker: str):
+    """DEFENSE IN DEPTH (2026-08-13 duplicate-worker incident): before ANY
+    entry, ask the ACCOUNT whether this ticker already has a position or a
+    working order. Two workers, a retry, or a stale cache can all produce a
+    second bracket; the broker is the only source that sees them all.
+
+    Returns a reason string if an entry must be refused, else None."""
+    try:
+        for p in broker.get_positions():
+            if p.symbol == ticker and abs(float(p.qty)) > 0:
+                return f"position already open ({p.qty} sh)"
+    except BrokerError as e:
+        # Cannot verify -> refuse. A missed trade beats a double fill.
+        return f"position check failed: {e}"
+    try:
+        working = [o for o in broker.get_live_orders(ticker)
+                   if o.symbol == ticker]
+        if working:
+            kinds = ", ".join(sorted({
+                str(getattr(o, "order_type", None)
+                    or getattr(o, "type", "")).split(".")[-1].lower()
+                for o in working}))
+            return f"{len(working)} working order(s) already at the broker ({kinds})"
+    except BrokerError as e:
+        return f"open-order check failed: {e}"
+    return None
+
+
 def is_bot_managed(state: dict) -> bool:
     """Trailing/leg management applies ONLY to positions the bot opened.
     Missing source defaults to 'unknown' -> not managed (safe direction)."""

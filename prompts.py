@@ -196,6 +196,12 @@ Setup: {setup_description}
 {news_str}
 
 === SETUP-SPECIFIC GUIDANCE ===
+If the setup type is momentum_continuation: the entry IS a break of the
+20-bar high, so "distance to resistance" of 0-1% is DEFINITIONAL, not a
+flaw. Rejecting a breakout because it is near the level it just broke is
+circular. Judge it on follow-through evidence instead: volume expansion,
+the size of the breakout bar, and whether RSI is overextended.
+
 If the setup type is mean_reversion_reclaim: proximity to the 20-bar high
 is NOT a negative factor. Ratified calibration (3y backtest): reclaims that
 complete within 2% of the 20-bar high returned +0.208R, versus -0.05R for

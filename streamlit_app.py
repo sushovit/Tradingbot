@@ -812,6 +812,18 @@ def _worker_loop():
                 status_updates.append(f"{ticker}: Pass ({reject_reason})")
                 continue
 
+            # Order-side dedupe: ask the ACCOUNT, not our cache, whether this
+            # ticker already has a position or a working bracket. This is what
+            # would have stopped the 2026-08-13 double fills (NOK 2x28sh).
+            dup = position_mgmt.duplicate_entry_exists(broker, ticker)
+            if dup:
+                journal_pass_once(ticker, signal.setup_name,
+                                  "duplicate_entry_blocked", dup,
+                                  bar_key=signal_bar_key)
+                logger.warning(f"{ticker}: DUPLICATE ENTRY BLOCKED — {dup}")
+                status_updates.append(f"{ticker}: duplicate blocked ({dup[:40]})")
+                continue
+
             try:
                 order = broker.submit_bracket(ticker, qty, signal.stop, signal.target)
             except BrokerError as e:

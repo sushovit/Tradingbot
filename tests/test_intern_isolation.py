@@ -121,6 +121,13 @@ def test_intern_trade_prefix_never_used_by_main_orders(temp_journal, tmp_path,
         def get_order(self, oid):
             return FakeBracket()
 
+        # Order-side dedupe interface (clean account: no dupes).
+        def get_positions(self):
+            return []
+
+        def get_live_orders(self, ticker=None):
+            return []
+
     positions = {}
     orders_mod.execute_order(
         {"action": "BUY", "ticker": "NVDA", "notional_usd": 300,

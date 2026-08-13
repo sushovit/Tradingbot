@@ -50,6 +50,13 @@ class FreshnessBroker:
     def get_equity(self):
         return 2000.0
 
+    # Order-side dedupe interface (clean account: no dupes).
+    def get_positions(self):
+        return []
+
+    def get_live_orders(self, ticker=None):
+        return []
+
     def get_latest_price(self, ticker):
         if self._fail:
             raise RuntimeError("quote endpoint down")

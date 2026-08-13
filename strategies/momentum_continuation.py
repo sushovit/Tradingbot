@@ -27,6 +27,10 @@ class MomentumContinuation(Strategy):
 
     def detect(self, df, context: dict):
         ticker = context["ticker"]
+        # Ratified 2026-08-13: threshold comes from config (1.3x), with the
+        # module constant as the fallback the calibration study overrides.
+        vol_mult = (context.get("config", {}) or {}).get(
+            "volume_multipliers", {}).get(self.name, VOLUME_MULT)
 
         if df is None or len(df) < LOOKBACK + 2:
             return None
@@ -46,10 +50,10 @@ class MomentumContinuation(Strategy):
             return None
 
         # --- Deterministic filters ---
-        if avg_volume <= 0 or float(breakout_bar['volume']) <= avg_volume * VOLUME_MULT:
+        if avg_volume <= 0 or float(breakout_bar['volume']) <= avg_volume * vol_mult:
             return Rejection(self.name, ticker, "volume_low",
                              f"Breakout volume {breakout_bar['volume']:.0f} <= "
-                             f"{VOLUME_MULT}x avg {avg_volume:.0f}")
+                             f"{vol_mult}x avg {avg_volume:.0f}")
         if change_pct <= MIN_CHANGE_PCT:
             return Rejection(self.name, ticker, "change_too_small",
                              f"Change {change_pct:.1f}% <= +{MIN_CHANGE_PCT}%")

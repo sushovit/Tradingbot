@@ -62,6 +62,13 @@ class FakeExecBroker:
     def get_equity(self):
         return self.equity
 
+    # Order-side dedupe interface (clean account: no dupes).
+    def get_positions(self):
+        return []
+
+    def get_live_orders(self, ticker=None):
+        return []
+
     def get_latest_price(self, ticker):
         return self.latest_price
 

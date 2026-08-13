@@ -344,6 +344,15 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         return f"TAKE_PARTIAL {ticker}: sold {qty_to_sell} of {qty_held}."
 
     # ---- BUY (bracket order) ----
+    # Order-side dedupe (2026-08-13): the account is the only source that
+    # sees every worker's orders.
+    import position_mgmt
+    dup = position_mgmt.duplicate_entry_exists(broker, ticker)
+    if dup:
+        journal.log_rules_pass(ticker, order.get("setup", "discretionary"),
+                               "duplicate_entry_blocked", dup)
+        return f"BUY {ticker}: REFUSED — duplicate entry blocked ({dup})."
+
     entry = float(order["entry"])
     stop = float(order["stop"])
     target = float(order["target"])
