@@ -76,13 +76,39 @@ def compute_trailing_stop(df, risk_profile: dict, current_price: float):
     return current_price * (1 - (trailing_stop_value / 100.0))
 
 
+def r_multiple(state: dict, current_price: float):
+    """Open profit in R, measured against the INITIAL structural stop.
+    None when the entry/stop geometry is unknown."""
+    entry = state.get("entry_price")
+    initial = state.get("initial_stop", state.get("trailing_stop_price"))
+    try:
+        entry, initial = float(entry), float(initial)
+    except (TypeError, ValueError):
+        return None
+    risk = entry - initial
+    if risk <= 0:
+        return None
+    return (current_price - entry) / risk
+
+
 def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
                        df, risk_profile: dict, current_price: float) -> bool:
     """Ratchet a BOT position's broker-side stop leg up. Returns True if the
     stop was replaced. CEO/unknown positions are never touched — that is the
-    ownership boundary, enforced here and nowhere else."""
+    ownership boundary, enforced here and nowhere else.
+
+    THE INITIAL STOP STANDS UNTIL +1R. The structural stop comes from the
+    playbook (reclaim/breakout bar low); trailing it with INTRADAY ATR from
+    the moment of entry collapses a 4.9% daily-structure stop to noise
+    level — NOK 2026-08-13 entered at 10.76 with a 10.21 stop and was
+    trailed out at 10.74 (0.2%) within 42 minutes. ATR trailing is only
+    allowed once the trade has paid for its own risk."""
     if not is_bot_managed(state):
         return False
+
+    r = r_multiple(state, current_price)
+    if r is not None and r < 1.0:
+        return False        # structural stop stands; not yet +1R
 
     new_stop = compute_trailing_stop(df, risk_profile, current_price)
     if new_stop is None:

@@ -569,11 +569,17 @@ def _worker_loop():
                         status_updates.append(f"{ticker}: SOLD (manual)")
                         continue
 
-                    # 4) Trailing stop: BOT positions only. CEO / unknown
-                    # positions are display-only — the bot never replaces
-                    # their legs (ownership boundary, Goal 11).
+                    # 4) Trailing stop: BOT positions only, and only past
+                    # +1R (the structural stop stands until then). Daily
+                    # setups trail on DAILY bars — trailing a daily
+                    # structure with 5-min ATR is what killed NOK.
+                    trail_df = df
+                    if state.get("timeframe") == "daily":
+                        daily_df_for_trail = daily_bars.get(ticker)
+                        if daily_df_for_trail is not None and not daily_df_for_trail.empty:
+                            trail_df = daily_df_for_trail
                     position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
-                                                     state, df, risk_profile,
+                                                     state, trail_df, risk_profile,
                                                      current_price)
 
                     entry_price = state.get("entry_price", current_price)
@@ -870,8 +876,15 @@ def _worker_loop():
                 "source": "bot",   # ownership: the bot manages ONLY its own entries
                 "entry_price": fill_price,
                 "shares_held": qty,
+                # initial_stop is the PLAYBOOK-STRUCTURAL stop (reclaim/
+                # breakout bar low). It never moves, so the R distance
+                # survives every ratchet and gates trailing until +1R.
+                "initial_stop": signal.stop,
                 "trailing_stop_price": signal.stop,
                 "profit_target_price": signal.target,
+                "timeframe": ("daily" if signal.setup_name in
+                              ("mean_reversion_reclaim", "momentum_continuation")
+                              else "intraday"),
                 "stop_order_id": stop_order_id,
                 "target_order_id": target_order_id,
                 "entry_order_id": str(order.id),
