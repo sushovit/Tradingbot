@@ -74,9 +74,24 @@ def collect_bundle() -> dict:
     drop_path = os.path.join("drop", "latest.md")
     if os.path.exists(drop_path):
         with open(drop_path, "r", encoding="utf-8", errors="replace") as f:
-            bundle["drop"] = f.read()[:12000]
+            drop_text = f.read()
+        bundle["drop"] = drop_text[:12000]
+        # PROVENANCE: the embedded bundle may cover a DIFFERENT session than
+        # "today" (a post-close review at 16:30 ET vs a drop written that
+        # morning, or a manual run after midnight). Without this the two
+        # counters look like a contradiction — the reviewer flagged exactly
+        # that. State the drop's own stamp so it can reconcile them.
+        stamp = ""
+        for line in drop_text.splitlines()[:6]:
+            if " ET  |  " in line:
+                stamp = line.strip()
+                break
+        bundle["drop_stamp"] = stamp or "(no header stamp found)"
+        bundle["drop_date"] = stamp[:10] if stamp else "unknown"
     else:
         bundle["drop"] = "(no drop/latest.md — session bundle unavailable)"
+        bundle["drop_stamp"] = "(none)"
+        bundle["drop_date"] = "unknown"
 
     # Intern report.
     intern_path = os.path.join("reports", f"intern_{today}.md")
@@ -106,18 +121,53 @@ def collect_bundle() -> dict:
     else:
         bundle["heartbeat_age_secs"] = None
 
-    # Open positions + age in sessions (10+ = re-ratification due).
+    # Governance: CEO rulings, overrides, tags — the desk being RUN.
+    try:
+        bundle["governance"] = journal.governance_rows()
+        bundle["counts"] = journal.decision_counts()
+    except Exception as e:
+        bundle["governance"] = []
+        bundle["counts"] = {"error": str(e)}
+
+    # Open positions + LIVE bracket geometry so R:R is verifiable, plus the
+    # risk-free flag that kills the BAC REVIEW-DUE false positive at source.
     try:
         from broker import Broker
         broker = Broker()
+        live_stops, live_targets = {}, {}
+        try:
+            for o in broker.get_live_orders():
+                otype = str(getattr(o, "order_type", None)
+                            or getattr(o, "type", "")).lower()
+                if "stop" in otype and getattr(o, "stop_price", None):
+                    live_stops[o.symbol] = float(o.stop_price)
+                elif "limit" in otype and getattr(o, "limit_price", None):
+                    live_targets[o.symbol] = float(o.limit_price)
+        except Exception as e:
+            bundle["orders_error"] = str(e)
+
         positions = []
         for p in broker.get_positions():
+            entry = float(p.avg_entry_price)
+            current = float(getattr(p, "current_price", 0) or 0)
+            stop = live_stops.get(p.symbol)
+            target = live_targets.get(p.symbol)
+            risk_amt = (current - stop) if (stop and current) else None
+            reward_amt = (target - current) if (target and current) else None
             positions.append({
                 "ticker": p.symbol, "qty": float(p.qty),
-                "entry": float(p.avg_entry_price),
-                "current": float(getattr(p, "current_price", 0) or 0),
+                "entry": entry, "current": current,
                 "unrealized_pl": float(getattr(p, "unrealized_pl", 0) or 0),
                 "sessions_held": position_sessions_held(p.symbol),
+                "stop": stop, "target": target,
+                "stop_pct": round((current - stop) / current * 100, 2)
+                if (stop and current) else None,
+                "target_pct": round((target - current) / current * 100, 2)
+                if (target and current) else None,
+                "rr_remaining": round(reward_amt / risk_amt, 2)
+                if (risk_amt and risk_amt > 0 and reward_amt is not None) else None,
+                # Stop at/above entry: nothing left to re-underwrite.
+                "risk_free": bool(stop is not None and stop >= entry),
             })
         bundle["positions"] = positions
         bundle["equity"] = broker.get_equity()
@@ -143,10 +193,24 @@ def position_sessions_held(ticker: str):
 def build_user_prompt(bundle: dict) -> str:
     pos_lines = "\n".join(
         f"- {p['ticker']}: {p['qty']:g} @ ${p['entry']:,.2f} (now ${p['current']:,.2f}, "
-        f"unrealized ${p['unrealized_pl']:+,.2f}, held {p['sessions_held']} sessions"
-        + (" — REVIEW DUE" if (p["sessions_held"] or 0) >= POSITION_AGE_REVIEW else "")
-        + ")"
+        f"unrealized ${p['unrealized_pl']:+,.2f}, held {p['sessions_held']} sessions) | "
+        f"stop {('$%.2f (-%.2f%%)' % (p['stop'], p['stop_pct'])) if p.get('stop') else 'NONE'}"
+        f" | target {('$%.2f (+%.2f%%)' % (p['target'], p['target_pct'])) if p.get('target') else 'NONE'}"
+        f" | R:R remaining {p.get('rr_remaining') if p.get('rr_remaining') is not None else 'n/a'}"
+        + (" | RISK-FREE (stop at/above entry — exempt from re-ratification)"
+           if p.get("risk_free") else "")
+        + (" | REVIEW DUE"
+           if (p["sessions_held"] or 0) >= POSITION_AGE_REVIEW
+           and not p.get("risk_free") else "")
         for p in bundle.get("positions", [])) or "- none"
+    gov_lines = "\n".join(
+        f"- {g['time']} [{g['source']}] {g['ticker']} {g['setup'] or ''}: "
+        + ("APPROVED" if g["approved"] else "REJECTED")
+        + (f" tag={g['tag']}" if g.get("tag") else "")
+        + (f" reason={g['reason']}" if g.get("reason") else "")
+        + (f" — {g['note']}" if g.get("note") else "")
+        for g in bundle.get("governance", [])) or "- none"
+    counts = bundle.get("counts", {})
     trade_lines = "\n".join(
         f"- {t['timestamp']} {t['action']} {t['qty']:g} {t['ticker']} @ "
         f"${t['price']:,.2f} (PnL ${t['pnl_usd']:+,.2f}) [{t['reason']}]"
@@ -157,16 +221,30 @@ def build_user_prompt(bundle: dict) -> str:
 
 === ACCOUNT ===
 Equity: ${bundle.get('equity', 0):,.2f} | Realized PnL today: ${bundle.get('realized_pnl', 0):+,.2f}
-Decisions journaled today: {bundle.get('decision_count', 0)}
+Decisions journaled today: {counts.get('total', bundle.get('decision_count', 0))} total
+  = {counts.get('gatekeeper_calls', 0)} gatekeeper/CEO calls
+  + {counts.get('rules_passes', 0)} deterministic rules passes
+  + the remainder (intern desk, review). Full breakdown: {counts.get('by_source', {})}
+  NOTE: "gatekeeper calls" and "decisions" are DIFFERENT counters — they
+  are not expected to match.
 Worker heartbeat age: {hb if hb is not None else 'unknown'}s{' (STALE)' if bundle.get('heartbeat_stale') else ''}
 
-=== OPEN POSITIONS ===
+=== OPEN POSITIONS (live bracket geometry — R:R is verifiable from this) ===
 {pos_lines}
+
+=== GOVERNANCE DECISIONS TODAY (CEO rulings, overrides, tags) ===
+{gov_lines}
 
 === TODAY'S FILLS ===
 {trade_lines}
 
 === SESSION BUNDLE (report / universe / floor) ===
+PROVENANCE: this bundle was generated {bundle.get('drop_stamp', 'unknown')}
+(session date {bundle.get('drop_date', 'unknown')}). The account/journal
+figures above are for {bundle['date']}. If those dates differ, the two sets
+of counts describe DIFFERENT sessions and are not in conflict — say which
+session each number belongs to rather than reporting a mismatch.
+
 {bundle.get('drop', '')}
 
 === JUNIOR ANALYST REPORT ===
@@ -251,6 +329,18 @@ def main() -> int:
         return 0                      # never crash the scheduled job
 
     review = result["text"]
+    # Persist the memo so drop.py can carry it to the CEO desk (Discord is
+    # delivery, not storage).
+    try:
+        os.makedirs("reports", exist_ok=True)
+        memo_path = os.path.join("reports", f"review_{bundle['date']}.md")
+        with open(memo_path, "w", encoding="utf-8") as f:
+            f.write(f"# Daily review — {bundle['date']}\n"
+                    f"{bundle.get('clock', '')}\n\n{review}\n")
+        print(f"Memo written: {memo_path}")
+    except OSError as e:
+        print(f"(could not write memo file: {e})")
+
     journal.log_decision(
         "DESK", "daily_review",
         {"date": bundle["date"], "positions": len(bundle.get("positions", [])),

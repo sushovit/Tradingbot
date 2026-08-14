@@ -88,6 +88,17 @@ def run_script(script: str) -> str:
         return f"[{script} TIMED OUT after {SCRIPT_TIMEOUT}s]"
 
 
+def latest_review_memo() -> str:
+    """The newest review_*.md, so the CEO memo rides along with the session
+    bundle instead of living only in Discord."""
+    import glob
+    memos = sorted(glob.glob(os.path.join("reports", "review_*.md")))
+    if not memos:
+        return "(no review memo yet — review_bot runs ~16:30 ET)"
+    with open(memos[-1], "r", encoding="utf-8", errors="replace") as f:
+        return f"_Source: {os.path.basename(memos[-1])}_\n\n" + f.read()
+
+
 def todays_intern_report() -> str:
     path = os.path.join("reports",
                         f"intern_{clockline.now_et():%Y-%m-%d}.md")
@@ -132,6 +143,9 @@ def main() -> int:
         print(f"  done ({int(time.monotonic() - started)}s)", flush=True)
     print("collecting intern report ...", flush=True)
     sections.append(("intern desk (today)", todays_intern_report()))
+    # The CEO memo rides along as the FINAL section of every session bundle.
+    print("collecting review memo ...", flush=True)
+    sections.append(("CEO REVIEW MEMO (latest)", latest_review_memo()))
 
     content = assemble(sections)
     session_path, latest_path = write_drop(content)

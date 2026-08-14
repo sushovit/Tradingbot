@@ -293,13 +293,78 @@ def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
     """Journal a signal that fired but was killed by a DETERMINISTIC filter
     (ADX low, volume low, SPY bearish, circuit breaker, ...). Together with
     gatekeeper rows this makes the journal a complete record of every signal
-    considered."""
+    considered.
+
+    Idempotent AT THE DATABASE, per (ticker, setup, filter, ET day). The
+    in-memory per-cycle dedupe lives inside one worker process, so a
+    restarted or duplicated worker re-journalled the same pass — 2026-08-13
+    carried 35 extra rows, some setups four deep. Returns the existing row's
+    id when the pass is already recorded today."""
+    today = _today_et()
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM decisions WHERE source='rules' AND ticker=? "
+            "AND setup_name=? AND timestamp LIKE ? "
+            "AND json_extract(verdict,'$.rejection_reason')=? LIMIT 1",
+            (ticker, setup_name, f"{today}%", filter_name)).fetchone()
+        if row:
+            return row["id"]
     return log_decision(
         ticker, setup_name,
         {"details": details},
         {"approved": False, "rejection_reason": filter_name, "source": "rules"},
         source="rules",
     )
+
+
+def decision_counts(date_str: str = None) -> dict:
+    """Self-explaining counters: total, by source, and the gatekeeper subset
+    that floor.py reports. Two different numbers for 'decisions today' is
+    what the reviewer flagged; this makes each one say what it counts."""
+    date_str = date_str or _today_et()
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT source, COUNT(*) AS n FROM decisions WHERE timestamp LIKE ? "
+            "GROUP BY source", (f"{date_str}%",)).fetchall()
+    by_source = {r["source"]: r["n"] for r in rows}
+    gatekeeper_sources = ("claude", "local", "local_shadow", "smoke_test", "ceo")
+    return {
+        "total": sum(by_source.values()),
+        "by_source": by_source,
+        "gatekeeper_calls": sum(by_source.get(s, 0) for s in gatekeeper_sources),
+        "rules_passes": by_source.get("rules", 0),
+    }
+
+
+def governance_rows(date_str: str = None) -> list:
+    """Today's GOVERNANCE decisions — CEO sheet rulings, overrides, review
+    memos, tier/exemption tags. The reviewer needs to see the desk being
+    run, not only the fills it produced."""
+    date_str = date_str or _today_et()
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT timestamp, ticker, setup_name, source, approved, "
+            "conviction_score, verdict, context FROM decisions "
+            "WHERE timestamp LIKE ? AND (source IN "
+            "('ceo','ceo_override','review_bot','intern') "
+            "OR json_extract(verdict,'$.tag') IS NOT NULL) ORDER BY id",
+            (f"{date_str}%",)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            verdict = json.loads(r["verdict"] or "{}")
+        except json.JSONDecodeError:
+            verdict = {}
+        out.append({
+            "time": (r["timestamp"] or "")[11:19],
+            "ticker": r["ticker"], "setup": r["setup_name"],
+            "source": r["source"],
+            "approved": bool(r["approved"]),
+            "tag": verdict.get("tag"),
+            "reason": verdict.get("rejection_reason"),
+            "note": (verdict.get("reasoning") or "")[:200],
+        })
+    return out
 
 
 def log_signal_tag(ticker: str, setup_name: str, tag: str,
