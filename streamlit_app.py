@@ -32,6 +32,7 @@ import universe
 import position_mgmt
 import daily_eval
 import safe_io
+import session_clock
 from broker import Broker, BrokerError
 from strategies import enabled_strategies, Signal, Rejection
 
@@ -419,6 +420,24 @@ def _worker_loop():
             continue
 
         now_et = datetime.now(EASTERN_TZ)
+
+        # END OF SESSION: shut the desk down instead of idling all night.
+        # The lock is released so nothing looks "running behind" and the
+        # watchdog has nothing to resurrect.
+        if session_clock.session_over(config, now_et):
+            nepal = session_clock.nepal_str(config)
+            logger.info(f"Session over ({now_et:%H:%M} ET / {nepal} Nepal) — "
+                        f"worker shutting down for the day.")
+            write_status(f"Session ended {now_et:%H:%M} ET ({nepal} Nepal) — "
+                         f"worker stopped. Start again with "
+                         f"'python run_worker.py'.")
+            try:
+                if os.path.exists(LOCK_FILE):
+                    os.remove(LOCK_FILE)
+            except OSError as e:
+                logger.warning(f"could not release lock on shutdown: {e}")
+            return
+
         if not (now_et.weekday() < 5 and dttime(9, 30) <= now_et.time() < dttime(16, 0)):
             write_status("Market is CLOSED. Waiting...")
             a_time.sleep(30)

@@ -135,8 +135,20 @@ def main(argv=None) -> int:
 
     write_lock(os.getpid())
 
+    try:
+        import json
+        import session_clock
+        with open("bot_config.json") as f:
+            cfg = json.load(f)
+        print(f"worker starting (PID {os.getpid()}) — will shut itself down "
+              f"at {cfg.get('session_end_et', '16:15')} ET "
+              f"({session_clock.nepal_str(cfg)} Nepal).")
+    except Exception:
+        print(f"worker starting (PID {os.getpid()})")
+
     import streamlit_app  # noqa: E402  (bare-mode import)
     streamlit_app.live_bot_worker()
+    print("worker stopped (session ended or lock removed).")
     return 0
 
 

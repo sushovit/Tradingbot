@@ -130,6 +130,26 @@ def post_alert(message: str):
 
 def main() -> int:
     dry_run = "--dry-run" in sys.argv
+
+    # The worker shuts itself down at session end. Outside the session
+    # window there is nothing that SHOULD be running, so the watchdog must
+    # never resurrect it — that would be the "service running behind" the
+    # shutdown exists to prevent.
+    try:
+        import json as _json
+        import session_clock
+        try:
+            with open("bot_config.json") as f:
+                cfg = _json.load(f)
+        except (OSError, ValueError):
+            cfg = {}
+        if not session_clock.in_session_window(cfg):
+            print("watchdog: outside the session window — nothing should be "
+                  "running; no action.")
+            return 0
+    except Exception as e:
+        print(f"watchdog: session-window check failed ({e}); continuing.")
+
     lock_exists = os.path.exists(LOCK_FILE)
     age = heartbeat_age()
     restart, reason = needs_restart(lock_exists, age)

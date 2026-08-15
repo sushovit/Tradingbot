@@ -101,6 +101,10 @@ def test_boundary_exactly_at_threshold_is_healthy():
 
 
 def test_restart_sequence_kills_clears_relaunches_alerts(tmp_path, monkeypatch):
+    import session_clock
+    # Restart behaviour is only in scope DURING the session window.
+    monkeypatch.setattr(session_clock, "in_session_window",
+                        lambda cfg, now=None: True)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "bot.run").write_text("")
     status = tmp_path / "bot_status.log"

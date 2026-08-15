@@ -49,6 +49,9 @@ def test_worker_starts_with_no_status_file(tmp_path, monkeypatch):
 def test_watchdog_aborts_if_kill_fails(tmp_path, monkeypatch):
     """Never launch beside survivors: if processes outlive the kill, the
     watchdog must abort rather than create a second instance."""
+    import session_clock
+    monkeypatch.setattr(session_clock, "in_session_window",
+                        lambda cfg, now=None: True)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "bot.run").write_text("")
     status = tmp_path / "bot_status.log"
@@ -71,6 +74,9 @@ def test_watchdog_aborts_if_kill_fails(tmp_path, monkeypatch):
 
 
 def test_watchdog_launches_when_kill_confirmed(tmp_path, monkeypatch):
+    import session_clock
+    monkeypatch.setattr(session_clock, "in_session_window",
+                        lambda cfg, now=None: True)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "bot.run").write_text("")
     status = tmp_path / "bot_status.log"

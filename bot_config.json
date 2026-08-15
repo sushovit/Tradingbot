@@ -4,6 +4,7 @@
     "max_position_pct": 0.25,
     "max_positions": 3,
     "daily_loss_limit_pct": 3.0,
+    "session_end_et": "16:15",
     "analyst_mode": "shadow",
     "models": {
         "gatekeeper": "claude-sonnet-5",
