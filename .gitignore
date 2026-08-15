@@ -33,3 +33,4 @@ drop/
 .claude/scheduled_tasks.lock
 data/
 training_candidate.jsonl
+logs/
