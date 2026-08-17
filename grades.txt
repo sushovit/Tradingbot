@@ -1,0 +1,4 @@
+2026-08-13 SCHW bad "ADX 56 cited, scored 37 - conviction inversely tracks strength"
+2026-08-13 NOK bad "ADX 47 cited, scored 30 - same inversion"
+2026-08-13 GM bad "ADX-only reasoning, no second indicator or structure"
+2026-08-13 ABNB ungradeable "re-rank distinct values confirmed - the fix that worked"
