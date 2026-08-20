@@ -239,6 +239,20 @@ def get_gatekeeper_decision(
         if "approved" not in result:
             result["approved"] = False
 
+        # AN APPROVAL WITHOUT REASONING IS UNAUDITABLE, so it is refused.
+        # Rejections explain themselves; an unexplained "approved, 78" gives
+        # the desk nothing to review and nothing to learn from. Failing safe
+        # (no trade) is the only defensible direction here.
+        if result["approved"] and not str(result.get("reasoning") or "").strip():
+            logger.error(
+                "GATEKEEPER APPROVED WITHOUT REASONING for %s — refusing the "
+                "approval. Raw verdict: %s", ticker, json.dumps(result)[:1500])
+            result["approved"] = False
+            result["rejection_reason"] = "approval_without_reasoning"
+            result["reasoning"] = (
+                "Refused by the harness: the model approved this setup but "
+                "supplied no reasoning, which is unauditable.")
+
     return result
 
 

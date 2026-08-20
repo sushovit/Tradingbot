@@ -132,6 +132,8 @@ def gatekeeper_section(conn, today, stats: dict) -> list:
         "SELECT timestamp, ticker, setup_name, source, approved, "
         "conviction_score, agreement, "
         "json_extract(verdict,'$.rejection_reason') AS reason, "
+        "json_extract(verdict,'$.reasoning') AS reasoning, "
+        "json_extract(verdict,'$.tag') AS tag, "
         "json_extract(verdict,'$.error') AS error "
         "FROM decisions WHERE source IN "
         "('claude','local','local_shadow','smoke_test','ceo') "
@@ -148,11 +150,21 @@ def gatekeeper_section(conn, today, stats: dict) -> list:
     for r in rows:
         if r["error"]:
             verdict = "ERROR"
+        elif r["tag"]:
+            # Tag rows (e.g. Rule #5 chop_reclaim) carry approved=1 so they
+            # stay out of the rejection log — they are NOT gatekeeper
+            # approvals and must not read as one (F, 2026-08-17).
+            verdict = f"🏷 tag:{r['tag']}"
         else:
             verdict = "✅ approved" if r["approved"] else "❌ rejected"
         agreement = ("—" if r["agreement"] is None
                      else ("agree" if r["agreement"] else "DISAGREE"))
-        note = (r["error"] or r["reason"] or "").replace("|", "/")[:50]
+        # An APPROVAL has no rejection_reason, so the old note column was
+        # always blank for approvals — the reasoning was journaled but never
+        # rendered, which made every approval look unexplained. Show the
+        # reasoning for approvals; the rejection reason for rejections.
+        note = (r["error"] or r["reason"] or r["reasoning"] or "")
+        note = note.replace("|", "/").replace(chr(10), " ")[:110]
         conviction = r["conviction_score"] if r["conviction_score"] is not None else "—"
         lines.append(f"| {r['timestamp'][11:19]} | {r['ticker']} | {r['setup_name']} "
                      f"| {r['source']} | {verdict} | {conviction} | {agreement} | {note} |")
