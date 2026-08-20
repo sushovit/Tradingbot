@@ -288,6 +288,26 @@ def log_decision(ticker: str, setup_name: str, context: dict, verdict: dict,
         return cur.lastrowid
 
 
+def log_integrity_event(kind: str, details: str) -> int:
+    """Operational integrity events (write degradation, etc.). Journaled as
+    source='ops' so the daily reviewer sees infrastructure problems, not
+    just trading ones. Deduped per (kind, target, ET day) so a persistent
+    fault logs once a day instead of flooding the decision record."""
+    today = _today_et()
+    target = details.split(":")[0].strip()
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM decisions WHERE source='ops' AND ticker=? "
+            "AND setup_name=? AND timestamp LIKE ? LIMIT 1",
+            (target[:40], kind, f"{today}%")).fetchone()
+        if row:
+            return row["id"]
+    return log_decision(
+        target[:40], kind, {"details": details},
+        {"approved": False, "rejection_reason": kind, "reasoning": details},
+        source="ops")
+
+
 def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
                    details: str = "") -> int:
     """Journal a signal that fired but was killed by a DETERMINISTIC filter
@@ -346,7 +366,7 @@ def governance_rows(date_str: str = None) -> list:
             "SELECT timestamp, ticker, setup_name, source, approved, "
             "conviction_score, verdict, context FROM decisions "
             "WHERE timestamp LIKE ? AND (source IN "
-            "('ceo','ceo_override','review_bot','intern') "
+            "('ceo','ceo_override','review_bot','intern','ops') "
             "OR json_extract(verdict,'$.tag') IS NOT NULL) ORDER BY id",
             (f"{date_str}%",)).fetchall()
     out = []
