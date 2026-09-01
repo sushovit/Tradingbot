@@ -338,6 +338,180 @@ def replay_symbol(symbol: str, df: pd.DataFrame, strat_name: str,
                                target_r), rejections
 
 
+# ======================================================= research lane
+# WORK ORDER 2026-09-01 item 8 — RESEARCH ONLY. Like the short lane, these
+# detectors live in backtest.py and NOWHERE else: they are not in
+# strategies/REGISTRY, no live path imports them, and nothing can trade them.
+# A boardroom reviews these numbers before any live wiring exists.
+
+PULLBACK_LOOKBACK = 12      # bars of pullback inspected before the trigger
+PEC_GAP_PCT = 5.0           # minimum gap-up
+PEC_GAP_VOL_MULT = 2.0      # gap must come on volume
+PEC_WINDOW = 5              # trigger must arrive within 5 sessions of the gap
+PEC_MAX_HOLD = 55           # < one quarter of sessions: never held into a print
+
+
+def detect_pullback_in_uptrend(window: pd.DataFrame):
+    """Price above RISING 20/50-day EMAs, a pullback to the 20-day EMA on
+    DECLINING volume, entry on the first close back above the prior day's
+    high. Stop under the pullback low.
+
+    window[-1] is the entry bar (only its open is ever used); window[-2] is
+    the completed trigger bar. No lookahead."""
+    if len(window) < 55:
+        return None
+    hist = window.iloc[:-1]                       # completed bars only
+    close = hist["close"]
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    bar, prior = hist.iloc[-1], hist.iloc[-2]
+    e20, e50 = float(ema20.iloc[-1]), float(ema50.iloc[-1])
+
+    # 1. uptrend: stacked AND rising (a flat 20>50 is not an uptrend)
+    if e20 <= e50:
+        return None
+    if not (e20 > float(ema20.iloc[-6]) and e50 > float(ema50.iloc[-6])):
+        return "emas_not_rising"
+    if float(bar["close"]) <= e20:
+        return "close_not_back_above_ema20"
+
+    # 2. a real pullback: price actually traded down to the 20-day EMA
+    look = hist.iloc[-(PULLBACK_LOOKBACK + 1):-1]
+    e20_look = ema20.iloc[-(PULLBACK_LOOKBACK + 1):-1]
+    if len(look) < 4:
+        return None
+    if not bool((look["low"].values <= e20_look.values * 1.01).any()):
+        return "no_pullback_to_ema20"
+
+    # 3. the pullback must be ORDERLY — supply drying up, not distribution
+    pull_vol = float(look["volume"].mean())
+    base = hist["volume"].iloc[-(PULLBACK_LOOKBACK + 21):-(PULLBACK_LOOKBACK + 1)]
+    base_vol = float(base.mean()) if len(base) else 0.0
+    if base_vol <= 0 or pull_vol >= base_vol:
+        return "pullback_volume_not_declining"
+
+    # 4. trigger: the FIRST close back above the prior day's high SINCE the
+    #    pullback low. "First" has to be anchored to the pullback, not to
+    #    yesterday — in a smooth grind-up every bar closes above the prior
+    #    high, and anchoring on yesterday alone rejects the real trigger.
+    if float(bar["close"]) <= float(prior["high"]):
+        return "no_reclaim_of_prior_high"
+    lows = look["low"].values
+    low_pos = int(lows.argmin())
+    since = hist.iloc[-(PULLBACK_LOOKBACK + 1) + low_pos + 1:-1]
+    if len(since) >= 2:
+        prior_highs = since["high"].shift(1)
+        if bool((since["close"].iloc[1:] > prior_highs.iloc[1:]).any()):
+            return "not_first_trigger"
+
+    stop = float(look["low"].min())
+    return {"stop_level": stop, "setup": "pullback_in_uptrend"}
+
+
+def detect_post_earnings_continuation(window: pd.DataFrame):
+    """Gap-up >= 5% on >= 2x volume, entry on the first close above the
+    gap day's high within 5 sessions, stop under the gap day's low.
+
+    HONEST LIMITATION: the work order specifies a VERIFIED EARNINGS BEAT.
+    We have no earnings calendar and no estimates feed — Alpaca gives us
+    bars, not fundamentals — so "verified beat" is NOT tested here. What is
+    tested is its observable shadow: a >=5% gap on >=2x volume. That set
+    contains earnings beats and also contains M&A pops, guidance raises and
+    sector news. Read every number below as the gap-up class, not the
+    earnings class, until a fundamentals feed exists."""
+    if len(window) < 30:
+        return None
+    hist = window.iloc[:-1]
+    bar = hist.iloc[-1]
+    for back in range(1, PEC_WINDOW + 1):
+        if len(hist) < 27 + back:
+            break
+        gap_bar, prev = hist.iloc[-1 - back], hist.iloc[-2 - back]
+        prev_close = float(prev["close"])
+        if prev_close <= 0:
+            continue
+        if (float(gap_bar["open"]) / prev_close - 1) * 100 < PEC_GAP_PCT:
+            continue
+        base = hist["volume"].iloc[-21 - back:-1 - back]
+        base_vol = float(base.mean()) if len(base) else 0.0
+        if base_vol <= 0 or float(gap_bar["volume"]) < base_vol * PEC_GAP_VOL_MULT:
+            continue
+
+        gap_high, gap_low = float(gap_bar["high"]), float(gap_bar["low"])
+        if float(bar["close"]) <= gap_high:
+            return "no_close_above_gap_high"
+        between = hist.iloc[-back:]
+        if len(between) > 1 and bool((between["close"].iloc[:-1] > gap_high).any()):
+            return "not_first_close_above"
+        return {"stop_level": gap_low, "setup": "post_earnings_continuation",
+                "max_hold": PEC_MAX_HOLD}
+    return None
+
+
+RESEARCH_DETECTORS = {
+    "pullback_in_uptrend": detect_pullback_in_uptrend,
+    "post_earnings_continuation": detect_post_earnings_continuation,
+}
+RESEARCH_TARGET_R = 3.0
+
+
+def replay_research(symbol: str, df: pd.DataFrame, name: str,
+                    regime: pd.Series, target_r: float = RESEARCH_TARGET_R,
+                    detectors: dict = None) -> list:
+    """Long-side replay for the research detectors, using the SAME mechanics
+    as the live playbook: next-bar-open entry, bracket exit, whole shares,
+    1% risk on $2,000, 25% cap, one position per symbol at a time."""
+    detector = (detectors or RESEARCH_DETECTORS)[name]
+    trades, busy_until = [], -1
+    for i in range(WARMUP_BARS, len(df)):
+        if i <= busy_until:
+            continue
+        window = df.iloc[max(0, i - DETECT_WINDOW + 1):i + 1]
+        result = detector(window)
+        if not isinstance(result, dict):
+            continue
+        entry = float(df["open"].iloc[i])
+        stop = float(result["stop_level"])
+        if stop >= entry:
+            continue
+        target = entry + (entry - stop) * target_r
+        qty = risk.position_size(BASE_EQUITY, RISK_PCT, entry, stop,
+                                 position_cap_pct=POSITION_CAP)
+        if qty < 1:
+            continue
+        exit_price, exit_i, reason = simulate_bracket(df, i, entry, stop, target)
+        max_hold = result.get("max_hold")
+        held_too_long = (max_hold and exit_i is not None
+                         and exit_i - i > max_hold)
+        if exit_price is None or held_too_long:
+            # Time stop: the setup never holds through the next print.
+            cap_i = min(i + max_hold, len(df) - 1) if max_hold else None
+            if cap_i is None or cap_i <= i:
+                break
+            exit_price = float(df["close"].iloc[cap_i])
+            exit_i, reason = cap_i, "time_stop"
+        busy_until = exit_i
+        r_mult = (exit_price - entry) / (entry - stop)
+        sig_day = df.index[i - 1]
+        in_regime = bool(regime.reindex([sig_day]).fillna(False).iloc[0]) \
+            if regime is not None else True
+        trades.append({
+            "symbol": symbol, "strategy": name,
+            "signal_date": str(sig_day)[:10],
+            "entry_date": str(df.index[i])[:10],
+            "exit_date": str(df.index[exit_i])[:10],
+            "entry": round(entry, 2), "stop": round(stop, 2),
+            "target": round(target, 2), "exit": round(float(exit_price), 2),
+            "qty": qty, "r": round(r_mult, 3),
+            "pnl_usd": round((exit_price - entry) * qty, 2),
+            "exit_reason": reason,
+            "regime": "trending" if in_regime else "chop",
+            "bars_held": exit_i - i,
+        })
+    return trades
+
+
+
 # ============================================================ metrics
 
 def aggregate(trades: list) -> dict:
@@ -478,6 +652,70 @@ def run_backtest(symbols, years=3, refresh=False, sweeps=True):
             st = aggregate(sim_pass(sigs, 2.0))
             lines.append(f"| ATR x{mult} | {st['trades']} "
                          f"| {st['win_rate']} | {st['expectancy_r']} |")
+
+    # ---- Work order 2026-09-01 item 8: NEW SETUP RESEARCH (never live) ----
+    lines.append("\n## New setup research — BACKTEST ONLY (not wired live)")
+    lines.append("_Neither setup is in strategies/REGISTRY; no live path can "
+                 "reach them. 3R target, next-bar-open entry, same sizing and "
+                 "bracket mechanics as the live playbook._")
+    lines.append("")
+    lines.append("**post_earnings_continuation caveat:** the specification "
+                 "says *verified beat*. We have no earnings calendar and no "
+                 "estimates feed, so the beat is NOT tested — only its "
+                 "observable shadow (a >=5% gap on >=2x volume), which also "
+                 "contains M&A pops, guidance raises and sector news. Read "
+                 "the rows below as the gap-up class, not the earnings class. "
+                 f"Holds are capped at {PEC_MAX_HOLD} sessions so no trade "
+                 "spans the next print.")
+    research_all = []
+    for name in RESEARCH_DETECTORS:
+        for sym, df in bars.items():
+            research_all.extend(replay_research(sym, df, name, regime,
+                                                RESEARCH_TARGET_R))
+    lines.append("\n### Per setup x regime (3R target)")
+    lines.append("| Setup | Regime | Trades | Win% | Avg R | Expectancy | PF "
+                 "| MaxDD (R) | Avg $ |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
+    for name in RESEARCH_DETECTORS:
+        for reg in ("trending", "chop"):
+            st = aggregate([t for t in research_all
+                            if t["strategy"] == name and t["regime"] == reg])
+            lines.append(f"| {name} | {reg} | {st['trades']} | {st['win_rate']} "
+                         f"| {st['avg_r']} | {st['expectancy_r']} "
+                         f"| {st['profit_factor']} | {st['max_drawdown_r']} "
+                         f"| {st['avg_pnl_usd']} |")
+
+    lines.append("\n### Target-R sensitivity (research setups)")
+    lines.append("| Target | Setup | Trades | Win% | Expectancy (R) | PF |")
+    lines.append("|---|---|---|---|---|---|")
+    for tr in (2.0, 3.0, 4.0):
+        for name in RESEARCH_DETECTORS:
+            rows = []
+            for sym, df in bars.items():
+                rows.extend(replay_research(sym, df, name, regime, tr))
+            st = aggregate(rows)
+            lines.append(f"| {tr}R | {name} | {st['trades']} | {st['win_rate']} "
+                         f"| {st['expectancy_r']} | {st['profit_factor']} |")
+
+    lines.append("\n### Exit-reason mix (3R target)")
+    lines.append("| Setup | target | stop | gap_target | gap_stop | time_stop |")
+    lines.append("|---|---|---|---|---|---|")
+    for name in RESEARCH_DETECTORS:
+        mine = [t for t in research_all if t["strategy"] == name]
+        counts = {k: sum(1 for t in mine if t["exit_reason"] == k)
+                  for k in ("target", "stop", "gap_target", "gap_stop",
+                            "time_stop")}
+        lines.append(f"| {name} | " + " | ".join(
+            str(counts[k]) for k in ("target", "stop", "gap_target",
+                                     "gap_stop", "time_stop")) + " |")
+
+    lines.append("")
+    for name in RESEARCH_DETECTORS:
+        by_regime = {reg: aggregate([t for t in research_all
+                                     if t["strategy"] == name
+                                     and t["regime"] == reg])
+                     for reg in ("trending", "chop")}
+        lines.append("- " + verdict_line(name, by_regime))
 
     # ---- Goal 20: short-lane RESEARCH (backtest only, never live) ----
     lines.append("\n## Short lane — RESEARCH ONLY (not wired live)")
