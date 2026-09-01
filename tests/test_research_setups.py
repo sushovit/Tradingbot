@@ -329,3 +329,26 @@ def test_plan_module_never_trains():
     for forbidden in ("axolotl.cli.train\"", "subprocess", "os.system",
                       "trainer.train("):
         assert forbidden not in body
+
+
+def test_report_source_carries_no_stale_research_only_language():
+    """Regression: the go-live edit to this section silently no-opped once
+    (a replace with no assertion), leaving the report claiming the setups
+    were unreachable while they were live. Assert on the SOURCE so the
+    claim and the wiring cannot drift again."""
+    with open("backtest.py", encoding="utf-8") as f:
+        body = f.read()
+    assert "BACKTEST ONLY (not wired live)" not in body
+    assert "no live path can" not in body
+    # The status line must be rendered from RESEARCH_STATUS, not typed.
+    assert "research_status(name)" in body
+
+
+def test_pec_caveat_distinguishes_backtest_rows_from_the_live_gate():
+    """The rows measure the gap-up class; the live setup is calendar-gated.
+    Conflating them is exactly the error the caveat exists to prevent."""
+    with open("backtest.py", encoding="utf-8") as f:
+        body = f.read()
+    assert "earnings.py gates every" in body
+    assert "fails closed" in body
+    assert "Expect live frequency BELOW these counts" in body

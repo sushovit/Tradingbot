@@ -667,17 +667,31 @@ def run_backtest(symbols, years=3, refresh=False, sweeps=True):
                          f"| {st['win_rate']} | {st['expectancy_r']} |")
 
     # ---- Work order 2026-09-01 item 8: NEW SETUP RESEARCH (never live) ----
-    lines.append("\n## New setup research — BACKTEST ONLY (not wired live)")
-    lines.append("_Neither setup is in strategies/REGISTRY; no live path can "
-                 "reach them. 3R target, next-bar-open entry, same sizing and "
+    lines.append(chr(10) + "## New setup research")
+    for name in RESEARCH_DETECTORS:
+        lines.append(f"- **{name}: {research_status(name)}**")
+    live_now = [n for n in RESEARCH_DETECTORS
+                if RESEARCH_STATUS.get(n, ("", None))[0].startswith("LIVE")]
+    if live_now:
+        lines.append("")
+        lines.append("_Ratified live 2026-09-02 at a 4R target, TRENDING ONLY "
+                     "(neither is in spy_filter_exempt), at half risk until "
+                     "each has 20 live trades. The per-regime tables below "
+                     "stay at the 3R base for continuity with the "
+                     "pre-go-live report; the target-R sweep is where the 4R "
+                     "decision was made._")
+    lines.append("_Rows use next-bar-open entry and the same sizing and "
                  "bracket mechanics as the live playbook._")
     lines.append("")
-    lines.append("**post_earnings_continuation caveat:** the specification "
-                 "says *verified beat*. We have no earnings calendar and no "
-                 "estimates feed, so the beat is NOT tested — only its "
-                 "observable shadow (a >=5% gap on >=2x volume), which also "
-                 "contains M&A pops, guidance raises and sector news. Read "
-                 "the rows below as the gap-up class, not the earnings class. "
+    lines.append("**post_earnings_continuation — what these rows do and do "
+                 "not measure:** the backtest has no earnings calendar, so "
+                 "the rows below test the observable shadow of a beat (a "
+                 ">=5% gap on >=2x volume), which also contains M&A pops, "
+                 "guidance raises and sector news. Read them as the gap-up "
+                 "class. The LIVE setup is narrower: earnings.py gates every "
+                 "entry on an actual Finnhub earnings event within 3 "
+                 "sessions of the gap day and fails closed if the calendar "
+                 "cannot be read. Expect live frequency BELOW these counts. "
                  f"Holds are capped at {PEC_MAX_HOLD} sessions so no trade "
                  "spans the next print.")
     research_all = []
