@@ -389,12 +389,22 @@ MAX_SCAN_TICKERS = 40
 
 
 def build_scan_list() -> list:
-    """Union of today's universe candidates (first) and the full
-    core_watchlist from bot_config.json, deduped, capped at 40."""
+    """Union of today's TOP-RANKED universe candidates (first) and the full
+    core_watchlist from bot_config.json, deduped, capped at 40.
+
+    Reads the "display" slice, not "candidates". Since the 2026-09-01
+    universe expansion, "candidates" is the ~150-name set the DETECTORS
+    evaluate; taking its head would fill all 40 intern slots with universe
+    names and silently push the entire core watchlist out of the scan. The
+    intern's job is the watchlist plus the day's best movers, so it reads the
+    ranked top-20 and leaves room for the watchlist."""
     universe_syms = []
     try:
         with open(UNIVERSE_FILE, "r") as f:
-            universe_syms = [c["symbol"] for c in json.load(f).get("candidates", [])]
+            payload = json.load(f)
+        universe_syms = [c["symbol"] for c in
+                         (payload.get("display")
+                          or payload.get("candidates", [])[:20])]
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     watchlist = []

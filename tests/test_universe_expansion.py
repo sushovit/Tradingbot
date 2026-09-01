@@ -138,3 +138,39 @@ def test_weekly_cadence_is_per_slot_not_doubled_risk():
     assert risk.TIER_B_RISK_PCT == 0.5
     assert risk.tier_risk_pct("B", 1.0) == 0.5
     assert risk.tier_risk_pct("A", 1.0) == 1.0
+
+
+# ------------------------------------------- 5b. downstream of the expansion
+
+def test_intern_scan_list_keeps_room_for_the_watchlist(monkeypatch, tmp_path):
+    """Regression: the expansion made "candidates" ~150 names, so an intern
+    scan list built from its head filled all 40 slots with universe names and
+    silently dropped the entire core watchlist."""
+    import intern_desk
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "universe_today.json").write_text(json.dumps({
+        "date": "2026-09-01",
+        "candidates": [_cand(f"U{i:03d}") for i in range(150)],
+        "display": [_cand(f"U{i:03d}") for i in range(20)]}))
+    watchlist = [f"W{i:02d}" for i in range(48)]
+    (tmp_path / "bot_config.json").write_text(json.dumps(
+        {"universe": {"core_watchlist": watchlist}}))
+
+    scan = intern_desk.build_scan_list()
+    assert len(scan) == intern_desk.MAX_SCAN_TICKERS
+    covered = sum(1 for t in watchlist if t in scan)
+    assert covered == 20, f"watchlist crowded out: only {covered} names"
+    assert scan[0] == "U000"                 # best-ranked mover still first
+
+
+def test_intern_scan_list_tolerates_a_pre_expansion_universe(monkeypatch,
+                                                             tmp_path):
+    import intern_desk
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "universe_today.json").write_text(json.dumps({
+        "date": "2026-09-01",
+        "candidates": [_cand(f"U{i:03d}") for i in range(150)]}))   # no display
+    (tmp_path / "bot_config.json").write_text(json.dumps(
+        {"universe": {"core_watchlist": [f"W{i:02d}" for i in range(48)]}}))
+    scan = intern_desk.build_scan_list()
+    assert sum(1 for t in scan if t.startswith("W")) == 20
