@@ -144,13 +144,18 @@ def check_tier_b(open_b_positions: int, b_entries_this_week: int):
 
 
 
-# --- Setup probation (work order 2026-09-02) -------------------------------
-# A newly ratified setup earns full size. Until it has 20 LIVE trades it runs
-# at half risk, so a setup that backtested well and trades badly costs half
-# as much to find out about. Probation is per SETUP, orthogonal to the A/B
-# tier: a probation setup in the A-book is still an A-book trade.
+# --- Setup probation (revised 2026-09-02, owner-ratified) -----------------
+# ORIGINAL RULE: half risk for the first 20 trades. It was withdrawn because
+# it interacted badly with the $2,000 capital cap — a 0.5% budget is $10, so
+# any setup with a stop wider than $10/share sized to zero. Half the live
+# dry-run signals were unsizeable, which would have biased probation toward
+# tight-stop trades: a biased sample, slowly gathered.
+#
+# REVISED RULE: full 1% risk, but only ONE concurrent open position per
+# probation setup. Exposure is bounded by CONCURRENCY rather than by size, so
+# every qualifying signal is sizeable and the 20-trade sample is unbiased.
 PROBATION_TRADES = 20
-PROBATION_RISK_PCT = 0.5
+PROBATION_MAX_CONCURRENT = 1
 PROBATION_SETUPS = ("pullback_in_uptrend", "post_earnings_continuation")
 
 
@@ -167,6 +172,14 @@ def probation_limit(config: dict = None) -> int:
         return PROBATION_TRADES
 
 
+def probation_max_concurrent(config: dict = None) -> int:
+    cfg = ((config or {}).get("setup_probation") or {})
+    try:
+        return int(cfg.get("max_concurrent", PROBATION_MAX_CONCURRENT))
+    except (TypeError, ValueError):
+        return PROBATION_MAX_CONCURRENT
+
+
 def on_probation(setup_name: str, live_trades: int,
                  config: dict = None) -> bool:
     """Is this setup still serving probation?"""
@@ -180,18 +193,31 @@ def on_probation(setup_name: str, live_trades: int,
 
 def setup_risk_pct(setup_name: str, live_trades: int, default_pct: float,
                    config: dict = None) -> float:
-    """Risk budget for one entry, after probation is applied.
+    """Risk budget for one entry.
 
-    Never RAISES risk: a probation setup can only be sized down. If the
-    configured base is already below the probation rate, it stands."""
+    Probation no longer discounts size (see the note above): a probation
+    trade is a full-size trade. Kept as the single call site so the sizing
+    path does not have to change again if the rule changes again."""
+    return default_pct
+
+
+def check_setup_probation(setup_name: str, open_for_setup: int,
+                          live_trades: int, config: dict = None):
+    """Concurrency gate for a probation setup. Returns (ok, reason).
+
+    This is what bounds probation exposure now. One open position per
+    probation setup: a setup that turns out to be wrong can be wrong once at
+    a time, not three times simultaneously."""
     if not on_probation(setup_name, live_trades, config):
-        return default_pct
-    cfg = ((config or {}).get("setup_probation") or {})
+        return True, None
     try:
-        rate = float(cfg.get("risk_pct", PROBATION_RISK_PCT))
+        open_n = int(open_for_setup)
     except (TypeError, ValueError):
-        rate = PROBATION_RISK_PCT
-    return min(float(default_pct), rate)
+        open_n = 0
+    if open_n >= probation_max_concurrent(config):
+        return False, "probation_position_open"
+    return True, None
+
 
 def zero_size_reason(entry: float, equity: float,
                      position_cap_pct: float = None) -> str:

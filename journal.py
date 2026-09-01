@@ -667,6 +667,91 @@ def setup_live_counts(setup_names) -> dict:
     return {name: live_entry_count(name) for name in setup_names}
 
 
+def size_zero_report(month: str = None) -> list:
+    """Per-setup size_zero rate for a month (YYYY-MM, default current ET).
+
+    Returns [{setup, size_zero, signals, rate_pct, median_stop_usd,
+    median_budget_usd}]. The rate is size_zero rows over (size_zero rows +
+    entries), i.e. how often a qualifying signal could not be afforded.
+
+    This is the monthly evidence for whether the capital cap — not the
+    setup — is what is blocking a strategy."""
+    month = month or _now_et()[:7]
+    rows = {}
+    with _lock, _connect() as conn:
+        for r in conn.execute(
+                "SELECT setup_name, verdict, context FROM decisions "
+                "WHERE source='rules' AND substr(timestamp,1,7)=?", (month,)):
+            verdict = r["verdict"] or ""
+            if '"size_zero"' not in verdict and                     '"price_too_high_for_account"' not in verdict:
+                continue
+            setup = r["setup_name"] or "unknown"
+            entry = rows.setdefault(setup, {"setup": setup, "size_zero": 0,
+                                            "stops": [], "budgets": []})
+            entry["size_zero"] += 1
+            # log_rules_pass stores the free-text details in `context`
+            # ({"details": ...}); `verdict` only carries the reason code.
+            try:
+                details = json.loads(r["context"] or "{}").get("details", "")
+            except (ValueError, TypeError):
+                details = str(r["context"] or "")
+            for key, bucket in (("stop_distance_usd", "stops"),
+                                ("risk_budget_usd", "budgets")):
+                marker = key + "="
+                if marker in details:
+                    piece = details.split(marker, 1)[1].split()[0]
+                    try:
+                        entry[bucket].append(float(piece))
+                    except ValueError:
+                        pass
+        for setup in list(rows):
+            taken = conn.execute(
+                "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' "
+                "AND reason=? AND substr(timestamp,1,7)=?",
+                (setup, month)).fetchone()
+            rows[setup]["entries"] = int(taken["n"] or 0)
+
+    out = []
+    for setup, r in rows.items():
+        denom = r["size_zero"] + r.get("entries", 0)
+        stops, budgets = sorted(r["stops"]), sorted(r["budgets"])
+        out.append({
+            "setup": setup,
+            "size_zero": r["size_zero"],
+            "entries": r.get("entries", 0),
+            "rate_pct": round(100.0 * r["size_zero"] / denom, 1) if denom else None,
+            "median_stop_usd": round(stops[len(stops) // 2], 2) if stops else None,
+            "median_budget_usd": round(budgets[len(budgets) // 2], 2) if budgets else None,
+        })
+    out.sort(key=lambda x: -x["size_zero"])
+    return out
+
+
+def probation_trades(setup_name: str, limit: int = 20) -> list:
+    """The first `limit` live entries for a setup, oldest first, with their
+    outcome if closed. Drives the review_bot grade lines."""
+    with _lock, _connect() as conn:
+        buys = conn.execute(
+            "SELECT id, timestamp, ticker, qty, price, decision_id "
+            "FROM trades WHERE action='BUY' AND reason=? "
+            "ORDER BY id ASC LIMIT ?", (setup_name, limit)).fetchall()
+        out = []
+        for i, b in enumerate(buys, 1):
+            sell = conn.execute(
+                "SELECT pnl_usd, pnl_pct, reason, timestamp FROM trades "
+                "WHERE action='SELL' AND ticker=? AND id > ? "
+                "ORDER BY id ASC LIMIT 1", (b["ticker"], b["id"])).fetchone()
+            out.append({
+                "n": i, "trade_id": b["id"], "date": str(b["timestamp"])[:10],
+                "ticker": b["ticker"], "qty": b["qty"], "entry": b["price"],
+                "closed": sell is not None,
+                "pnl_usd": float(sell["pnl_usd"]) if sell else None,
+                "pnl_pct": float(sell["pnl_pct"]) if sell else None,
+                "exit_reason": sell["reason"] if sell else None,
+            })
+    return out
+
+
 def entry_sector(ticker: str, decision_id=None):
     """Sector of the BUY this exit closes, so a reclassification later never
     splits one round trip across two classes."""

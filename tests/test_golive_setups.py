@@ -3,7 +3,7 @@ Work order 2026-09-02 items 2, 3 and 5: the two ratified setups running in
 the LIVE pipeline. No network — the earnings calendar is injected.
 
 The load-bearing tests here are the two that cost money if wrong: the
-earnings gate must FAIL CLOSED, and probation must halve the size.
+earnings gate must FAIL CLOSED, and probation must cap concurrency.
 """
 
 import datetime
@@ -21,7 +21,7 @@ from strategies.post_earnings_continuation import PostEarningsContinuation
 from strategies.pullback_in_uptrend import PullbackInUptrend
 
 CFG = {"setup_probation": {"go_live_date": "2026-09-02", "trades": 20,
-                           "risk_pct": 0.5,
+                           "max_concurrent": 1,
                            "setups": ["pullback_in_uptrend",
                                       "post_earnings_continuation"]}}
 
@@ -251,22 +251,9 @@ def test_pullback_rejects_a_downtrend():
 
 # ============================================================ probation
 
-def test_probation_halves_risk_until_twenty_live_trades():
-    for n in (0, 5, 19):
-        assert risk.setup_risk_pct("pullback_in_uptrend", n, 1.0, CFG) == 0.5
-    assert risk.setup_risk_pct("pullback_in_uptrend", 20, 1.0, CFG) == 1.0
-    assert risk.setup_risk_pct("post_earnings_continuation", 0, 1.0, CFG) == 0.5
-
-
 def test_probation_does_not_touch_established_setups():
     assert risk.setup_risk_pct("momentum_continuation", 0, 1.0, CFG) == 1.0
     assert risk.on_probation("momentum_continuation", 0, CFG) is False
-
-
-def test_probation_never_raises_risk():
-    """If the configured base is already below the probation rate, probation
-    must not size a trade UP."""
-    assert risk.setup_risk_pct("pullback_in_uptrend", 0, 0.25, CFG) == 0.25
 
 
 def test_unknown_trade_count_stays_cautious():
@@ -296,3 +283,143 @@ def test_hold_cap_skips_weekends():
     # Friday + 1 session = Monday.
     assert session_clock.sessions_forward_date(datetime.date(2026, 9, 4), 1) \
         == "2026-09-07"
+
+
+# ================================================ probation revision (2026-09-02)
+# The original half-risk rule was WITHDRAWN: a 0.5% budget on a $2,000 cap is
+# $10, so any setup with a stop wider than $10/share sized to zero. Exposure
+# is now bounded by concurrency instead.
+
+def test_probation_no_longer_discounts_size():
+    for n in (0, 5, 19, 20):
+        assert risk.setup_risk_pct("pullback_in_uptrend", n, 1.0, CFG) == 1.0
+    assert risk.setup_risk_pct("post_earnings_continuation", 0, 0.75, CFG) == 0.75
+
+
+def test_probation_allows_one_open_position_per_setup():
+    ok, reason = risk.check_setup_probation("pullback_in_uptrend", 0, 0, CFG)
+    assert ok and reason is None
+    ok, reason = risk.check_setup_probation("pullback_in_uptrend", 1, 0, CFG)
+    assert not ok and reason == "probation_position_open"
+
+
+def test_probation_slots_are_per_setup_not_shared():
+    """One open pullback must not block a post-earnings entry."""
+    ok, _ = risk.check_setup_probation("post_earnings_continuation", 0, 0, CFG)
+    assert ok
+
+
+def test_graduated_setup_has_no_concurrency_cap():
+    ok, _ = risk.check_setup_probation("pullback_in_uptrend", 3, 20, CFG)
+    assert ok
+    ok, _ = risk.check_setup_probation("momentum_continuation", 5, 0, CFG)
+    assert ok
+
+
+def test_unknown_open_count_does_not_crash_the_gate():
+    ok, _ = risk.check_setup_probation("pullback_in_uptrend", None, 0, CFG)
+    assert ok is True          # unparseable -> treated as zero open
+
+
+def test_full_risk_doubles_the_sizeable_stop_band_but_does_not_remove_the_wall():
+    """What the revision actually buys, measured — not assumed.
+
+    Going 0.5% -> 1% doubles the risk budget on a $2,000 cap from $10 to $20,
+    so stops between $10 and $20 a share become sizeable. It does NOT rescue
+    the wide-stop names that prompted the change: CRM's $26.07 stop and
+    INTU's $36.27 stop are unsizeable at BOTH rates. That wall is the capital
+    cap, which is why item 2 (size_zero reporting) is the part that will
+    actually tell us what we are losing."""
+    equity, cap = 2000.0, 0.25
+
+    # Newly sizeable: a $15 stop was zero at half risk, is one share at full.
+    assert risk.position_size(equity, 0.5, 100.0, 85.0,
+                              position_cap_pct=cap) == 0
+    assert risk.position_size(equity, 1.0, 100.0, 85.0,
+                              position_cap_pct=cap) == 1
+
+    # Still unsizeable: the two live signals that triggered the revision.
+    for entry, stop in ((257.63, 231.56), (359.27, 323.00)):
+        assert risk.position_size(equity, 0.5, entry, stop,
+                                  position_cap_pct=cap) == 0
+        assert risk.position_size(equity, 1.0, entry, stop,
+                                  position_cap_pct=cap) == 0
+
+
+# ================================================ size_zero reporting (item 2)
+
+def test_size_zero_report_carries_stop_distance_and_budget(temp_journal):
+    temp_journal.log_rules_pass(
+        "CRM", "post_earnings_continuation", "size_zero",
+        "entry=257.63 stop=231.56 stop_distance_usd=26.07 "
+        "risk_budget_usd=20.00 affordable_shares=0.77 risk_pct=1.0 "
+        "equity=2000.00")
+    rows = temp_journal.size_zero_report(temp_journal._now_et()[:7])
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["setup"] == "post_earnings_continuation"
+    assert r["size_zero"] == 1
+    assert r["median_stop_usd"] == 26.07
+    assert r["median_budget_usd"] == 20.00
+    assert r["rate_pct"] == 100.0      # one blocked, none taken
+
+
+def test_size_zero_rate_is_blocked_over_blocked_plus_taken(temp_journal):
+    month = temp_journal._now_et()[:7]
+    temp_journal.log_rules_pass("CRM", "post_earnings_continuation",
+                                "size_zero", "stop_distance_usd=26.07 "
+                                "risk_budget_usd=20.00")
+    for t in ("AMZN", "JPM", "MSFT"):
+        temp_journal.log_trade(t, "BUY", 1, 100.0,
+                               reason="post_earnings_continuation")
+    rows = temp_journal.size_zero_report(month)
+    assert rows[0]["entries"] == 3
+    assert rows[0]["rate_pct"] == 25.0        # 1 of 4 qualifying signals
+
+
+def test_size_zero_report_ignores_other_filters(temp_journal):
+    temp_journal.log_rules_pass("NVDA", "pullback_in_uptrend", "volume_low", "x")
+    assert temp_journal.size_zero_report(temp_journal._now_et()[:7]) == []
+
+
+# ================================================ probation grade lines
+
+def test_probation_trades_are_numbered_and_carry_outcomes(temp_journal):
+    temp_journal.log_trade("AMZN", "BUY", 1, 100.0,
+                           reason="pullback_in_uptrend")
+    temp_journal.record_exit("AMZN", 1, 90.0, "stop", entry_price=100.0,
+                             broker_order_id="o1")
+    temp_journal.log_trade("JPM", "BUY", 2, 50.0, reason="pullback_in_uptrend")
+
+    rows = temp_journal.probation_trades("pullback_in_uptrend", 20)
+    assert [r["n"] for r in rows] == [1, 2]
+    assert rows[0]["closed"] and rows[0]["pnl_usd"] == -10.0
+    assert rows[1]["closed"] is False and rows[1]["pnl_usd"] is None
+
+
+def test_probation_trade_list_stops_at_the_limit(temp_journal):
+    for i in range(25):
+        temp_journal.log_trade(f"T{i:02d}", "BUY", 1, 10.0,
+                               reason="pullback_in_uptrend")
+    assert len(temp_journal.probation_trades("pullback_in_uptrend", 20)) == 20
+
+
+def test_review_bot_demands_a_line_per_probation_trade():
+    import review_bot
+    prompt = review_bot.REVIEW_SYSTEM_PROMPT
+    assert "GRADE EVERY PROBATION TRADE" in prompt
+    assert "its OWN line" in prompt
+    # Graded on the DECISION, not the outcome — otherwise 20 trades of noise
+    # teach us nothing about the setup.
+    assert "not the outcome" in prompt
+    assert "PROBATION TRADES: none yet" in prompt
+
+
+def test_review_bot_bundles_the_probation_trades(temp_journal, monkeypatch):
+    import review_bot
+    monkeypatch.setattr(review_bot, "journal", temp_journal)
+    temp_journal.log_trade("AMZN", "BUY", 1, 100.0,
+                           reason="pullback_in_uptrend")
+    text = review_bot.probation_lines()
+    assert "pullback_in_uptrend #1/20" in text
+    assert "AMZN" in text and "still OPEN" in text

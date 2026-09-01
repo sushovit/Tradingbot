@@ -139,7 +139,7 @@
     "setup_probation": {
         "go_live_date": "2026-09-02",
         "trades": 20,
-        "risk_pct": 0.5,
+        "max_concurrent": 1,
         "setups": [
             "pullback_in_uptrend",
             "post_earnings_continuation"

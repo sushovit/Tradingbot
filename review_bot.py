@@ -55,7 +55,15 @@ REVIEW_SYSTEM_PROMPT = (
     "3. FLAG ANOMALIES: stale heartbeat, journal gaps, positions held >= 10 "
     "sessions (re-ratification due), repeated gatekeeper errors, price-freshness "
     "rejections.\n"
-    "4. TOMORROW'S WATCH ITEMS: what the desk should watch, as observations.\n\n"
+    "4. GRADE EVERY PROBATION TRADE listed under PROBATION TRADES. Each of "
+    "a new setup's first 20 live trades gets its OWN line, in the form "
+    "'<setup> #<n> <TICKER>: <good|bad|ungradeable> - <one sentence>'. "
+    "Grade the DECISION against the setup's thesis, not the outcome: a "
+    "trade that lost money on a correct read is 'good', and a winner that "
+    "ignored the thesis is 'bad'. Say 'ungradeable' only when the "
+    "evidence is genuinely absent. If the list is empty, write "
+    "'PROBATION TRADES: none yet'.\n"
+    "5. TOMORROW'S WATCH ITEMS: what the desk should watch, as observations.\n\n"
     "HARD CONSTRAINT — YOU ARE READ-ONLY. You cannot place, modify, or cancel "
     "orders, and you must NOT emit specific orders for automatic execution "
     "(no entry/stop/target order sheets). Discuss risk and structure in prose; "
@@ -190,6 +198,35 @@ def position_sessions_held(ticker: str):
         return None
 
 
+def probation_lines() -> str:
+    """One line per probation trade for the reviewer to grade.
+
+    Every one of a new setup's first 20 live trades gets an explicit graded
+    line (owner ruling 2026-09-02). Listing them HERE, rather than hoping the
+    reviewer notices them among the day's fills, is what makes the grade
+    mandatory and auditable."""
+    try:
+        import json as _json
+        import risk as _risk
+        with open("bot_config.json", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        limit = _risk.probation_limit(cfg)
+        out = []
+        for name in _risk.probation_setups(cfg):
+            for r in journal.probation_trades(name, limit):
+                if r["closed"]:
+                    result = (f"closed {r['pnl_usd']:+.2f} USD "
+                              f"({r['pnl_pct']:+.2f}%) via {r['exit_reason']}")
+                else:
+                    result = "still OPEN"
+                out.append(f"{name} #{r['n']}/{limit} {r['date']} "
+                           f"{r['ticker']} {r['qty']}sh @ ${r['entry']:.2f} "
+                           f"- {result}")
+        return chr(10).join(out) if out else "(none yet)"
+    except Exception as e:
+        return f"(probation trade list unavailable: {e})"
+
+
 def build_user_prompt(bundle: dict) -> str:
     pos_lines = "\n".join(
         f"- {p['ticker']}: {p['qty']:g} @ ${p['entry']:,.2f} (now ${p['current']:,.2f}, "
@@ -203,6 +240,7 @@ def build_user_prompt(bundle: dict) -> str:
            if (p["sessions_held"] or 0) >= POSITION_AGE_REVIEW
            and not p.get("risk_free") else "")
         for p in bundle.get("positions", [])) or "- none"
+    probation_lines_text = probation_lines()
     gov_lines = "\n".join(
         f"- {g['time']} [{g['source']}] {g['ticker']} {g['setup'] or ''}: "
         + ("APPROVED" if g["approved"] else "REJECTED")
@@ -238,6 +276,9 @@ Worker heartbeat age: {hb if hb is not None else 'unknown'}s{' (STALE)' if bundl
 === TODAY'S FILLS ===
 {trade_lines}
 
+=== PROBATION TRADES (grade each one; owner-ratified 2026-09-02) ===
+{probation_lines_text}
+
 === SESSION BUNDLE (report / universe / floor) ===
 PROVENANCE: this bundle was generated {bundle.get('drop_stamp', 'unknown')}
 (session date {bundle.get('drop_date', 'unknown')}). The account/journal
@@ -251,7 +292,8 @@ session each number belongs to rather than reporting a mismatch.
 {bundle.get('intern', '')}
 
 Write the review: mark the book, grade the decisions against the rules
-(cite rule numbers), flag anomalies, list tomorrow's watch items.
+(cite rule numbers), GRADE EVERY PROBATION TRADE on its own line, flag
+anomalies, list tomorrow's watch items.
 Remember: you are read-only — no orders, no order sheets."""
 
 

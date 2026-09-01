@@ -244,14 +244,71 @@ def build_report() -> str:
         if not setups:
             lines.append("_No setups on probation._")
         else:
-            lines.append(f"Half risk ({(_cfg.get('setup_probation') or {}).get('risk_pct', 0.5)}%) "
-                         f"until each setup has {limit} live trades "
-                         f"(go-live {go_live}).")
+            lines.append(f"Full risk, but only "
+                         f"{_risk.probation_max_concurrent(_cfg)} open "
+                         f"position at a time per setup, until each has "
+                         f"{limit} live trades (go-live {go_live}). "
+                         f"Each of those {limit} gets a graded line below.")
             for name in setups:
                 n = journal.live_entry_count(name)
                 state = ("PROBATION" if _risk.on_probation(name, n, _cfg)
-                         else "full risk")
+                         else "graduated")
                 lines.append(f"- **{name}: {n}/{limit} probation** ({state})")
+    except Exception as e:
+        lines.append(f"_Unavailable: {e}_")
+
+    # --- size_zero: how often we could not AFFORD a qualifying signal ---
+    # Reported monthly per setup, because a setup blocked by the capital cap
+    # looks identical to a setup that never fires unless this is separated.
+    lines.append(chr(10) + "## Unaffordable signals (size_zero), this month")
+    try:
+        rows = journal.size_zero_report()
+        if not rows:
+            lines.append("_None this month._")
+        else:
+            lines.append("| Setup | size_zero | Entries | Rate | Median stop | "
+                         "Median budget |")
+            lines.append("|---|---|---|---|---|---|")
+            for r in rows:
+                stop = (f"${r['median_stop_usd']:.2f}"
+                        if r["median_stop_usd"] is not None else "—")
+                budget = (f"${r['median_budget_usd']:.2f}"
+                          if r["median_budget_usd"] is not None else "—")
+                rate = f"{r['rate_pct']}%" if r["rate_pct"] is not None else "—"
+                lines.append(f"| {r['setup']} | {r['size_zero']} | "
+                             f"{r['entries']} | {rate} | {stop} | {budget} |")
+            lines.append("")
+            lines.append("_A high rate with a median stop above the median "
+                         "budget is a CAPITAL constraint, not a setup "
+                         "problem._")
+    except Exception as e:
+        lines.append(f"_Unavailable: {e}_")
+
+    # --- Probation trade log (each of the first 20 gets a graded line) ---
+    lines.append(chr(10) + "## Probation trade log")
+    try:
+        import risk as _risk2
+        with open("bot_config.json", encoding="utf-8") as _f2:
+            _cfg2 = json.load(_f2)
+        any_rows = False
+        for name in _risk2.probation_setups(_cfg2):
+            rows = journal.probation_trades(name, _risk2.probation_limit(_cfg2))
+            if not rows:
+                continue
+            any_rows = True
+            lines.append(f"**{name}**")
+            for r in rows:
+                if r["closed"]:
+                    result = (f"{r['pnl_usd']:+.2f} USD "
+                              f"({r['pnl_pct']:+.2f}%) via {r['exit_reason']}")
+                else:
+                    result = "OPEN"
+                lines.append(f"- {r['n']}/{_risk2.probation_limit(_cfg2)} "
+                             f"{r['date']} {r['ticker']} "
+                             f"{r['qty']}sh @ ${r['entry']:.2f} — {result} "
+                             f"— grade: _pending review_bot_")
+        if not any_rows:
+            lines.append("_No probation trades yet._")
     except Exception as e:
         lines.append(f"_Unavailable: {e}_")
 

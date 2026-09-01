@@ -41,3 +41,48 @@ materially worse, raising the floor costs trades and buys nothing.
 **Status**: awaiting ratification. No code change made.
 
 ---
+
+
+---
+
+## 2. Fractional bracket orders (researched 2026-09-02, work order item 3)
+
+**Answer: NO.** Alpaca paper rejects every fractional order that is not a
+*simple* order. Probed directly against our paper account on 2026-09-02
+(symbol F, all accepted probes cancelled and cancellation verified; the
+account finished with the same 3 positions and 3 bracket legs it started
+with).
+
+| Probe | Result |
+|---|---|
+| BRACKET + fractional qty, GTC | REJECTED — `fractional orders must be DAY orders` |
+| BRACKET + fractional qty, DAY | REJECTED — `fractional orders must be simple orders` |
+| BRACKET + notional $10, DAY | REJECTED — `fractional orders must be simple orders` |
+| OTO + fractional qty, DAY | REJECTED — `fractional orders must be simple orders` |
+| simple MARKET + fractional qty, GTC | REJECTED — `fractional orders must be DAY orders` |
+| simple MARKET + fractional qty, DAY | **ACCEPTED** |
+| simple LIMIT + fractional qty, DAY | **ACCEPTED** |
+
+All rejections carry API code `42210000`.
+
+**Constraints, stated plainly:**
+
+1. Fractional quantities require `order_class = simple`. Bracket and OTO are
+   both refused, so an attached stop leg is impossible on a fractional fill.
+2. Fractional quantities require `time_in_force = DAY`. Our brackets use GTC,
+   so even the TIF would have to change.
+3. `notional` ordering does not route around either rule.
+
+**Why this matters more than it looks.** The desk's core safety property is
+that *exit orders live at the broker, not in our polling loop* — a crashed
+or sleeping worker still has its stops. Adopting fractional sizing would mean
+giving that up for those positions and managing their stops from the loop,
+which is the failure mode the bracket architecture was built to remove (and
+which the 2026-08-31 machine-sleep incident would have exposed).
+
+So fractional shares are **not** an available fix for the `size_zero`
+problem. On a $2,000 cap the binding constraints stay arithmetic: a 1% risk
+budget of $20 cannot size a stop wider than $20/share, and the 25% notional
+cap of $500 cannot buy one share above $500. The realistic levers are the
+capital cap, the position cap, or accepting that wide-stop setups are
+selected out — which is what the monthly `size_zero` table now measures.

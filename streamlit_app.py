@@ -855,9 +855,11 @@ def _worker_loop():
                     continue
 
             # --- Risk-based sizing (whole shares), then bracket order AT THE BROKER ---
-            # Probation (2026-09-02): a newly ratified setup runs at half risk
-            # until it has 20 live trades. Counted from the journal, so a
-            # restart cannot reset the probation clock.
+            # Probation (revised 2026-09-02): a newly ratified setup trades
+            # at FULL risk, but only one position at a time. Exposure is
+            # bounded by concurrency, not by size — half-size probation
+            # sized wide-stop setups to zero on a $2,000 cap and would have
+            # biased the 20-trade sample toward tight stops.
             base_risk_pct = risk_profile['risk_per_trade_pct']
             try:
                 live_n = journal.live_entry_count(signal.setup_name)
@@ -865,25 +867,45 @@ def _worker_loop():
                 logger.warning(f"probation count unavailable for "
                                f"{signal.setup_name}: {e}")
                 live_n = 0            # unknown -> treated as probation
+            is_probation = risk.on_probation(signal.setup_name, live_n, config)
+            open_for_setup = sum(
+                1 for s in positions.values()
+                if s.get("in_position") and s.get("setup") == signal.setup_name)
+            ok_prob, prob_reason = risk.check_setup_probation(
+                signal.setup_name, open_for_setup, live_n, config)
+            if not ok_prob:
+                journal_pass_once(ticker, signal.setup_name, prob_reason,
+                                  f"{signal.setup_name} on probation "
+                                  f"({live_n}/{risk.probation_limit(config)}), "
+                                  f"{open_for_setup} already open")
+                status_updates.append(f"{ticker}: Pass ({prob_reason})")
+                continue
             entry_risk_pct = risk.setup_risk_pct(signal.setup_name, live_n,
                                                  base_risk_pct, config)
-            is_probation = entry_risk_pct < base_risk_pct
-            if is_probation:
-                logger.info(f"{ticker}: {signal.setup_name} on probation "
-                            f"({live_n}/{risk.probation_limit(config)}) — "
-                            f"risk {entry_risk_pct}% not {base_risk_pct}%")
             qty = risk.position_size(equity, entry_risk_pct,
                                      signal.entry, signal.stop,
                                      open_notional_usd=open_notional,
                                      position_cap_pct=position_cap_pct)
             if qty < 1:
-                # Whole-share reality: journal WHY (tells us which tickers this
-                # account can't afford).
+                # Whole-share reality. Journal the ARITHMETIC, not just the
+                # verdict: stop distance in dollars and the risk budget are
+                # what make the size_zero rate diagnosable per setup — a
+                # setup rejected for a $26 stop against a $20 budget is a
+                # capital problem, not a setup problem.
                 zero_reason = risk.zero_size_reason(signal.entry, equity,
                                                     position_cap_pct=position_cap_pct)
-                journal_pass_once(ticker, signal.setup_name, zero_reason,
-                                  f"entry={signal.entry:.2f} equity={equity:.2f}")
-                status_updates.append(f"{ticker}: Pass ({zero_reason})")
+                stop_dist = signal.entry - signal.stop
+                budget = equity * (entry_risk_pct / 100.0)
+                journal_pass_once(
+                    ticker, signal.setup_name, zero_reason,
+                    f"entry={signal.entry:.2f} stop={signal.stop:.2f} "
+                    f"stop_distance_usd={stop_dist:.2f} "
+                    f"risk_budget_usd={budget:.2f} "
+                    f"affordable_shares={budget / stop_dist if stop_dist > 0 else 0:.2f} "
+                    f"risk_pct={entry_risk_pct} equity={equity:.2f}")
+                status_updates.append(
+                    f"{ticker}: Pass ({zero_reason}: stop ${stop_dist:.2f} vs "
+                    f"budget ${budget:.2f})")
                 continue
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,

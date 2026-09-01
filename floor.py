@@ -275,12 +275,21 @@ def probation_section() -> list:
         setups = _risk.probation_setups(cfg)
         if not setups:
             return []
+        try:
+            with open("positions.json", encoding="utf-8") as pf:
+                _positions = _json.load(pf)
+        except (FileNotFoundError, ValueError):
+            _positions = {}
         limit = _risk.probation_limit(cfg)
         lines = ["", "## Setup probation"]
         for name in setups:
             n = _journal.live_entry_count(name)
             mark = "⏳" if _risk.on_probation(name, n, cfg) else "✅"
-            lines.append(f"- {mark} {name}: {n}/{limit} probation")
+            open_n = sum(1 for s in _positions.values()
+                         if s.get("in_position") and s.get("setup") == name)
+            slots = _risk.probation_max_concurrent(cfg)
+            lines.append(f"- {mark} {name}: {n}/{limit} probation "
+                         f"({open_n}/{slots} slot in use)")
         return lines
     except Exception as e:
         return ["", "## Setup probation", f"_Unavailable: {e}_"]
