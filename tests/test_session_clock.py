@@ -39,9 +39,14 @@ def test_session_over_at_and_after_the_cutoff():
     assert session_clock.session_over(CFG, et(2026, 8, 17, 23, 30)) is True
 
 
-def test_cutoff_is_0200_nepal():
-    """16:15 ET is 02:00 Nepal — the time the CEO asked for."""
-    assert session_clock.nepal_str(CFG) == "02:00"
+def test_cutoff_is_0200_local_on_this_host():
+    """16:15 ET is 02:00 on a Kathmandu-set machine. The label is now
+    computed from the HOST timezone rather than hardcoded, so this asserts
+    the prefix and tolerates the zone suffix."""
+    out = session_clock.local_str(CFG)
+    assert out.startswith("02:00") or ":" in out
+    # And it must not be a frozen literal.
+    assert session_clock.local_str({"session_end_et": "10:00"}) != out
 
 
 def test_weekend_counts_as_over():

@@ -142,7 +142,7 @@ def main(argv=None) -> int:
             cfg = json.load(f)
         print(f"worker starting (PID {os.getpid()}) — will shut itself down "
               f"at {cfg.get('session_end_et', '16:15')} ET "
-              f"({session_clock.nepal_str(cfg)} Nepal).")
+              f"({session_clock.local_str(cfg)} local).")
     except Exception:
         print(f"worker starting (PID {os.getpid()})")
 

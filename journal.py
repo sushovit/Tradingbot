@@ -308,6 +308,65 @@ def log_integrity_event(kind: str, details: str) -> int:
         source="ops")
 
 
+def log_shadow_dissent(ticker: str, setup_name: str, claude_verdict: dict,
+                       shadow_verdict: dict, decision_id=None) -> int:
+    """Record a Claude-approve / shadow-reject disagreement as its own row.
+
+    Shadow stays ADVISORY and non-blocking (CEO ruling). This ledger is how
+    that ruling gets tested: every dissent is journaled with both convictions
+    and both reasons, and linked to the trade's eventual outcome, so
+    "should the shadow ever gain a veto?" becomes a question with a record
+    behind it instead of an opinion."""
+    return log_decision(
+        ticker, setup_name,
+        {"claude_conviction": claude_verdict.get("conviction_score"),
+         "claude_reasoning": (claude_verdict.get("reasoning") or "")[:400],
+         "shadow_conviction": shadow_verdict.get("conviction_score"),
+         "shadow_reasoning": (shadow_verdict.get("reasoning") or "")[:400],
+         "shadow_rejection": shadow_verdict.get("rejection_reason"),
+         "gatekeeper_decision_id": decision_id},
+        {"approved": True, "tag": "shadow_dissent",
+         "rejection_reason": None,
+         "reasoning": f"Claude approved ({claude_verdict.get('conviction_score')}) "
+                      f"while the shadow rejected "
+                      f"({shadow_verdict.get('conviction_score')})."},
+        source="shadow_dissent")
+
+
+def shadow_dissent_report() -> dict:
+    """Scoreboard for the dissent ledger: how often was the shadow RIGHT?
+
+    A dissent resolves when the trade it referred to closes. Shadow 'wins'
+    when the trade it doubted lost money."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticker, timestamp, context, outcome_pnl_usd "
+            "FROM decisions WHERE source='shadow_dissent' ORDER BY id"
+        ).fetchall()
+    total = len(rows)
+    resolved = [r for r in rows if r["outcome_pnl_usd"] is not None]
+    shadow_right = [r for r in resolved if r["outcome_pnl_usd"] < 0]
+    gaps = []
+    for r in rows:
+        try:
+            ctx = json.loads(r["context"] or "{}")
+            cc, sc = ctx.get("claude_conviction"), ctx.get("shadow_conviction")
+            if isinstance(cc, (int, float)) and isinstance(sc, (int, float)):
+                gaps.append(cc - sc)
+        except json.JSONDecodeError:
+            pass
+    return {
+        "dissents": total,
+        "resolved": len(resolved),
+        "shadow_right": len(shadow_right),
+        "shadow_wrong": len(resolved) - len(shadow_right),
+        "unresolved": total - len(resolved),
+        "avg_conviction_gap": round(sum(gaps) / len(gaps), 1) if gaps else None,
+        "realized_on_dissents": round(
+            sum(r["outcome_pnl_usd"] for r in resolved), 2) if resolved else 0.0,
+    }
+
+
 def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
                    details: str = "") -> int:
     """Journal a signal that fired but was killed by a DETERMINISTIC filter

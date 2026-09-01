@@ -232,6 +232,25 @@ def build_report() -> str:
     except Exception as e:
         lines.append(f"_Intern account unavailable: {e}_")
 
+    # --- Shadow dissent ledger (advisory-vs-outcome scoreboard) ---
+    lines.append(chr(10) + "## Shadow dissents")
+    try:
+        d = journal.shadow_dissent_report()
+        if d["dissents"] == 0:
+            lines.append("_None recorded._")
+        else:
+            lines.append(f"**Shadow dissents: {d['dissents']}, resolved "
+                         f"{d['shadow_right']}-{d['shadow_wrong']}** "
+                         f"(shadow right-wrong on closed trades; "
+                         f"{d['unresolved']} still open)")
+            lines.append(f"- Realized on dissented trades: "
+                         f"${d['realized_on_dissents']:+,.2f}")
+            if d["avg_conviction_gap"] is not None:
+                lines.append(f"- Avg conviction gap (Claude - shadow): "
+                             f"{d['avg_conviction_gap']}")
+    except Exception as e:
+        lines.append(f"_Unavailable: {e}_")
+
     # --- Analyst shadow performance ---
     lines.append("\n## Analyst shadow performance")
     try:

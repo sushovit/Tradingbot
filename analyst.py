@@ -57,6 +57,17 @@ def _shadow_worker(gk_kwargs: dict, ticker: str, setup_name: str,
     try:
         journal.log_decision(ticker, setup_name, shadow_context, verdict,
                              source="local_shadow", agreement=agreement)
+        # DISSENT LEDGER: Claude approved, the shadow rejected. The shadow is
+        # advisory and non-blocking by CEO ruling — this row is how that
+        # ruling gets tested against outcomes rather than argued about.
+        if ("error" not in verdict and claude_approved
+                and not bool(verdict.get("approved", False))):
+            journal.log_shadow_dissent(ticker, setup_name, claude_verdict,
+                                       verdict,
+                                       decision_id=context.get("decision_id"))
+            logger.info(f"SHADOW DISSENT logged for {ticker}: Claude "
+                        f"{claude_verdict.get('conviction_score')} vs shadow "
+                        f"{verdict.get('conviction_score')}")
     except Exception as e:
         logger.error(f"Failed to journal shadow verdict for {ticker}: {e}")
 

@@ -383,6 +383,15 @@ def _worker_loop():
 
     logger.info("Live bot worker started against Alpaca PAPER account.")
 
+    # Hold off system sleep for the session: on 2026-08-31 the machine slept
+    # at 12:36 ET and the frozen worker looked exactly like a hang.
+    if session_clock.keep_awake(True):
+        logger.info("Sleep suppression enabled for the trading session.")
+    else:
+        logger.warning("Could not suppress system sleep — a machine sleep will "
+                       "freeze this worker mid-session.")
+
+    last_cycle_wallclock = 0.0     # suspend detection (machine sleep)
     cycle_count = 0                # liveness counter (status line, NOT the journal)
     journaled_passes = set()       # (ticker, setup, filter, bar/day) already journaled
     daily_evaluated = {}           # (ticker, strat) -> last completed bar evaluated
@@ -394,6 +403,20 @@ def _worker_loop():
 
     while os.path.exists(LOCK_FILE):
         cycle_count += 1
+        gap = session_clock.suspend_gap(last_cycle_wallclock, a_time.time(), 30)
+        if gap is not None:
+            mins = int(gap // 60)
+            logger.warning(f"SUSPEND DETECTED: {mins} minutes of wall clock "
+                           f"passed with the process frozen (machine sleep) — "
+                           f"this is not a hang.")
+            try:
+                journal.log_integrity_event(
+                    "process_suspended",
+                    f"worker: {mins} minutes lost to machine sleep between "
+                    f"cycles {cycle_count - 1} and {cycle_count}")
+            except Exception as e:
+                logger.error(f"could not journal suspend: {e}")
+        last_cycle_wallclock = a_time.time()
         try:
             with open(CONFIG_FILE, "r") as f: config = json.load(f)
 
@@ -425,10 +448,11 @@ def _worker_loop():
         # The lock is released so nothing looks "running behind" and the
         # watchdog has nothing to resurrect.
         if session_clock.session_over(config, now_et):
-            nepal = session_clock.nepal_str(config)
-            logger.info(f"Session over ({now_et:%H:%M} ET / {nepal} Nepal) — "
+            local = session_clock.local_str(config)
+            session_clock.keep_awake(False)      # let the machine sleep again
+            logger.info(f"Session over ({now_et:%H:%M} ET / {local} local) — "
                         f"worker shutting down for the day.")
-            write_status(f"Session ended {now_et:%H:%M} ET ({nepal} Nepal) — "
+            write_status(f"Session ended {now_et:%H:%M} ET ({local} local) — "
                          f"worker stopped. Start again with "
                          f"'python run_worker.py'.")
             try:
