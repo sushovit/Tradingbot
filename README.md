@@ -231,6 +231,7 @@ pass log), and the local analyst + shadow mode (all HTTP mocked — no network).
 | `orders.py` | CEO order-sheet CLI |
 | `report.py` | Markdown account report |
 | `sectors.py` | Ticker -> sector tag (incl. the crypto/DAT class) |
+| `earnings.py` | Finnhub earnings-calendar gate (fails closed) |
 | `universe.py` | Daily scan: 180-name liquid pool + screener feeds |
 | `backtest.py` | Playbook expectancy + the research-only lanes |
 | `finetune_plan.py` | QLoRA greenlight: dataset stats, split, baseline |

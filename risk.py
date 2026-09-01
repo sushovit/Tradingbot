@@ -143,6 +143,56 @@ def check_tier_b(open_b_positions: int, b_entries_this_week: int):
     return True, None
 
 
+
+# --- Setup probation (work order 2026-09-02) -------------------------------
+# A newly ratified setup earns full size. Until it has 20 LIVE trades it runs
+# at half risk, so a setup that backtested well and trades badly costs half
+# as much to find out about. Probation is per SETUP, orthogonal to the A/B
+# tier: a probation setup in the A-book is still an A-book trade.
+PROBATION_TRADES = 20
+PROBATION_RISK_PCT = 0.5
+PROBATION_SETUPS = ("pullback_in_uptrend", "post_earnings_continuation")
+
+
+def probation_setups(config: dict = None) -> tuple:
+    cfg = ((config or {}).get("setup_probation") or {})
+    return tuple(cfg.get("setups") or PROBATION_SETUPS)
+
+
+def probation_limit(config: dict = None) -> int:
+    cfg = ((config or {}).get("setup_probation") or {})
+    try:
+        return int(cfg.get("trades", PROBATION_TRADES))
+    except (TypeError, ValueError):
+        return PROBATION_TRADES
+
+
+def on_probation(setup_name: str, live_trades: int,
+                 config: dict = None) -> bool:
+    """Is this setup still serving probation?"""
+    if setup_name not in probation_setups(config):
+        return False
+    try:
+        return int(live_trades) < probation_limit(config)
+    except (TypeError, ValueError):
+        return True          # unknown count -> stay cautious
+
+
+def setup_risk_pct(setup_name: str, live_trades: int, default_pct: float,
+                   config: dict = None) -> float:
+    """Risk budget for one entry, after probation is applied.
+
+    Never RAISES risk: a probation setup can only be sized down. If the
+    configured base is already below the probation rate, it stands."""
+    if not on_probation(setup_name, live_trades, config):
+        return default_pct
+    cfg = ((config or {}).get("setup_probation") or {})
+    try:
+        rate = float(cfg.get("risk_pct", PROBATION_RISK_PCT))
+    except (TypeError, ValueError):
+        rate = PROBATION_RISK_PCT
+    return min(float(default_pct), rate)
+
 def zero_size_reason(entry: float, equity: float,
                      position_cap_pct: float = None) -> str:
     """Why did sizing produce < 1 whole share? Journaled as a rules pass so we

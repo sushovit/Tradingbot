@@ -1,5 +1,5 @@
 # QLoRA fine-tune plan — greenlight review
-2026-08-31 22:15 ET  |  2026-09-01 08:00 Nepal  |  US market: CLOSED (opens Tue 19:15 Nepal)
+2026-09-01 02:47 ET  |  2026-09-01 12:32 Nepal  |  US market: CLOSED (opens Tue 19:15 Nepal)
 
 ## Verdict
 **NOT TRAINABLE YET.** The CEO filter (graded rows + outcome-linked rows only) leaves **12 examples**. A QLoRA run on 12 rows does not learn a gatekeeper; it memorises 12 rows. The plan below is complete and re-runnable — it is waiting on data, not on engineering.

@@ -649,6 +649,24 @@ def entry_tier(ticker: str, decision_id=None) -> str:
         return str(row["tier"]).upper() if row and row["tier"] else "A"
 
 
+def live_entry_count(setup_name: str) -> int:
+    """How many LIVE entries this setup has taken. Drives probation sizing.
+
+    Counts bot BUY fills whose reason is the setup name — the worker journals
+    entries as reason=signal.setup_name. CEO order-sheet rows read
+    "CEO <setup>" and are deliberately NOT counted: probation measures the
+    automated setup, not discretionary use of the same idea."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' AND reason=?",
+            (setup_name,)).fetchone()
+        return int(row["n"] or 0)
+
+
+def setup_live_counts(setup_names) -> dict:
+    return {name: live_entry_count(name) for name in setup_names}
+
+
 def entry_sector(ticker: str, decision_id=None):
     """Sector of the BUY this exit closes, so a reclassification later never
     splits one round trip across two classes."""

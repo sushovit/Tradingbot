@@ -232,6 +232,29 @@ def build_report() -> str:
     except Exception as e:
         lines.append(f"_Intern account unavailable: {e}_")
 
+    # --- Setup probation (work order 2026-09-02) ---
+    lines.append(chr(10) + "## Setup probation")
+    try:
+        import risk as _risk
+        with open("bot_config.json", encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+        limit = _risk.probation_limit(_cfg)
+        setups = _risk.probation_setups(_cfg)
+        go_live = (_cfg.get("setup_probation") or {}).get("go_live_date", "?")
+        if not setups:
+            lines.append("_No setups on probation._")
+        else:
+            lines.append(f"Half risk ({(_cfg.get('setup_probation') or {}).get('risk_pct', 0.5)}%) "
+                         f"until each setup has {limit} live trades "
+                         f"(go-live {go_live}).")
+            for name in setups:
+                n = journal.live_entry_count(name)
+                state = ("PROBATION" if _risk.on_probation(name, n, _cfg)
+                         else "full risk")
+                lines.append(f"- **{name}: {n}/{limit} probation** ({state})")
+    except Exception as e:
+        lines.append(f"_Unavailable: {e}_")
+
     # --- Sector expectancy (Boardroom #2 item 7) ---
     # The crypto/DAT ruling was "no exclusion, but measure the class".
     # This table IS that measurement — it must stay visible even at n=1,

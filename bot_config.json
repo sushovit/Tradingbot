@@ -73,12 +73,16 @@
     "default_strategies": [
         "trend_continuation",
         "momentum_continuation",
-        "mean_reversion_reclaim"
+        "mean_reversion_reclaim",
+        "pullback_in_uptrend",
+        "post_earnings_continuation"
     ],
     "strategy_timeframes": {
         "mean_reversion_reclaim": "daily",
         "momentum_continuation": "daily",
-        "trend_continuation": "intraday"
+        "trend_continuation": "intraday",
+        "pullback_in_uptrend": "daily",
+        "post_earnings_continuation": "daily"
     },
     "spy_filter_exempt": [
         "mean_reversion_reclaim"
@@ -130,6 +134,15 @@
         "AMD": [
             "trend_continuation",
             "mean_reversion_reclaim"
+        ]
+    },
+    "setup_probation": {
+        "go_live_date": "2026-09-02",
+        "trades": 20,
+        "risk_pct": 0.5,
+        "setups": [
+            "pullback_in_uptrend",
+            "post_earnings_continuation"
         ]
     }
 }

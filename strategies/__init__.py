@@ -15,11 +15,18 @@ from .base import Strategy, Signal, Rejection
 from .trend_continuation import TrendContinuation
 from .momentum_continuation import MomentumContinuation
 from .mean_reversion_reclaim import MeanReversionReclaim
+from .pullback_in_uptrend import PullbackInUptrend
+from .post_earnings_continuation import PostEarningsContinuation
 
 REGISTRY = {
     TrendContinuation.name: TrendContinuation,
     MomentumContinuation.name: MomentumContinuation,
     MeanReversionReclaim.name: MeanReversionReclaim,
+    # Boardroom-ratified live 2026-09-02, on probation (half risk for the
+    # first 20 live trades). Both are TRENDING-ONLY: neither may be added to
+    # spy_filter_exempt — pullback_in_uptrend is -0.14R in chop.
+    PullbackInUptrend.name: PullbackInUptrend,
+    PostEarningsContinuation.name: PostEarningsContinuation,
 }
 
 DEFAULT_STRATEGIES = ["trend_continuation"]

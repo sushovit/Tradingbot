@@ -103,3 +103,23 @@ def suspend_gap(previous_wallclock: float, now_wallclock: float,
         return None
     gap = now_wallclock - previous_wallclock - expected_secs
     return gap if gap > threshold else None
+
+
+def sessions_forward_date(start_date, sessions):
+    """The date `sessions` TRADING days after `start_date`, as YYYY-MM-DD.
+
+    Used for setup hold caps (post_earnings_continuation: 55 sessions, so a
+    position can never span the next earnings print). Weekends are excluded;
+    market holidays are NOT, which lands the cap slightly EARLY in calendar
+    terms. Early is the safe direction for a rule whose whole purpose is to
+    be out before the next print. Returns None when `sessions` is falsy."""
+    if not sessions:
+        return None
+    import datetime as _dt
+    day = start_date
+    remaining = int(sessions)
+    while remaining > 0:
+        day += _dt.timedelta(days=1)
+        if day.weekday() < 5:
+            remaining -= 1
+    return day.isoformat()

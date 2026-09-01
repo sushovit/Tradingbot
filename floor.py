@@ -262,6 +262,30 @@ def positions_section(stats: dict) -> list:
     return lines
 
 
+def probation_section() -> list:
+    """Live trade count for every setup still serving probation. Kept on the
+    floor view because probation is a live-risk fact, not a report footnote:
+    it says these entries are running at half size right now."""
+    try:
+        import json as _json
+        import risk as _risk
+        import journal as _journal
+        with open("bot_config.json", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        setups = _risk.probation_setups(cfg)
+        if not setups:
+            return []
+        limit = _risk.probation_limit(cfg)
+        lines = ["", "## Setup probation"]
+        for name in setups:
+            n = _journal.live_entry_count(name)
+            mark = "⏳" if _risk.on_probation(name, n, cfg) else "✅"
+            lines.append(f"- {mark} {name}: {n}/{limit} probation")
+        return lines
+    except Exception as e:
+        return ["", "## Setup probation", f"_Unavailable: {e}_"]
+
+
 def build_report():
     """Returns (markdown_text, stats, dense_lines) — dense_lines are the two
     most information-dense sections for the mobile trim-post."""
@@ -277,6 +301,7 @@ def build_report():
     out += fires_lines
     out += gk_lines
     out += positions_section(stats)
+    out += probation_section()
     out += counts_section(conn, today)
     if conn is not None:
         conn.close()

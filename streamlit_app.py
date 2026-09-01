@@ -855,7 +855,24 @@ def _worker_loop():
                     continue
 
             # --- Risk-based sizing (whole shares), then bracket order AT THE BROKER ---
-            qty = risk.position_size(equity, risk_profile['risk_per_trade_pct'],
+            # Probation (2026-09-02): a newly ratified setup runs at half risk
+            # until it has 20 live trades. Counted from the journal, so a
+            # restart cannot reset the probation clock.
+            base_risk_pct = risk_profile['risk_per_trade_pct']
+            try:
+                live_n = journal.live_entry_count(signal.setup_name)
+            except Exception as e:
+                logger.warning(f"probation count unavailable for "
+                               f"{signal.setup_name}: {e}")
+                live_n = 0            # unknown -> treated as probation
+            entry_risk_pct = risk.setup_risk_pct(signal.setup_name, live_n,
+                                                 base_risk_pct, config)
+            is_probation = entry_risk_pct < base_risk_pct
+            if is_probation:
+                logger.info(f"{ticker}: {signal.setup_name} on probation "
+                            f"({live_n}/{risk.probation_limit(config)}) — "
+                            f"risk {entry_risk_pct}% not {base_risk_pct}%")
+            qty = risk.position_size(equity, entry_risk_pct,
                                      signal.entry, signal.stop,
                                      open_notional_usd=open_notional,
                                      position_cap_pct=position_cap_pct)
@@ -957,6 +974,15 @@ def _worker_loop():
                 # is measured. The tag rides on the position so the exit
                 # inherits it even if the map changes underneath us.
                 "sector": sectors.sector_for(ticker),
+                "probation": bool(is_probation),
+                "risk_pct": entry_risk_pct,
+                # A setup with a hold cap (post_earnings_continuation: 55
+                # sessions) reuses the hard_exit_date machinery, so the
+                # existing exit path enforces it — no second timer to drift.
+                "hard_exit_date": session_clock.sessions_forward_date(
+                    now_et.date(),
+                    signal.extras.get("max_hold_sessions"))
+                if signal.extras.get("max_hold_sessions") else None,
             }
             # Capital persisted on BUY (display cache; broker stays authoritative).
             try:

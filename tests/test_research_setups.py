@@ -16,34 +16,56 @@ import backtest
 import finetune_plan
 
 
-# ============================================================ containment
+# ============================================================ go-live wiring
+#
+# These setups were RESEARCH ONLY until 2026-09-02, and this block used to
+# assert that nothing live could reach them. The boardroom ratified both, so
+# the assertions invert: they must now be reachable by the live pipeline, on
+# exactly the ratified terms. The backtest detectors stay in backtest.py as
+# the research record — both implementations are checked against the same
+# fixtures below so they cannot silently diverge.
 
-def test_research_setups_are_not_live_wired():
-    """No live path may reach them: not in the strategy registry, not
-    importable as a strategy, not in the config's enabled strategies."""
-    from strategies import REGISTRY
+def test_both_setups_are_registered_live():
+    from strategies import REGISTRY, enabled_strategies
     for name in ("pullback_in_uptrend", "post_earnings_continuation"):
-        assert name not in REGISTRY
+        assert name in REGISTRY
 
     with open("bot_config.json", encoding="utf-8") as f:
         config = json.load(f)
-    enabled = set(config.get("default_strategies", []))
-    for names in config.get("strategies", {}).values():
-        enabled.update(names)
-    assert enabled.isdisjoint(backtest.RESEARCH_DETECTORS)
+    names = [s.name for s in enabled_strategies("ANY_UNIVERSE_TICKER", config)]
+    assert "pullback_in_uptrend" in names
+    assert "post_earnings_continuation" in names
 
 
-def test_research_detectors_live_only_in_backtest():
-    import os
-    offenders = []
-    for fn in os.listdir("."):
-        if not fn.endswith(".py") or fn in ("backtest.py", "finetune_plan.py"):
-            continue
-        with open(fn, encoding="utf-8", errors="ignore") as f:
-            body = f.read()
-        if "pullback_in_uptrend" in body or "post_earnings_continuation" in body:
-            offenders.append(fn)
-    assert offenders == [], f"research setups leaked into: {offenders}"
+def test_both_setups_are_trending_only():
+    """The ratification is TRENDING ONLY. Adding either to spy_filter_exempt
+    would let pullback_in_uptrend trade its NEGATIVE cell (-0.14R in chop)."""
+    with open("bot_config.json", encoding="utf-8") as f:
+        config = json.load(f)
+    exempt = set(config.get("spy_filter_exempt", []))
+    assert "pullback_in_uptrend" not in exempt
+    assert "post_earnings_continuation" not in exempt
+
+
+def test_both_setups_run_on_daily_bars_at_4r():
+    from strategies import REGISTRY
+    import strategies.pullback_in_uptrend as pui
+    import strategies.post_earnings_continuation as pec
+    with open("bot_config.json", encoding="utf-8") as f:
+        config = json.load(f)
+    for name in ("pullback_in_uptrend", "post_earnings_continuation"):
+        assert REGISTRY[name].timeframe == "daily"
+        assert config["strategy_timeframes"][name] == "daily"
+    assert pui.TARGET_R == 4.0
+    assert pec.TARGET_R == 4.0
+
+
+def test_backtest_report_declares_the_live_status():
+    """Item 5: the report is the source of truth on status, and the status is
+    declared in code so it cannot go stale in the markdown."""
+    assert backtest.RESEARCH_STATUS["pullback_in_uptrend"] ==         ("LIVE (probation)", "2026-09-02")
+    assert backtest.RESEARCH_STATUS["post_earnings_continuation"] ==         ("LIVE (probation)", "2026-09-02")
+    assert "LIVE (probation) since 2026-09-02" ==         backtest.research_status("pullback_in_uptrend")
 
 
 # ============================================================ bar helpers

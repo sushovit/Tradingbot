@@ -454,6 +454,19 @@ RESEARCH_DETECTORS = {
 }
 RESEARCH_TARGET_R = 3.0
 
+# Live status per research setup — backtest_report.md is the source of truth
+# on what is wired live, so the status is declared HERE and rendered, not
+# retyped into the markdown by hand where it would go stale.
+RESEARCH_STATUS = {
+    "pullback_in_uptrend": ("LIVE (probation)", "2026-09-02"),
+    "post_earnings_continuation": ("LIVE (probation)", "2026-09-02"),
+}
+
+
+def research_status(name: str) -> str:
+    status, since = RESEARCH_STATUS.get(name, ("research only", None))
+    return f"{status} since {since}" if since else status
+
 
 def replay_research(symbol: str, df: pd.DataFrame, name: str,
                     regime: pd.Series, target_r: float = RESEARCH_TARGET_R,
@@ -694,8 +707,13 @@ def run_backtest(symbols, years=3, refresh=False, sweeps=True):
             for sym, df in bars.items():
                 rows.extend(replay_research(sym, df, name, regime, tr))
             st = aggregate(rows)
-            lines.append(f"| {tr}R | {name} | {st['trades']} | {st['win_rate']} "
-                         f"| {st['expectancy_r']} | {st['profit_factor']} |")
+            live_mark = (" **<- LIVE**"
+                         if tr == 4.0 and name in RESEARCH_STATUS
+                         and RESEARCH_STATUS[name][0].startswith("LIVE")
+                         else "")
+            lines.append(f"| {tr}R | {name}{live_mark} | {st['trades']} "
+                         f"| {st['win_rate']} | {st['expectancy_r']} "
+                         f"| {st['profit_factor']} |")
 
     lines.append("\n### Exit-reason mix (3R target)")
     lines.append("| Setup | target | stop | gap_target | gap_stop | time_stop |")

@@ -210,6 +210,25 @@ the target defaults to the achievable 3R floor. Do NOT reject or discount a
 reclaim for "little room to resistance". RSI overextension remains a valid
 rejection factor for every setup, including reclaims.
 
+If the setup type is post_earnings_continuation: this is post-earnings
+DRIFT. The entry IS the first close above the gap day's high, so proximity
+to that level — and to resistance generally — is DEFINITIONAL, not a flaw;
+rejecting it for "no room" is circular. An actual earnings event within 3
+sessions has ALREADY been verified against the earnings calendar, so do not
+reject it for being unconfirmed news. Judge it on drift evidence: whether
+the gap held rather than filled, volume behind the gap and behind this
+close, and whether the reaction has already run so far that 4R is
+implausible. RSI overextension remains a valid rejection factor.
+
+If the setup type is pullback_in_uptrend: this is buying REST, not thrust.
+DECLINING volume through the pullback is EXPECTED and is a positive — it is
+supply drying up; do NOT reject it as "weak volume" or "no participation".
+That test is already applied deterministically before you see this. What
+you should want is volume RETURNING on the entry candle, confirming demand
+is back. Judge it on trend quality (are the 20/50 EMAs genuinely rising),
+how deep the pullback cut relative to the trend, and whether the reclaim
+bar is convincing. A pullback that broke structure is not a pullback.
+
 === ADX RUBRIC (use it verbatim) ===
 ADX below 20 = no trend; 20-25 = weak trend; 25-40 = trending; above 40 =
 strong trend. NEVER describe a value above 25 as low, and NEVER call a

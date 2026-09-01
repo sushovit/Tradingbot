@@ -4,7 +4,7 @@ BASELINE eval of the current qwen3:4b.
 
     python finetune_plan.py            # stats + split + plan, no model calls
     python finetune_plan.py --baseline # also run qwen3:4b over the eval sets
-    python finetune_plan.py --out FINETUNE_PLAN.md
+    python finetune_plan.py --out finetune_plan.md
 
 Work order 2026-09-01 item 9. This produces the PLAN and the BASELINE ONLY.
 It never trains, never writes an adapter, and never touches the live model.
@@ -22,7 +22,7 @@ import statistics
 import sys
 
 CANDIDATE_FILE = "training_candidate.jsonl"
-DEFAULT_OUT = "FINETUNE_PLAN.md"
+DEFAULT_OUT = "finetune_plan.md"
 EVAL_FRACTION = 0.2
 SPLIT_SEED = 20260901
 
