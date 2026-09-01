@@ -39,6 +39,82 @@ LOCAL_MODEL = os.getenv("LOCAL_ANALYST_MODEL", "qwen3:4b")
 REQUEST_TIMEOUT = 30  # seconds per attempt
 
 
+def classify_error(err: Exception) -> str:
+    """Name the failure precisely. 'Ollama unreachable' covered three very
+    different faults; only one of them is worth retrying the same way."""
+    text = str(err).lower()
+    refused = "refused" in text or "newconnectionerror" in text
+    if isinstance(err, requests.ConnectionError) or refused:
+        return "connection_refused"          # the service is not running
+    if isinstance(err, requests.Timeout) or "timed out" in text:
+        return "read_timeout"                # busy or loading the model
+    if isinstance(err, (json.JSONDecodeError, KeyError, IndexError)):
+        return "malformed_response"
+    return "unknown"
+
+
+def is_up(timeout: float = 2.0) -> bool:
+    try:
+        requests.get(f"{OLLAMA_URL}/api/tags", timeout=timeout)
+        return True
+    except requests.RequestException:
+        return False
+
+
+def ensure_ollama(warm: bool = True, wait_secs: int = 60) -> dict:
+    """Make sure Ollama is up and the model is resident BEFORE the session's
+    first gatekeeper call.
+
+    Diagnosis 2026-09-01: 27 of 30 shadow failures were CONNECTION REFUSED,
+    every one in the session's first hour — the service simply was not
+    running when the desk started. It was never GPU contention (zero errors
+    at the 15:30 intern run) and only 3 were timeouts. So the fix is to
+    start it and warm it, not to retry harder.
+
+    Returns {'up', 'started', 'warmed', 'detail'} and never raises."""
+    result = {"up": False, "started": False, "warmed": False, "detail": ""}
+    if is_up():
+        result["up"] = True
+    else:
+        # Try to start the service ourselves rather than losing the hour.
+        try:
+            import subprocess
+            exe = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                               "Programs", "Ollama", "ollama app.exe")
+            if os.path.exists(exe):
+                subprocess.Popen([exe],
+                                 creationflags=getattr(subprocess,
+                                                       "CREATE_NO_WINDOW", 0))
+                result["started"] = True
+                deadline = time.time() + wait_secs
+                while time.time() < deadline:
+                    if is_up():
+                        result["up"] = True
+                        break
+                    time.sleep(2)
+            else:
+                result["detail"] = f"ollama app not found at {exe}"
+        except Exception as e:
+            result["detail"] = f"could not start Ollama: {e}"
+
+    if result["up"] and warm:
+        # Load the model into VRAM so the first real call is not a cold
+        # start racing a 30s timeout.
+        try:
+            requests.post(f"{OLLAMA_URL}/api/chat",
+                          json={"model": LOCAL_MODEL, "think": False,
+                                "stream": False,
+                                "messages": [{"role": "user", "content": "OK"}]},
+                          timeout=120)
+            result["warmed"] = True
+        except requests.RequestException as e:
+            result["detail"] = f"warm-up failed: {classify_error(e)}"
+    if not result["detail"]:
+        result["detail"] = ("ready" if result["warmed"]
+                            else "up (not warmed)" if result["up"] else "DOWN")
+    return result
+
+
 def _call_ollama(system_prompt: str, user_prompt: str,
                  timeout: int = None) -> dict:
     """One Ollama chat call in JSON mode with thinking disabled.
@@ -136,12 +212,10 @@ def get_gatekeeper_decision(
         try:
             raw = _call_ollama(SYSTEM_PROMPT, user_prompt)
             return _validate_verdict(raw)
-        except (requests.ConnectionError, requests.Timeout) as e:
-            last_err = f"Ollama unreachable: {e}"
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            last_err = f"Malformed Ollama response: {e}"
-        except Exception as e:
-            last_err = f"Unexpected local analyst error: {e}"
+        except (requests.ConnectionError, requests.Timeout,
+                json.JSONDecodeError, KeyError, IndexError, Exception) as e:
+            # Name the fault so the journal says WHICH failure this was.
+            last_err = f"{classify_error(e)}: {e}"
         if attempt < max_retries - 1:
             wait = 2 ** attempt
             logger.warning(f"Local analyst attempt {attempt + 1} failed, "

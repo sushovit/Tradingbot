@@ -232,6 +232,34 @@ def build_report() -> str:
     except Exception as e:
         lines.append(f"_Intern account unavailable: {e}_")
 
+    # --- Sector expectancy (Boardroom #2 item 7) ---
+    # The crypto/DAT ruling was "no exclusion, but measure the class".
+    # This table IS that measurement — it must stay visible even at n=1,
+    # because the point is to accumulate evidence, not to wait for it.
+    lines.append(chr(10) + "## Sector expectancy")
+    try:
+        rows = journal.sector_expectancy()
+        if not rows:
+            lines.append("_No closed trades yet._")
+        else:
+            lines.append("| Sector | Trades | W-L | Win % | Realized | "
+                         "Expectancy/trade |")
+            lines.append("|---|---|---|---|---|---|")
+            for r in rows:
+                flag = " ⚠" if r["sector"] == "unclassified" else ""
+                lines.append(
+                    f"| {r['sector']}{flag} | {r['trades']} | "
+                    f"{r['wins']}-{r['losses']} | {r['win_rate']}% | "
+                    f"${r['realized_usd']:+,.2f} | "
+                    f"${r['expectancy_usd']:+,.2f} |")
+            crypto = next((r for r in rows if r["sector"] == "crypto_dat"), None)
+            if crypto is None:
+                lines.append(chr(10) + "_crypto_dat: no closed trades yet — "
+                             "the class is tradeable at standard risk and is "
+                             "being measured from here._")
+    except Exception as e:
+        lines.append(f"_Unavailable: {e}_")
+
     # --- Shadow dissent ledger (advisory-vs-outcome scoreboard) ---
     lines.append(chr(10) + "## Shadow dissents")
     try:

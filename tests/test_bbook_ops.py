@@ -32,9 +32,12 @@ def order(**over):
 def test_tier_risk_and_gates():
     assert risk.tier_risk_pct("B", 1.0) == 0.5
     assert risk.tier_risk_pct("A", 1.0) == 1.0
+    # Boardroom #2 (2026-09-01): TWO concurrent B slots, two entries a week.
+    # Half risk per slot is unchanged — more probes, not bigger bets.
     assert risk.check_tier_b(0, 0) == (True, None)
-    assert risk.check_tier_b(1, 0)[1] == "b_book_position_open"
-    assert risk.check_tier_b(0, 1)[1] == "b_book_weekly_limit"
+    assert risk.check_tier_b(1, 1) == (True, None)
+    assert risk.check_tier_b(2, 0)[1] == "b_book_position_open"
+    assert risk.check_tier_b(0, 2)[1] == "b_book_weekly_limit"
 
 
 def test_invalid_tier_rejected():
@@ -42,11 +45,16 @@ def test_invalid_tier_rejected():
     assert not ok and reason.startswith("invalid_tier")
 
 
-def test_second_b_entry_in_week_rejected(temp_journal, monkeypatch):
+def test_third_b_entry_in_week_rejected(temp_journal, monkeypatch):
+    """Two slots, not unlimited: the SECOND B entry is allowed, the third
+    is not."""
     monkeypatch.setattr("orders.journal", temp_journal)
-    # First B entry this week, still open.
     temp_journal.log_trade("AMD", "BUY", 5, 50.0, reason="CEO test", tier="B")
-    ok, reason = validate_order(order(tier="B", notional_usd=20), 2000.0, 0, 3, NOW)
+    ok, reason = validate_order(order(tier="B", notional_usd=190), 2000.0, 0, 3, NOW)
+    assert ok, reason                       # second slot is open
+
+    temp_journal.log_trade("INTC", "BUY", 5, 20.0, reason="CEO test", tier="B")
+    ok, reason = validate_order(order(tier="B", notional_usd=190), 2000.0, 0, 3, NOW)
     assert not ok
     assert reason in ("b_book_position_open", "b_book_weekly_limit")
 

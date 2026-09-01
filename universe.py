@@ -26,6 +26,7 @@ Bot:  refreshed automatically once per session start; the loop scans
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 
 import pytz
@@ -42,12 +43,66 @@ DEFAULTS = {
     "min_price": 5.0,
     "max_price": 250.0,
     "min_dollar_volume": 20_000_000.0,
-    "max_candidates": 20,
+    "max_candidates": 20,        # DISPLAY cap (the table the CEO reads)
+    "max_evaluated": 200,        # DETECTOR cap (what the loop actually scans)
     "skip_etfs": True,
     "core_watchlist": [],
     "pre_breakout_pct": 3.0,    # within 3% of the 20-day high
     "washout_pct": 10.0,        # >= 10% off the 20-day high (reclaim candidate)
 }
+
+
+# =============================================================================
+# LIQUID SCAN POOL (Boardroom #2, item 5)
+# =============================================================================
+# Until now the scan saw only ~50 most-actives + ~50 movers + the 48-name core
+# watchlist, so a setup forming in a name that wasn't moving YESTERDAY was
+# invisible. This pool is the standing scan list: S&P 500 liquid leaders plus
+# high-volume midcaps, all of which clear the $20M dollar-volume floor on a
+# normal day. The floor is UNCHANGED — the pool widens what we look at, the
+# filters still decide what qualifies.
+LIQUID_POOL = [
+    # Mega-cap tech / comms
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "TSLA",
+    "NFLX", "ORCL", "CRM", "ADBE", "AMD", "INTC", "QCOM", "TXN", "MU", "AMAT",
+    "LRCX", "KLAC", "ADI", "NXPI", "MRVL", "ON", "SWKS", "MCHP",
+    "CSCO", "IBM", "ACN", "NOW", "INTU", "PANW", "CRWD", "SNOW", "DDOG", "NET",
+    "ZS", "WDAY", "SHOP", "SQ", "PYPL", "COIN",
+    "PLTR", "SNAP", "PINS", "RBLX", "UBER", "LYFT", "ABNB", "DASH", "TTD",
+    "ROKU", "SPOT", "EA", "TTWO", "DIS", "WBD", "CMCSA", "T", "VZ",
+    "TMUS", "DELL", "HPQ", "SMCI", "ANET", "FTNT",
+    "APP", "ARM", "MSTR",
+    # Financials
+    "JPM", "BAC", "WFC", "C", "GS", "MS", "SCHW", "BLK", "AXP", "COF", "USB",
+    "PNC", "TFC", "V", "MA", "SOFI", "HOOD", "ALLY",
+    "BRK.B", "PGR",
+    # Healthcare
+    "UNH", "JNJ", "LLY", "PFE", "MRK", "ABBV", "BMY", "AMGN", "GILD",
+    "VRTX", "REGN", "MRNA", "CVS", "CI", "HUM", "ISRG", "MDT", "TMO", "DHR",
+    "ABT", "BSX", "SYK", "HIMS",
+    # Consumer / retail
+    "WMT", "COST", "TGT", "HD", "LOW", "NKE", "SBUX", "MCD", "CMG",
+    "DKNG", "LULU", "TJX", "PEP", "KO", "PG",
+    "MO", "PM", "STZ", "CCL", "RCL",
+    "MAR", "BKNG", "F", "GM", "RIVN", "LCID",
+    # Industrials / energy / materials
+    "BA", "CAT", "DE", "GE", "HON", "MMM", "LMT", "RTX", "NOC", "UPS",
+    "FDX", "UNP", "CSX", "DAL", "UAL", "AAL", "XOM", "CVX",
+    "COP", "OXY", "SLB", "DVN", "FANG", "MPC", "PSX",
+    "VLO", "KMI", "WMB", "OKE", "FCX", "NEM", "CLF", "X", "NUE", "AA",
+    "LIN",
+    # Utilities / REIT / other liquid
+    "NEE", "DUK", "SO", "AEP", "PLD", "AMT",
+]
+
+
+def scan_pool(config: dict) -> list:
+    """The full standing scan list: LIQUID_POOL plus any configured
+    core_watchlist names not already in it, de-duplicated and order-stable."""
+    cfg = _universe_config(config or {})
+    return list(dict.fromkeys(
+        list(LIQUID_POOL) + list(cfg.get("core_watchlist") or [])))
+
 
 _ETF_NAME_MARKERS = ("ETF", "ETN", "TRUST", "FUND", "INDEX", "SHARES ")
 
@@ -146,7 +201,16 @@ def filter_and_rank(candidates: list, config: dict) -> list:
             "name": c.get("name", ""),
         })
     kept.sort(key=lambda x: x["score"], reverse=True)
-    return kept[: int(cfg["max_candidates"])]
+    # Boardroom #2 item 5: detectors evaluate the FULL qualifying set
+    # (max_evaluated); max_candidates is only how many rows we display.
+    limit = int(cfg.get("max_evaluated") or cfg["max_candidates"])
+    return kept[:limit]
+
+
+def display_slice(ranked: list, config: dict) -> list:
+    """Top-N rows for the human table. The scan is wide; the report is not."""
+    cfg = _universe_config(config)
+    return list(ranked)[: int(cfg["max_candidates"])]
 
 
 def merge_candidates(movers: list, core: list) -> list:
@@ -169,8 +233,13 @@ def merge_candidates(movers: list, core: list) -> list:
 # =============================================================================
 
 def fetch_candidates(broker, config: dict) -> list:
-    """Pull most-actives + movers, enrich with bars/asset data."""
+    """Pull the standing liquid pool + most-actives + movers, enrich with
+    bars/asset data. The pool is the floor of coverage: screener endpoints
+    only surface what MOVED, so without it a setup coiling quietly in a
+    liquid name is never even looked at."""
     symbols = {}
+    for sym in scan_pool(config):
+        symbols[sym] = {"symbol": sym, "change_pct": 0.0}
     try:
         for a in broker.get_most_actives(top=50):
             symbols.setdefault(a["symbol"], {"symbol": a["symbol"], "change_pct": 0.0})
@@ -274,6 +343,7 @@ def fetch_core_candidates(broker, config: dict) -> list:
 def refresh(broker, config: dict) -> list:
     """Fetch movers + core-watchlist setups, filter, rank, write
     universe_today.json. Returns the candidates."""
+    t0 = time.time()
     movers = fetch_candidates(broker, config)
     try:
         core = fetch_core_candidates(broker, config)
@@ -281,13 +351,20 @@ def refresh(broker, config: dict) -> list:
         logger.warning(f"core watchlist scan failed: {e}")
         core = []
     ranked = filter_and_rank(merge_candidates(movers, core), config)
+    scan_seconds = round(time.time() - t0, 2)
     payload = {
         "generated_at": datetime.now(EASTERN_TZ).isoformat(),
         "date": datetime.now(EASTERN_TZ).strftime("%Y-%m-%d"),
+        "scanned": len(movers) + len(core),
+        "evaluated": len(ranked),
+        "scan_seconds": scan_seconds,
         "candidates": ranked,
+        "display": display_slice(ranked, config),
     }
     with open(UNIVERSE_FILE, "w") as f:
         json.dump(payload, f, indent=2)
+    logger.info(f"Universe scan: {payload['scanned']} names fetched, "
+                f"{payload['evaluated']} qualified, {scan_seconds}s")
     return ranked
 
 
@@ -302,6 +379,28 @@ def load_universe_tickers() -> list:
     if payload.get("date") != datetime.now(EASTERN_TZ).strftime("%Y-%m-%d"):
         return []
     return [c["symbol"] for c in payload.get("candidates", [])]
+
+
+def load_display_candidates() -> list:
+    """The top-N rows meant for humans. Falls back to the head of the full
+    list for universe files written before the expansion."""
+    try:
+        with open(UNIVERSE_FILE, "r") as f:
+            payload = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    return payload.get("display") or payload.get("candidates", [])[:20]
+
+
+def last_scan_stats() -> dict:
+    """{'scanned', 'evaluated', 'scan_seconds'} from the last refresh."""
+    try:
+        with open(UNIVERSE_FILE, "r") as f:
+            payload = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return {k: payload.get(k) for k in ("scanned", "evaluated", "scan_seconds")
+            if payload.get(k) is not None}
 
 
 # =============================================================================
@@ -329,16 +428,22 @@ def main():
         return 1
 
     import clockline
-    print(f"# Universe ({len(ranked)} candidates)")
+    stats = last_scan_stats()
+    shown = display_slice(ranked, config)
+    print(f"# Universe — {stats.get('scanned', '?')} scanned, "
+          f"{len(ranked)} qualified, top {len(shown)} shown "
+          f"({stats.get('scan_seconds', '?')}s)")
     print(clockline.two_zone_line() + "\n")
     print("| # | Ticker | Price | Avg $ vol (20d) | Move % | Source | Setup | Name |")
     print("|---|---|---|---|---|---|---|---|")
-    for i, c in enumerate(ranked, 1):
+    for i, c in enumerate(shown, 1):
         print(f"| {i} | {c['symbol']} | ${c['price']:,.2f} "
               f"| ${c['avg_dollar_volume'] / 1e6:,.0f}M | {c['change_pct']:+.1f}% "
               f"| {c.get('source', 'movers')} | {c.get('setup_flag') or '—'} "
               f"| {c['name'][:36]} |")
-    print(f"\nWritten to {UNIVERSE_FILE}")
+    print(f"\nAll {len(ranked)} qualifying names are scanned by the detectors; the table" + \
+          f" above is the top {len(shown)} by score.")
+    print(f"Written to {UNIVERSE_FILE}")
     return 0
 
 

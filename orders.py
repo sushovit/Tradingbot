@@ -40,6 +40,7 @@ import pytz
 from dotenv import load_dotenv
 
 import risk
+import sectors
 import journal
 import universe
 
@@ -295,7 +296,8 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         trade_id, pnl_usd, pnl_pct = journal.record_exit(
             ticker, qty, price, f"CEO {action}",
             decision_id=state.get("decision_id") or decision_id,
-            broker_order_id=oid, entry_price=entry)
+            broker_order_id=oid, entry_price=entry,
+            sector=state.get("sector"))
         positions[ticker] = {"in_position": False}
         if trade_id is None:
             return f"{action} {ticker}: closed (exit already journaled)."
@@ -409,6 +411,7 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         "entry_order_id": str(bracket.id),
         "decision_id": decision_id,
         "entry_trade_id": trade_id,
+        "sector": sectors.sector_for(ticker),
         "setup": order.get("setup", "discretionary"),
         "hard_exit_date": order.get("hard_exit_date"),
     }

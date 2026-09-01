@@ -119,6 +119,11 @@ def init_db():
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
         if "broker_order_id" not in tcols:
             conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
+        if "sector" not in tcols:
+            # Boardroom #2 item 7: crypto/DAT names stay tradeable at standard
+            # risk, but the class must be MEASURABLE. Every fill carries the
+            # sector so per-class expectancy is a query, not an argument.
+            conn.execute("ALTER TABLE trades ADD COLUMN sector TEXT")
         conn.commit()
     run_data_migrations()
 
@@ -189,6 +194,27 @@ def run_data_migrations():
             logger.info(f"Migration: re-tiered {fixed} exit row(s) to match "
                         f"their entries.")
         set_meta("mig_20260813_exit_tier_backfill", "done")
+
+    # 2026-09-01: backfill the sector tag on every existing fill so the
+    # crypto/DAT class has history to be measured against, not just future
+    # trades. Classification is deterministic (sectors.py), so re-running
+    # would be a no-op anyway; the meta guard keeps it to one pass.
+    if get_meta("mig_20260901_sector_backfill") is None:
+        try:
+            import sectors as _sectors
+            with _lock, _connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ticker FROM trades "
+                    "WHERE sector IS NULL OR sector=''").fetchall()
+                for r in rows:
+                    conn.execute("UPDATE trades SET sector=? WHERE id=?",
+                                 (_sectors.sector_for(r["ticker"]), r["id"]))
+                if rows:
+                    logger.info(f"Migration: sector-tagged {len(rows)} trade row(s).")
+                conn.commit()
+            set_meta("mig_20260901_sector_backfill", "done")
+        except Exception as e:
+            logger.warning(f"sector backfill skipped: {e}")
 
     # 2026-07-26: purge the gatekeeper ERROR rows from the 2026-07-22 key
     # outage (import-order bug). They are noise in the decision record; the
@@ -478,16 +504,23 @@ def chop_reclaim_report() -> dict:
 def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
               reason: str = "", decision_id=None,
-              broker_order_id: str = None, tier: str = "A") -> int:
+              broker_order_id: str = None, tier: str = "A",
+              sector: str = None) -> int:
     """Journal one fill (BUY or SELL). Returns the trade id."""
+    if sector is None:
+        try:
+            import sectors as _sectors
+            sector = _sectors.sector_for(ticker)
+        except Exception:
+            sector = None
     with _lock, _connect() as conn:
         cur = conn.execute(
             """INSERT INTO trades
                (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason,
-                decision_id, broker_order_id, tier)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                decision_id, broker_order_id, tier, sector)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now_et(), ticker, action.upper(), qty, price, pnl_usd, pnl_pct,
-             reason, decision_id, broker_order_id, str(tier).upper()),
+             reason, decision_id, broker_order_id, str(tier).upper(), sector),
         )
         conn.commit()
         return cur.lastrowid
@@ -616,9 +649,67 @@ def entry_tier(ticker: str, decision_id=None) -> str:
         return str(row["tier"]).upper() if row and row["tier"] else "A"
 
 
+def entry_sector(ticker: str, decision_id=None):
+    """Sector of the BUY this exit closes, so a reclassification later never
+    splits one round trip across two classes."""
+    with _lock, _connect() as conn:
+        if decision_id is not None:
+            row = conn.execute(
+                "SELECT sector FROM trades WHERE action='BUY' AND decision_id=? "
+                "ORDER BY id DESC LIMIT 1", (decision_id,)).fetchone()
+            if row and row["sector"]:
+                return row["sector"]
+        row = conn.execute(
+            "SELECT sector FROM trades WHERE action='BUY' AND ticker=? "
+            "ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
+    if row and row["sector"]:
+        return row["sector"]
+    try:
+        import sectors as _sectors
+        return _sectors.sector_for(ticker)
+    except Exception:
+        return None
+
+
+def sector_expectancy(tier: str = None) -> list:
+    """Live expectancy per sector: [{sector, trades, wins, losses, win_rate,
+    realized_usd, expectancy_usd, avg_pct}], worst expectancy last.
+
+    This is the measurement the crypto/DAT ruling was conditioned on."""
+    sql = ("SELECT COALESCE(NULLIF(sector,''),'unclassified') AS sector, "
+           "COUNT(*) AS n, "
+           "SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins, "
+           "SUM(CASE WHEN pnl_usd < 0 THEN 1 ELSE 0 END) AS losses, "
+           "COALESCE(SUM(pnl_usd),0) AS pnl, "
+           "COALESCE(AVG(pnl_pct),0) AS avg_pct "
+           "FROM trades WHERE action='SELL'")
+    params = []
+    if tier:
+        sql += " AND UPPER(COALESCE(tier,'A'))=?"
+        params.append(str(tier).upper())
+    sql += " GROUP BY 1"
+    out = []
+    with _lock, _connect() as conn:
+        for r in conn.execute(sql, params):
+            n = int(r["n"]) or 1
+            out.append({
+                "sector": r["sector"],
+                "trades": int(r["n"]),
+                "wins": int(r["wins"] or 0),
+                "losses": int(r["losses"] or 0),
+                "win_rate": round(100.0 * (r["wins"] or 0) / n, 1),
+                "realized_usd": round(float(r["pnl"]), 2),
+                "expectancy_usd": round(float(r["pnl"]) / n, 2),
+                "avg_pct": round(float(r["avg_pct"]), 2),
+            })
+    out.sort(key=lambda x: x["expectancy_usd"], reverse=True)
+    return out
+
+
 def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
                 decision_id=None, broker_order_id: str = None,
-                entry_price: float = None, tier: str = None):
+                entry_price: float = None, tier: str = None,
+                sector: str = None):
     """SINGLE-AUTHORITY exit journaling. Every path that sees a fill (bot
     loop, orders.py sync, report startup sync) must come through here or
     respect the same rule: idempotence keys on the BROKER's order id.
@@ -638,7 +729,8 @@ def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
                          pnl_usd=pnl_usd, pnl_pct=pnl_pct, reason=reason,
                          decision_id=decision_id,
                          broker_order_id=broker_order_id,
-                         tier=resolved_tier)
+                         tier=resolved_tier,
+                         sector=sector or entry_sector(ticker, decision_id))
     link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
     return trade_id, pnl_usd, pnl_pct
 

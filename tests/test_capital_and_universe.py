@@ -114,7 +114,8 @@ def make_candidate(**overrides):
 
 CONFIG = {"universe": {"min_price": 5, "max_price": 250,
                        "min_dollar_volume": 20_000_000,
-                       "max_candidates": 15, "skip_etfs": True}}
+                       "max_candidates": 15, "max_evaluated": 15,
+                       "skip_etfs": True}}
 
 
 def test_universe_price_bounds():
@@ -156,7 +157,9 @@ def test_universe_etfs_allowed_when_configured():
 
 
 def test_universe_ranking_and_cap():
-    # score = dollar volume x |% move|; list capped at max_candidates.
+    # score = dollar volume x |% move|; list capped at max_evaluated
+    # (Boardroom #2 item 5 split the DETECTOR cap from the DISPLAY cap;
+    # this CONFIG sets both to 15, so the old expectation still holds).
     candidates = [
         make_candidate(symbol=f"T{i:02d}", avg_dollar_volume=(i + 1) * 25e6,
                        change_pct=2.0)
@@ -236,6 +239,7 @@ def test_flagged_core_names_get_move_floor_and_survive_ranking():
 def test_combined_output_capped_at_20():
     config = json.loads(json.dumps(CONFIG))
     config["universe"]["max_candidates"] = 20
+    config["universe"]["max_evaluated"] = 20
     movers = [make_candidate(symbol=f"M{i:02d}", change_pct=3.0) for i in range(15)]
     core = [dict(make_candidate(symbol=f"C{i:02d}", change_pct=1.5),
                  source="core_watch", setup_flag="pre_breakout") for i in range(15)]

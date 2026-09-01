@@ -123,8 +123,11 @@ def position_size(equity: float, risk_per_trade_pct: float,
 # one new entry per calendar week — journaled separately so A-book statistics
 # stay pure.
 TIER_B_RISK_PCT = 0.5
-TIER_B_MAX_OPEN = 1
-TIER_B_ENTRIES_PER_WEEK = 1
+# Boardroom #2 (2026-09-01): two concurrent tier-B slots, was one. Half risk
+# and the weekly cadence apply PER SLOT, so the experiment can run two
+# independent probes without doubling the risk of either.
+TIER_B_MAX_OPEN = 2
+TIER_B_ENTRIES_PER_WEEK = 2
 
 
 def tier_risk_pct(tier: str, default_pct: float) -> float:

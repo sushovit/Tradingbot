@@ -27,6 +27,7 @@ from claude_integration import (
 # --- Alpaca paper broker, journal, risk rules, strategies, analyst router ---
 import journal
 import risk
+import sectors
 import analyst
 import universe
 import position_mgmt
@@ -250,6 +251,7 @@ def reconcile_positions(broker, positions):
                 "decision_id": None,
                 "entry_trade_id": None,
                 "setup": "reconciled",
+                "sector": sectors.sector_for(symbol),
             }
     return positions
 
@@ -284,7 +286,8 @@ def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
         ticker, qty, fill_price, reason,
         decision_id=state.get("decision_id"),
         broker_order_id=broker_order_id,
-        entry_price=entry_price)
+        entry_price=entry_price,
+        sector=state.get("sector"))
     positions[ticker] = {"in_position": False}
     if trade_id is None:
         logger.info(f"{ticker}: exit already journaled (order {broker_order_id}) — "
@@ -382,6 +385,22 @@ def _worker_loop():
         logger.warning(f"Universe refresh failed — falling back to configured tickers: {e}")
 
     logger.info("Live bot worker started against Alpaca PAPER account.")
+
+    # Ollama must be UP before the first gatekeeper call: 27 of 30 shadow
+    # failures were connection-refused in the session's first hour, i.e. the
+    # service simply was not running when the desk started.
+    try:
+        import local_analyst
+        state = local_analyst.ensure_ollama()
+        logger.info(f"Shadow analyst pre-flight: {state['detail']} "
+                    f"(started={state['started']}, warmed={state['warmed']})")
+        if not state["up"]:
+            journal.log_integrity_event(
+                "shadow_analyst_down",
+                f"local_analyst: Ollama not reachable at session start "
+                f"({state['detail']}) — shadow verdicts will be errors")
+    except Exception as e:
+        logger.warning(f"Ollama pre-flight failed: {e}")
 
     # Hold off system sleep for the session: on 2026-08-31 the machine slept
     # at 12:36 ET and the frozen worker looked exactly like a hang.
@@ -934,6 +953,10 @@ def _worker_loop():
                 "decision_id": decision_id,
                 "entry_trade_id": trade_id,
                 "setup": signal.setup_name,
+                # Boardroom #2 item 7: no class is excluded, but every class
+                # is measured. The tag rides on the position so the exit
+                # inherits it even if the map changes underneath us.
+                "sector": sectors.sector_for(ticker),
             }
             # Capital persisted on BUY (display cache; broker stays authoritative).
             try:
