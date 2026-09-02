@@ -89,3 +89,52 @@ def gap_abort(daily_df, current_price: float, today_str: str = None):
         return False, None, None
     open_price = session_open_price(daily_df, current_price, today_str)
     return open_price < mid, open_price, mid
+
+
+# --- SPY regime on COMPLETED daily bars (2026-09-02) -----------------------
+# The live filter used to read a 20-period EMA of FIVE-MINUTE SPY bars, i.e.
+# a ~100-minute average, while the backtest that justified the filter used a
+# 20-DAY EMA of daily closes (backtest.spy_regime_series). They are different
+# indicators, so the regime the desk enforced was never the regime the
+# evidence was measured on. This computes the backtest's definition, on the
+# last COMPLETED session only — today's partial daily bar is never used,
+# matching the completed-bar semantics every daily signal already follows.
+SPY_EMA_SPAN = 20
+
+
+def spy_regime(spy_daily_df, today_str: str = None):
+    """Regime from the last COMPLETED SPY session.
+
+    Returns {'trending': bool, 'spy_close': float, 'ema20d': float,
+    'as_of': 'YYYY-MM-DD'}, or None when the data cannot support a verdict.
+    None means UNKNOWN — the caller decides policy; this never guesses."""
+    if spy_daily_df is None or len(spy_daily_df) < 2:
+        return None
+    as_of = completed_bar_date(spy_daily_df, today_str)
+    if as_of is None:
+        return None
+    closes = spy_daily_df["close"]
+    # Drop today's partial bar before averaging: including it would let an
+    # intraday wobble move the 20-day EMA that gates every entry.
+    last_day = str(spy_daily_df.index[-1])[:10]
+    today_str = today_str or datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    if last_day == today_str:
+        closes = closes.iloc[:-1]
+    if len(closes) < 2:
+        return None
+    ema = closes.ewm(span=SPY_EMA_SPAN, adjust=False).mean()
+    spy_close = float(closes.iloc[-1])
+    ema20d = float(ema.iloc[-1])
+    return {"trending": bool(spy_close > ema20d), "spy_close": spy_close,
+            "ema20d": ema20d, "as_of": as_of}
+
+
+def regime_details(regime: dict) -> str:
+    """The evidence string appended to every regime-gated journal row, so a
+    later audit can recompute the verdict instead of trusting it."""
+    if not regime:
+        return "spy_close=? ema20d=? regime=unknown as_of=?"
+    return (f"spy_close={regime['spy_close']:.2f} "
+            f"ema20d={regime['ema20d']:.2f} "
+            f"regime={'trending' if regime['trending'] else 'chop'} "
+            f"as_of={regime['as_of']}")
