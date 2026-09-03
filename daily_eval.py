@@ -120,7 +120,10 @@ def spy_regime(spy_daily_df, today_str: str = None):
     today_str = today_str or datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
     if last_day == today_str:
         closes = closes.iloc[:-1]
-    if len(closes) < 2:
+    # A 20-day EMA computed from fewer than 20 completed closes is not a
+    # regime, it is a shape. A short IEX fetch must read as UNKNOWN (which
+    # the caller fails closed on), never as a verdict that gates every entry.
+    if len(closes) < SPY_EMA_SPAN:
         return None
     ema = closes.ewm(span=SPY_EMA_SPAN, adjust=False).mean()
     spy_close = float(closes.iloc[-1])

@@ -84,6 +84,26 @@ def test_regime_returns_none_when_it_cannot_decide():
     assert daily_eval.spy_regime(empty) is None
 
 
+def test_thin_history_reads_as_unknown_not_as_a_verdict():
+    """A 20-day EMA on fewer than 20 completed closes is a shape, not a
+    regime. A short IEX fetch must fail closed rather than gate every entry
+    on an average that has not filled up yet."""
+    nineteen = spy_frame([100 + i * 0.5 for i in range(19)])
+    assert daily_eval.spy_regime(nineteen, today_str="2099-01-01") is None
+
+    twenty = spy_frame([100 + i * 0.5 for i in range(20)])
+    verdict = daily_eval.spy_regime(twenty, today_str="2099-01-01")
+    assert verdict is not None
+    assert verdict["trending"] is True
+    assert verdict["as_of"] == str(twenty.index[-1])[:10]
+
+    # The partial bar is dropped BEFORE the count, so 20 rows whose last is
+    # today leaves only 19 completed closes — still unknown.
+    with_partial = spy_frame([100 + i * 0.5 for i in range(20)])
+    today = str(with_partial.index[-1])[:10]
+    assert daily_eval.spy_regime(with_partial, today_str=today) is None
+
+
 def test_chop_is_detected_below_the_ema():
     closes = [200 - i * 2 for i in range(30)]
     r = daily_eval.spy_regime(spy_frame(closes), today_str="2099-01-01")
@@ -242,8 +262,10 @@ def test_audit_report_states_the_upper_bound_caveat():
 
 def test_audit_regime_lookup_never_uses_a_future_bar():
     """A decision on date D may only see sessions completed before D."""
-    closes = [100 + i for i in range(30)]
-    spy = spy_frame(closes, start="2026-08-03")
-    target = str(spy.index[10])[:10]
+    # Needs >= 20 completed closes BEFORE the target date, or the lookup is
+    # (correctly) indeterminate under the thin-history guard.
+    closes = [100 + i for i in range(60)]
+    spy = spy_frame(closes, start="2026-06-01")
+    target = str(spy.index[40])[:10]
     regimes = regime_audit.spy_regime_by_date(spy, [target])
     assert regimes[target]["as_of"] < target
