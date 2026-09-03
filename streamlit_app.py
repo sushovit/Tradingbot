@@ -414,6 +414,7 @@ def _worker_loop():
     cycle_count = 0                # liveness counter (status line, NOT the journal)
     journaled_passes = set()       # (ticker, setup, filter, bar/day) already journaled
     daily_evaluated = {}           # (ticker, strat) -> last completed bar evaluated
+    spy_regime_cache = {}          # {'fetched_on': ET date, 'regime': dict}
     gatekeeper_errors = {}         # (ticker, setup, bar) -> [count, next_retry_ts]
     gatekeeper_alerted = set()     # keys we've already Discord-alerted about
     gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
@@ -512,17 +513,40 @@ def _worker_loop():
         if breaker_tripped:
             logger.warning(f"CIRCUIT BREAKER: daily PnL ${daily_pnl:.2f} <= -${loss_limit_usd:.2f}. No new trades.")
 
-        # --- SPY market filter (Alpaca data) ---
+        # --- SPY market filter: last COMPLETED session, 20-DAY EMA ---
+        # This used to read a 20-period EMA of 5-MINUTE bars — a ~100-minute
+        # average — while the backtest that justified the filter used the
+        # 20-day EMA of daily closes. The desk was enforcing a regime nobody
+        # had measured. Now it computes backtest.spy_regime_series' definition
+        # on completed bars only, fetched once per session and refreshed only
+        # when the completed bar date rolls.
         is_market_bullish = not use_spy_filter
+        spy_regime = spy_regime_cache.get("regime")
         if use_spy_filter:
-            try:
-                spy_df = broker.get_bars(["SPY"], timeframe_minutes=interval_mins,
-                                         lookback_days=2).get("SPY")
-                if spy_df is not None and not spy_df.empty:
-                    spy_ema20 = spy_df['close'].ewm(span=20, adjust=False).mean()
-                    is_market_bullish = bool(spy_df['close'].iloc[-1] > spy_ema20.iloc[-1])
-            except BrokerError as e:
-                logger.warning(f"Could not fetch SPY data: {e}")
+            if spy_regime_cache.get("fetched_on") != now_et.date():
+                try:
+                    spy_daily = broker.get_daily_bars(["SPY"],
+                                                      lookback_days=60).get("SPY")
+                    computed = daily_eval.spy_regime(spy_daily)
+                    if computed is not None:
+                        prior = (spy_regime or {}).get("as_of")
+                        spy_regime = computed
+                        # Cache only on success: a failed fetch must retry
+                        # next cycle, not silently stand for the whole day.
+                        spy_regime_cache["regime"] = computed
+                        spy_regime_cache["fetched_on"] = now_et.date()
+                        if prior != computed["as_of"]:
+                            logger.info("SPY regime refreshed: "
+                                        + daily_eval.regime_details(computed))
+                except BrokerError as e:
+                    logger.warning(f"Could not fetch SPY daily bars: {e}")
+            if spy_regime is not None:
+                is_market_bullish = spy_regime["trending"]
+            else:
+                # Unknown regime stays FAIL CLOSED, as before: continuation
+                # setups are blocked rather than waved through.
+                is_market_bullish = False
+        spy_evidence = daily_eval.regime_details(spy_regime)
 
         # --- Market data from Alpaca (replaces yfinance) ---
         try:
@@ -660,6 +684,7 @@ def _worker_loop():
 
             signal_found = None
             signal_bar_key = None
+            signal_timeframe = "intraday"
             pass_notes = []
             for strat in enabled_strategies(ticker, config):
                 timeframe = daily_eval.strategy_timeframe(strat.name, config,
@@ -722,6 +747,12 @@ def _worker_loop():
                                 f"Pass ({result.setup_name}: gap_below_signal_mid)")
                             continue
                     signal_found = result
+                    # Carry the RESOLVED timeframe (config override included)
+                    # onto the position. It used to be re-derived from a
+                    # hardcoded list of two setup names, so every setup added
+                    # later silently became "intraday" and trailed a daily
+                    # structure with 5-min ATR — the mistake that killed NOK.
+                    signal_timeframe = timeframe
                     break
 
             if signal_found is None:
@@ -752,13 +783,18 @@ def _worker_loop():
                             journal.log_signal_tag(
                                 ticker, signal.setup_name, "chop_reclaim",
                                 f"Rule #5 exemption: proceeding with SPY below "
-                                f"its 20-EMA (entry {signal.entry:.2f})")
+                                f"its 20-day EMA (entry {signal.entry:.2f}) "
+                                f"{spy_evidence}")
                         except Exception as e:
                             logger.error(f"Failed to tag chop_reclaim: {e}")
                     status_updates.append(f"{ticker}: chop_reclaim (Rule #5)")
                 else:
+                    # The regime evidence rides on every row it gated, so a
+                    # later audit can recompute the verdict rather than
+                    # trusting it.
                     journal_pass_once(ticker, signal.setup_name, "spy_bearish",
-                                      "SPY below its 20-EMA")
+                                      f"SPY below its 20-day EMA "
+                                      f"{spy_evidence}")
                     status_updates.append(f"{ticker}: Pass (SPY bearish)")
                     continue
             if not is_primary_trading_hours:
@@ -983,9 +1019,7 @@ def _worker_loop():
                 "initial_stop": signal.stop,
                 "trailing_stop_price": signal.stop,
                 "profit_target_price": signal.target,
-                "timeframe": ("daily" if signal.setup_name in
-                              ("mean_reversion_reclaim", "momentum_continuation")
-                              else "intraday"),
+                "timeframe": signal_timeframe,
                 "stop_order_id": stop_order_id,
                 "target_order_id": target_order_id,
                 "entry_order_id": str(order.id),
