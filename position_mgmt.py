@@ -91,6 +91,54 @@ def r_multiple(state: dict, current_price: float):
     return (current_price - entry) / risk
 
 
+def reached_one_r(state: dict, current_price: float = None) -> bool:
+    """Has this position EVER traded at or above +1R?
+
+    Persisted as `reached_1r`, because r_multiple() reads the CURRENT price:
+    without a sticky flag a trade that ran to +1.5R and eased back to +0.9R
+    would forget it ever got there, and the breakeven floor would switch off
+    at exactly the moment it matters.
+
+    Backfill for positions opened before the flag existed: the ratchet only
+    ever ran at r >= 1.0, so a trailing stop that has moved above the initial
+    structural stop is itself proof the trade reached +1R."""
+    if state.get("reached_1r"):
+        return True
+    if current_price is not None:
+        r = r_multiple(state, current_price)
+        if r is not None and r >= 1.0:
+            return True
+    try:
+        initial = float(state.get("initial_stop"))
+        trail = float(state.get("trailing_stop_price"))
+    except (TypeError, ValueError):
+        return False
+    return trail > initial
+
+
+def ratchet_floor(state: dict, candidate: float, current_price: float):
+    """The ratified floor (2026-09-03): once a position reaches +1R its stop
+    never sits below breakeven again, so `stop = max(ATR trail, entry)`.
+
+    Returns (new_stop, floored: bool). The floor is NOT applied above the
+    market — a stop at or above current price would be rejected by the broker
+    (or fill instantly), so when price is back under entry the existing stop
+    stands and the trade exits on it."""
+    if candidate is None:
+        return None, False
+    if not reached_one_r(state, current_price):
+        return candidate, False
+    try:
+        entry = float(state.get("entry_price"))
+    except (TypeError, ValueError):
+        return candidate, False
+    if entry <= candidate:
+        return candidate, False
+    if entry >= current_price:
+        return candidate, False          # cannot place a stop above market
+    return entry, True
+
+
 def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
                        df, risk_profile: dict, current_price: float) -> bool:
     """Ratchet a BOT position's broker-side stop leg up. Returns True if the
@@ -107,10 +155,17 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
         return False
 
     r = r_multiple(state, current_price)
-    if r is not None and r < 1.0:
+    at_one_r = reached_one_r(state, current_price)
+    if not at_one_r and r is not None and r < 1.0:
         return False        # structural stop stands; not yet +1R
+    if at_one_r and not state.get("reached_1r"):
+        # Sticky: the trade has paid for its own risk, and that fact must
+        # survive a pullback below +1R.
+        positions.setdefault(ticker, state)["reached_1r"] = True
+        state["reached_1r"] = True
 
     new_stop = compute_trailing_stop(df, risk_profile, current_price)
+    new_stop, floored = ratchet_floor(state, new_stop, current_price)
     if new_stop is None:
         return False
     if not (new_stop > state.get("trailing_stop_price", 0)
@@ -120,7 +175,8 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
         new_order = broker.replace_stop(state["stop_order_id"], new_stop)
         positions[ticker]["stop_order_id"] = str(new_order.id)
         positions[ticker]["trailing_stop_price"] = new_stop
-        logger.info(f"{ticker}: trailing stop raised to ${new_stop:.2f}")
+        logger.info(f"{ticker}: trailing stop raised to ${new_stop:.2f}"
+                    + (" (breakeven floor — at/after +1R)" if floored else ""))
         return True
     except BrokerError as e:
         logger.warning(f"{ticker}: could not replace stop: {e}")
