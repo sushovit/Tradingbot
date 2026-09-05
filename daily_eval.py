@@ -44,9 +44,32 @@ def completed_bar_date(daily_df, today_str: str = None):
 def should_evaluate(evaluated: dict, ticker: str, strat_name: str,
                     daily_df, today_str: str = None) -> bool:
     """True exactly once per (ticker, strategy, completed bar). The caller
-    must call mark_evaluated() afterwards regardless of the outcome."""
+    must call mark_evaluated() afterwards regardless of the outcome.
+
+    WAIT FOR TODAY'S PARTIAL BAR (W6, 2026-09-05). Detectors read iloc[-2]
+    as the signal bar and iloc[-1] as today's partial. On the first cycles
+    of a session, before today's bar exists, that assumption is off by one:
+    iloc[-2] is the bar already judged YESTERDAY and iloc[-1] is the real
+    completed bar. Evaluating then did two things wrong — it re-judged
+    yesterday's bar (the 2026-09-04 09:30:37 duplicates: HOOD 474379,
+    APP 167350, AMGN 85483, all 2026-09-02 volumes), and it recorded
+    today's completed bar as done, so when the partial bar appeared minutes
+    later that genuinely new bar was SKIPPED and never judged.
+
+    Holding off until index[-1] is today realigns the detector's own
+    assumption with reality. It also lets Rule #3 read the true session
+    open rather than session_open_price's pre-open fallback.
+
+    Consequence worth stating: if today's daily bar never arrives (a data
+    outage), daily setups do not fire that session. That is fail-closed,
+    and preferable to judging the wrong bar."""
     bar_date = completed_bar_date(daily_df, today_str)
     if bar_date is None:
+        return False
+    if daily_df is None or len(daily_df) == 0:
+        return False
+    today_str = today_str or datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    if str(daily_df.index[-1])[:10] != today_str:
         return False
     return evaluated.get((ticker, strat_name)) != bar_date
 
