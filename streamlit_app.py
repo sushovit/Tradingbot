@@ -325,6 +325,28 @@ def resolve_exit_fill(broker, ticker):
         return None, None, None
 
 
+def confirm_fill(broker, order, fallback: float, tries: int = 10):
+    """Poll an order for its ACTUAL average fill, falling back to `fallback`.
+
+    The entry path already did this; exits did not, so hard-exit and manual
+    closes journaled the last 5-minute bar close as if it were the fill.
+    That is a reference price, not a fill, and it silently biases realised
+    PnL. Returns (price, confirmed)."""
+    order_id = getattr(order, "id", None)
+    if order_id is None:
+        return fallback, False
+    try:
+        for _ in range(tries):
+            fetched = broker.get_order(order_id)
+            filled = getattr(fetched, "filled_avg_price", None)
+            if str(getattr(fetched, "status", "")).lower() == "filled" and filled:
+                return float(filled), True
+            a_time.sleep(1)
+    except BrokerError as e:
+        logger.warning(f"could not confirm fill for order {order_id}: {e}")
+    return fallback, False
+
+
 def live_bot_worker():
     """SUPERVISOR — the cycle loop must never die silently.
 
@@ -653,8 +675,10 @@ def _worker_loop():
                                     and now_et.time() >= dttime(15, 55))
                         if past_date or at_close:
                             close_order = broker.close_position(ticker)
+                            exit_px, _ = confirm_fill(broker, close_order,
+                                                      current_price)
                             handle_position_exit(broker, positions, ticker, state,
-                                                 current_price, "Hard Exit Date", now_et,
+                                                 exit_px, "Hard Exit Date", now_et,
                                                  broker_order_id=str(getattr(close_order, "id", "")) or None)
                             status_updates.append(f"{ticker}: CLOSED (hard exit date)")
                             continue
@@ -664,8 +688,10 @@ def _worker_loop():
                     if os.path.exists(manual_sell_command_file):
                         os.remove(manual_sell_command_file)
                         close_order = broker.close_position(ticker)
+                        exit_px, _ = confirm_fill(broker, close_order,
+                                                  current_price)
                         handle_position_exit(broker, positions, ticker, state,
-                                             current_price, "Manual Override", now_et,
+                                             exit_px, "Manual Override", now_et,
                                              broker_order_id=str(getattr(close_order, "id", "")) or None)
                         status_updates.append(f"{ticker}: SOLD (manual)")
                         continue
@@ -1020,9 +1046,14 @@ def _worker_loop():
             except BrokerError as e:
                 logger.warning(f"{ticker}: could not confirm entry fill yet: {e}")
 
+            # Journal the ORDER ID with the entry. Without it sync had to
+            # guess which BUY row an Alpaca fill belonged to by matching
+            # (ticker, qty), and a BUY journaled at the reference price
+            # (poll timeout) could only be corrected by that guess.
             trade_id = journal.log_trade(ticker, "BUY", qty, fill_price,
                                          reason=signal.setup_name,
-                                         decision_id=decision_id)
+                                         decision_id=decision_id,
+                                         broker_order_id=str(order.id))
             positions[ticker] = {
                 "in_position": True,
                 "source": "bot",   # ownership: the bot manages ONLY its own entries

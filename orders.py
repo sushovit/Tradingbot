@@ -581,6 +581,38 @@ def _exit_reason_for_order(order) -> str:
     return "Exit (synced)"
 
 
+def reconcile_entry_prices(broker, positions: dict) -> list:
+    """Correct any OPEN position whose stored entry_price disagrees with the
+    broker's average. Returns [(ticker, old, new)].
+
+    Why this exists: `fix_buy_fill` corrects the JOURNAL, and nothing
+    corrected positions.json, so live state could keep a reference price the
+    ledger had already moved past. Found 2026-09-05 on both open positions —
+    CRCL stored 90.21 against a broker average of 90.32, SLB 55.745 against
+    55.86. That is not cosmetic: entry_price is what the breakeven floor
+    ratchets to, so both "risk-free" stops sat about a cent under water per
+    share. The broker is the source of truth for what was paid."""
+    corrections = []
+    try:
+        live = {p.symbol: float(p.avg_entry_price)
+                for p in broker.get_positions()}
+    except Exception as e:
+        print(f"Could not read broker positions for entry reconciliation: {e}")
+        return corrections
+    for ticker, state in positions.items():
+        if not state.get("in_position"):
+            continue
+        actual = live.get(ticker)
+        stored = state.get("entry_price")
+        if actual is None or stored is None:
+            continue
+        if abs(float(stored) - actual) < 0.005:
+            continue
+        state["entry_price"] = actual
+        corrections.append((ticker, float(stored), actual))
+    return corrections
+
+
 def sync(broker=None, desk: str = "main") -> int:
     """Reconcile broker SELL fills into the journal. Idempotent:
 
@@ -692,6 +724,13 @@ def sync(broker=None, desk: str = "main") -> int:
         synced += 1
         print(f"SYNCED SELL {ticker}: {qty:g} @ ${price:.2f} "
               f"({reason}) PnL ${pnl_usd:+.2f}")
+
+    # --- Pass 3: live state must agree with the broker on what was paid ---
+    if not is_intern:
+        for ticker, old_price, new_price in reconcile_entry_prices(broker,
+                                                                   positions):
+            print(f"CORRECTED entry_price {ticker}: {old_price:.4f} -> "
+                  f"{new_price:.4f} (broker average)")
 
     journal.set_meta(f"{LAST_SYNC_KEY}_intern" if is_intern else LAST_SYNC_KEY,
                      now_utc.isoformat())
