@@ -394,29 +394,53 @@ def shadow_dissent_report() -> dict:
 
 
 def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
-                   details: str = "") -> int:
+                   details: str = "", bar_key: str = None) -> int:
     """Journal a signal that fired but was killed by a DETERMINISTIC filter
     (ADX low, volume low, SPY bearish, circuit breaker, ...). Together with
     gatekeeper rows this makes the journal a complete record of every signal
     considered.
 
-    Idempotent AT THE DATABASE, per (ticker, setup, filter, ET day). The
-    in-memory per-cycle dedupe lives inside one worker process, so a
-    restarted or duplicated worker re-journalled the same pass — 2026-08-13
-    carried 35 extra rows, some setups four deep. Returns the existing row's
-    id when the pass is already recorded today."""
+    Idempotent AT THE DATABASE. Two dedupe keys, because there are two kinds
+    of pass:
+
+      bar_key given — dedupe per (ticker, setup, filter, SIGNAL BAR). Daily
+        setups judge a completed bar, and the same bar can be judged across
+        a day boundary: on the first cycle of a new session, before today's
+        daily bar exists, `window.iloc[-2]` still points at the bar judged
+        yesterday. Under a per-DAY key that wrote a second, byte-identical
+        row (2026-09-04 09:30 duplicated 2026-09-03 09:37 for HOOD, AMGN,
+        APP, CMCSA, CMG, COP, CVX, HPQ, IREN, MPC, NXPI, PSX, VLO — all of
+        them describing the 2026-09-02 bar). Keyed on the bar, the repeat is
+        recognised as the same judgement.
+
+      no bar_key — dedupe per ET day, as before. Session-scoped filters
+        (circuit_breaker, outside_hours) are not about a particular bar.
+
+    Returns the existing row's id when the pass is already recorded."""
     today = _today_et()
     with _lock, _connect() as conn:
-        row = conn.execute(
-            "SELECT id FROM decisions WHERE source='rules' AND ticker=? "
-            "AND setup_name=? AND timestamp LIKE ? "
-            "AND json_extract(verdict,'$.rejection_reason')=? LIMIT 1",
-            (ticker, setup_name, f"{today}%", filter_name)).fetchone()
+        if bar_key:
+            # Bounded so the scan stays cheap; a signal bar cannot recur
+            # after this long.
+            row = conn.execute(
+                "SELECT id FROM decisions WHERE source='rules' AND ticker=? "
+                "AND setup_name=? AND timestamp >= date('now','-14 day') "
+                "AND json_extract(verdict,'$.rejection_reason')=? "
+                "AND json_extract(context,'$.bar')=? LIMIT 1",
+                (ticker, setup_name, filter_name, str(bar_key))).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id FROM decisions WHERE source='rules' AND ticker=? "
+                "AND setup_name=? AND timestamp LIKE ? "
+                "AND json_extract(verdict,'$.rejection_reason')=? LIMIT 1",
+                (ticker, setup_name, f"{today}%", filter_name)).fetchone()
         if row:
             return row["id"]
+    context = {"details": details}
+    if bar_key:
+        context["bar"] = str(bar_key)
     return log_decision(
-        ticker, setup_name,
-        {"details": details},
+        ticker, setup_name, context,
         {"approved": False, "rejection_reason": filter_name, "source": "rules"},
         source="rules",
     )
