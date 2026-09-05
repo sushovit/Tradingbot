@@ -13,15 +13,70 @@ SINGLE-INSTANCE ENFORCEMENT (2026-08-10 priority override):
      null-bytes incident of 2026-07-29).
 """
 
+import logging
+import logging.handlers
 import os
 import subprocess
 import sys
 import time
 
 HEARTBEAT_FRESH_SECS = 60
+LOG_DIR = "logs"
+WORKER_LOG = os.path.join(LOG_DIR, "worker.log")
+LOG_MAX_BYTES = 5 * 1024 * 1024        # 5 MB
+LOG_BACKUPS = 5
+LOG_FORMAT = "[%(asctime)s] %(levelname)s: %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 STATUS_FILE = "bot_status.log"
 LOCK_FILE = "bot.run"
 KILL_WAIT_SECS = 15
+
+
+# ----------------------------------------------------------- logging
+
+def setup_logging(log_file: str = WORKER_LOG) -> logging.Logger:
+    """Attach a rotating file handler to the ROOT logger, before
+    streamlit_app is imported.
+
+    Root, not a named logger, so BOTH the supervisor and the cycle loop land
+    in the same file — they log through streamlit_app's module logger, which
+    propagates to root.
+
+    A CONSOLE handler is attached alongside it deliberately. streamlit_app
+    calls logging.basicConfig() at import, and basicConfig is a NO-OP once
+    the root logger already has handlers: attaching only the file handler
+    would silently take the console output away, including the
+    "SPY regime refreshed:" line the desk reads on the first cycle.
+
+    Idempotent — calling it twice does not double up handlers or duplicate
+    every line in the file."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+
+    def ours(kind):
+        return [h for h in root.handlers
+                if getattr(h, "_worker_handler", None) == kind]
+
+    # Identify our own handlers by tag, not by type. Root may already carry
+    # somebody else's StreamHandler (a library's, or pytest's capture
+    # handler); type-sniffing would read that as "console already covered"
+    # and silently skip ours.
+    if not ours("file"):
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+            encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        file_handler._worker_handler = "file"
+        root.addHandler(file_handler)
+
+    if not ours("console"):
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        console._worker_handler = "console"
+        root.addHandler(console)
+    return root
 
 
 # ----------------------------------------------------------- heartbeat
@@ -145,6 +200,12 @@ def main(argv=None) -> int:
               f"({session_clock.local_str(cfg)} local).")
     except Exception:
         print(f"worker starting (PID {os.getpid()})")
+
+    # Logging BEFORE the import: streamlit_app's basicConfig() is a no-op
+    # once root has handlers, so this decides where every later line goes.
+    setup_logging()
+    logging.getLogger(__name__).info(
+        f"worker process starting (PID {os.getpid()})")
 
     import streamlit_app  # noqa: E402  (bare-mode import)
     streamlit_app.live_bot_worker()

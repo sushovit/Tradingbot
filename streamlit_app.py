@@ -341,6 +341,20 @@ def live_bot_worker():
         except Exception as e:
             crashes += 1
             logger.exception(f"WORKER LOOP CRASHED (#{crashes}) — restarting in 30s")
+            # Journal FIRST, in its own guard: a failing write_status or a
+            # dead Discord webhook must not be able to swallow the audit
+            # record of a crash restart. log_integrity_event dedupes on the
+            # leading token of `details`, so leading with the exception type
+            # gives one row per distinct failure mode per day rather than one
+            # row per restart — a crash loop reads as one fault, not fifty.
+            try:
+                journal.log_integrity_event(
+                    "worker_restarted",
+                    f"{type(e).__name__}: loop crash #{crashes} — "
+                    f"{str(e)[:160]}")
+            except Exception:
+                logger.warning("could not journal worker_restarted event",
+                               exc_info=True)
             try:
                 write_status(f"Loop crashed ({type(e).__name__}: {e}) — "
                              f"auto-restarting (crash #{crashes})")
@@ -355,6 +369,7 @@ def live_bot_worker():
 
 
 def _worker_loop():
+    logger.info(f"worker start PID {os.getpid()} — cycle counter reset")
     try:
         broker = Broker()
     except Exception as e:
