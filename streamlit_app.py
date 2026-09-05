@@ -203,10 +203,12 @@ def build_gatekeeper_kwargs(signal, df, risk_profile, interval_mins, news_headli
     }
 
 
-def journal_rules_pass(ticker, setup_name, filter_name, details=""):
+def journal_rules_pass(ticker, setup_name, filter_name, details="",
+                       bar_key=None):
     """Complete pass log: a detector fired but a deterministic filter killed it."""
     try:
-        journal.log_rules_pass(ticker, setup_name, filter_name, details)
+        journal.log_rules_pass(ticker, setup_name, filter_name, details,
+                               bar_key=bar_key)
     except Exception as e:
         logger.error(f"Failed to journal rules pass for {ticker}: {e}")
 
@@ -622,7 +624,12 @@ def _worker_loop():
             if len(journaled_passes) > 20000:
                 journaled_passes.clear()
             journaled_passes.add(key)
-            journal_rules_pass(t, setup_name, filter_name, details)
+            # Pass the SIGNAL BAR through to the journal. This set and
+            # daily_evaluated are per-process, and the worker restarts every
+            # session, so the in-memory guard cannot stop a repeat across a
+            # day boundary — only the database key can.
+            journal_rules_pass(t, setup_name, filter_name, details,
+                               bar_key=bar_key)
 
         status_updates = []
         for ticker in ticker_list:
