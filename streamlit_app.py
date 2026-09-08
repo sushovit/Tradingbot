@@ -631,6 +631,19 @@ def _worker_loop():
             journal_rules_pass(t, setup_name, filter_name, details,
                                bar_key=bar_key)
 
+        def journal_ops_once(kind, details):
+            """One ops row per (kind, ticker, day). log_integrity_event already
+            dedupes at the database; this also keeps the per-cycle noise out of
+            the log when an outage spans many cycles."""
+            key = ("ops", kind, details.split(":")[0], now_et.strftime("%Y-%m-%d"))
+            if key in journaled_passes:
+                return
+            journaled_passes.add(key)
+            try:
+                journal.log_integrity_event(kind, details)
+            except Exception as e:
+                logger.error(f"Failed to journal ops event {kind}: {e}")
+
         status_updates = []
         for ticker in ticker_list:
             open_positions_count = sum(1 for s in positions.values() if s.get("in_position"))
@@ -707,11 +720,30 @@ def _worker_loop():
                     # +1R (the structural stop stands until then). Daily
                     # setups trail on DAILY bars — trailing a daily
                     # structure with 5-min ATR is what killed NOK.
+                    #
+                    # W7 (2026-09-08 incident): when get_daily_bars fails but
+                    # get_bars succeeds — a DNS drop did exactly this at
+                    # 14:42 ET — this block used to FALL BACK to the 5-minute
+                    # frame for a daily position. CRCL and SLB were ratcheted
+                    # with 5-min ATR to inside 1% of price: a daily structure
+                    # on an intraday stop, which is the NOK failure. A missing
+                    # daily frame is now a reason to SKIP the ratchet, never a
+                    # reason to trail on the wrong timeframe. The stop already
+                    # at the broker stands untouched.
                     trail_df = df
                     if state.get("timeframe") == "daily":
                         daily_df_for_trail = daily_bars.get(ticker)
-                        if daily_df_for_trail is not None and not daily_df_for_trail.empty:
-                            trail_df = daily_df_for_trail
+                        if daily_df_for_trail is None or daily_df_for_trail.empty:
+                            logger.warning(f"{ticker}: daily bars unavailable — "
+                                           f"ratchet skipped")
+                            status_updates.append(
+                                f"{ticker}: In Pos (ratchet skipped — no daily bars)")
+                            journal_ops_once("daily_bars_unavailable",
+                                             f"{ticker}: daily frame missing this "
+                                             f"cycle — trailing ratchet skipped "
+                                             f"rather than run on 5-minute bars")
+                            continue
+                        trail_df = daily_df_for_trail
                     position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
                                                      state, trail_df, risk_profile,
                                                      current_price)
