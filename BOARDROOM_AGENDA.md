@@ -313,4 +313,6 @@ needed unless price closes below 90.32 or the target is hit.
   in the file; consider a study before the 11:30–14:00 block is ratified
   again.
 
-**2026-09-08 ops incident.** DNS drop at 14:42 ET -> daily bars unavailable -> CRCL/SLB stops ratcheted on 5-min ATR to 0.5% under price (W7, fixed 09-09). SLB exited 57.10 (+$6.20) on that stop; CRCL's stop stands at 95.80. Both exits are ops-incident — exclude from the exit-rule comparison.
+**2026-09-08 ops incident.** DNS drop at 14:42 ET -> daily bars unavailable -> CRCL/SLB stops ratcheted on 5-min ATR to 0.5% under price (W7, fixed 09-09). SLB exited 57.10 (+$6.20) on that stop; CRCL's stop stands at 95.80. SLB's exit and CRCL's eventual stop-out are both ops-incident — exclude from the exit-rule comparison.
+
+**Owner decision 2026-09-09 on CRCL: leave the 95.80 stop as is.** No manual adjustment. The ratchet is monotonic, so the stop will not widen on its own; CRCL will exit at 95.80 (+$5.48/sh on a 90.32 entry) unless the 122.13 target is reached first.
