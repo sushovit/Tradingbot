@@ -288,3 +288,29 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 
 _Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
 
+
+---
+
+## 9. Ratifications and ops items (log, not a study)
+
+**CRCL re-ratified 2026-09-04 (owner, on PM recommendation): HOLD.**
+Thesis (washout reclaim) intact after 10 sessions; stop at entry (90.32,
+breakeven floor), target 122.13 unchanged. Reviewer: no further flag
+needed unless price closes below 90.32 or the target is hit.
+
+**Open ops items for the 2026-09-17 boardroom** (no code change before then):
+- API credit pre-flight at worker start (same shape as the Ollama pre-flight)
+  plus billing auto-reload. 2026-09-08: credits ran out at 09:36 ET, four
+  signals (FCX, XOM, SMCI, BE) reached the gatekeeper and got errors instead
+  of verdicts; the desk failed closed as designed.
+- Review-prompt fact (d): shadow error baseline is ~38%, not ~11%.
+- Daily setups fail closed for a symbol whose partial daily bar never
+  arrives (W6 consequence). Decide whether a fallback deadline is wanted.
+- Scheduled auto-start of run_worker.py at 19:10 Nepal on trading days,
+  gated by a holiday calendar (broker.trading.get_clock()).
+- Mid-day `outside_hours` rejections (2026-09-08: LRCX, ORCL, KLAC, QCOM,
+  PG at 12:02–12:27 ET) — the time-window filter is the least-studied rule
+  in the file; consider a study before the 11:30–14:00 block is ratified
+  again.
+
+**2026-09-08 ops incident.** DNS drop at 14:42 ET -> daily bars unavailable -> CRCL/SLB stops ratcheted on 5-min ATR to 0.5% under price (W7, fixed 09-09). SLB exited 57.10 (+$6.20) on that stop; CRCL's stop stands at 95.80. Both exits are ops-incident — exclude from the exit-rule comparison.
