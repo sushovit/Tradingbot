@@ -98,6 +98,20 @@ def init_db():
                 UNIQUE(date, ticker)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gatekeeper_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                setup_name TEXT NOT NULL,
+                bar_key TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_gatekeeper_cache_key
+            ON gatekeeper_cache (date, ticker, setup_name, bar_key)
+        """)
         # Migration: older DBs may lack the source/agreement columns.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(decisions)")}
         if "source" not in cols:
@@ -774,6 +788,50 @@ def probation_trades(setup_name: str, limit: int = 20) -> list:
                 "exit_reason": sell["reason"] if sell else None,
             })
     return out
+
+
+def cache_gatekeeper_rejection(ticker: str, setup_name: str, bar_key: str,
+                               date_str: str = None) -> bool:
+    """Record that the gatekeeper DECLINED this (ticker, setup, signal bar).
+
+    S1 (2026-09-20). The cache used to live in a set inside _worker_loop, so
+    it died with the process. 2026-09-17: SPCX was asked at 09:54 and
+    declined at conviction 68; a hand restart at 09:57 emptied the set, the
+    same signal bar was re-asked, came back 78, and was bought. A rejection
+    that does not survive a restart is not a rejection, it is a delay.
+
+    Its own table, deliberately: writing these into `decisions` would put
+    them in decision_counts, governance_rows and the training export, none
+    of which want a cache entry. Errors are NOT cached here — they are
+    transient and must be retried."""
+    if not bar_key:
+        return False
+    date_str = date_str or _today_et()
+    with _lock, _connect() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO gatekeeper_cache "
+                "(timestamp, date, ticker, setup_name, bar_key) "
+                "VALUES (?,?,?,?,?)",
+                (_now_et(), date_str, ticker, setup_name, str(bar_key)))
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False          # already cached — the unique index holds
+
+
+def is_gatekeeper_rejected(ticker: str, setup_name: str, bar_key: str,
+                           date_str: str = None) -> bool:
+    """Has the gatekeeper already declined this signal bar TODAY?"""
+    if not bar_key:
+        return False
+    date_str = date_str or _today_et()
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM gatekeeper_cache WHERE date=? AND ticker=? "
+            "AND setup_name=? AND bar_key=? LIMIT 1",
+            (date_str, ticker, setup_name, str(bar_key))).fetchone()
+        return row is not None
 
 
 def entry_sector(ticker: str, decision_id=None):

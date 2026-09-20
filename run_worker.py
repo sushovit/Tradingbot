@@ -130,6 +130,23 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def running_owner_pid(lock_file: str = LOCK_FILE):
+    """PID of a LIVE worker that owns the lock, or None.
+
+    S1 (2026-09-20). The heartbeat alone was never a sufficient guard: a
+    worker can be alive with a STALE heartbeat — mid-retry against a slow
+    broker, or on a machine that just resumed — and that is precisely when
+    an operator restarts it by hand and gets two instances. 2026-09-17:
+    SPCX was asked at 09:54 (conviction 68, blocked), a second worker
+    started at 09:57, and the re-ask came back 78 and bought. The lock file
+    already records the owner; asking the OS whether that PID is alive is
+    the check the heartbeat cannot make."""
+    pid = read_lock_pid(lock_file)
+    if pid and pid_alive(pid):
+        return pid
+    return None
+
+
 def kill_pid(pid: int, wait_secs: int = KILL_WAIT_SECS) -> bool:
     """Kill a PID (and its children) and CONFIRM it died."""
     if not pid:
@@ -153,17 +170,29 @@ def main(argv=None) -> int:
     takeover = "--force-takeover" in argv
 
     age = live_heartbeat_age()
-    if another_worker_is_alive():
+    live_owner = running_owner_pid()
+    # EITHER signal blocks a start: a live owning PID (authoritative), or a
+    # fresh heartbeat (which still covers a legacy lock with no PID).
+    if live_owner is not None or another_worker_is_alive():
         owner = read_lock_pid()
         if not takeover:
-            print(f"worker already running (heartbeat {int(age)}s ago) — "
-                  f"refusing to start."
-                  + (f" Owner PID {owner}." if owner else
-                     " No PID recorded in the lock file.")
-                  + "\nUse --force-takeover to kill it and take over.")
+            if live_owner is not None:
+                print(f"worker already running — refusing to start. "
+                      f"Owner PID {live_owner} is ALIVE"
+                      + (f" (heartbeat {int(age)}s ago)." if age is not None
+                         else " (no heartbeat file).")
+                      + "\nUse --force-takeover to kill it and take over.")
+            else:
+                print(f"worker already running (heartbeat {int(age)}s ago) — "
+                      f"refusing to start."
+                      + (f" Owner PID {owner}." if owner else
+                         " No PID recorded in the lock file.")
+                      + "\nUse --force-takeover to kill it and take over.")
             return 1
-        print(f"--force-takeover: heartbeat {int(age)}s ago, "
-              f"owner PID {owner if owner else 'unknown'}")
+        print(f"--force-takeover: heartbeat "
+              f"{int(age) if age is not None else 'n/a'}s ago, "
+              f"owner PID {owner if owner else 'unknown'}"
+              + (" (alive)" if live_owner is not None else ""))
         if owner:
             if not kill_pid(owner):
                 print(f"ABORT: could not kill owner PID {owner} — refusing to "
