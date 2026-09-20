@@ -140,7 +140,8 @@ def ratchet_floor(state: dict, candidate: float, current_price: float):
 
 
 def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
-                       df, risk_profile: dict, current_price: float) -> bool:
+                       df, risk_profile: dict, current_price: float,
+                       persist=None) -> bool:
     """Ratchet a BOT position's broker-side stop leg up. Returns True if the
     stop was replaced. CEO/unknown positions are never touched — that is the
     ownership boundary, enforced here and nowhere else.
@@ -175,6 +176,15 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
         new_order = broker.replace_stop(state["stop_order_id"], new_stop)
         positions[ticker]["stop_order_id"] = str(new_order.id)
         positions[ticker]["trailing_stop_price"] = new_stop
+        # W8: persist IMMEDIATELY. The only write used to be at the end of
+        # the cycle, so a BrokerError raised later in the loop discarded the
+        # new leg id and left state pointing at a superseded order
+        # (2026-09-08). The broker has already moved; the file must agree.
+        if persist is not None:
+            try:
+                persist(positions)
+            except Exception as e:
+                logger.error(f"{ticker}: could not persist stop id: {e}")
         logger.info(f"{ticker}: trailing stop raised to ${new_stop:.2f}"
                     + (" (breakeven floor — at/after +1R)" if floored else ""))
         return True

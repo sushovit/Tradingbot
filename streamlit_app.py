@@ -213,6 +213,57 @@ def journal_rules_pass(ticker, setup_name, filter_name, details="",
         logger.error(f"Failed to journal rules pass for {ticker}: {e}")
 
 
+def refresh_order_ids(broker, positions: dict) -> list:
+    """Re-point every TRACKED position at the bracket legs actually working
+    at the broker. Returns [(ticker, field, old, new)].
+
+    W8 root cause, established from the 2026-09-08 order history and
+    worker.log: a LOST WRITE, not a stale `replaced_by` chain.
+    maybe_ratchet_stop updates positions[ticker]["stop_order_id"] in memory,
+    and the only persistence was write_positions() at the very END of the
+    cycle. When the DNS drop raised a BrokerError mid-loop the cycle aborted,
+    the supervisor restarted it, and every in-memory mutation since the last
+    write went with it. The proof is which id survived: positions.json held
+    8bd254f2, the id created at the 09:30 ET breakeven replace — the
+    PRE-replace id, hours old. A stale replaced_by chain would have left an
+    id from the 14:43 replace instead.
+
+    The write is now immediate (see write_positions calls after every
+    replace/submit/close). This reconcile is the belt to that braces: it
+    repairs state that is already wrong, on startup, from the broker."""
+    fixed = []
+    tracked = [t for t, s in positions.items() if s.get("in_position")]
+    if not tracked:
+        return fixed
+    for ticker in tracked:
+        try:
+            live = broker.get_live_orders(ticker)
+        except BrokerError as e:
+            logger.warning(f"{ticker}: could not refresh order ids: {e}")
+            continue
+        found = {"stop_order_id": None, "target_order_id": None}
+        for order in live:
+            side = str(getattr(order, "side", "")).lower()
+            if "sell" not in side:
+                continue          # the entry leg is not an exit
+            otype = str(getattr(order, "order_type", None)
+                        or getattr(order, "type", "")).lower()
+            if "stop" in otype:
+                found["stop_order_id"] = str(order.id)
+            elif "limit" in otype:
+                found["target_order_id"] = str(order.id)
+        for field, new_id in found.items():
+            if new_id is None:
+                continue          # nothing live: leave the record alone
+            old_id = positions[ticker].get(field)
+            if old_id != new_id:
+                positions[ticker][field] = new_id
+                fixed.append((ticker, field, old_id, new_id))
+                logger.warning(f"{ticker}: {field} {old_id} -> {new_id} "
+                               f"(refreshed from the broker)")
+    return fixed
+
+
 def reconcile_positions(broker, positions):
     """On startup: broker is the source of truth for what we actually hold."""
     try:
@@ -291,6 +342,7 @@ def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
         entry_price=entry_price,
         sector=state.get("sector"))
     positions[ticker] = {"in_position": False}
+    write_positions(positions)          # W8: a close is a broker mutation
     if trade_id is None:
         logger.info(f"{ticker}: exit already journaled (order {broker_order_id}) — "
                     "state cleared, no duplicate row.")
@@ -412,6 +464,18 @@ def _worker_loop():
     except (FileNotFoundError, json.JSONDecodeError):
         positions = {}
     positions = reconcile_positions(broker, positions)
+    # W8: a tracked position can carry a superseded leg id after a lost
+    # write. Repair it from the broker before the loop manages anything.
+    try:
+        refreshed = refresh_order_ids(broker, positions)
+        if refreshed:
+            journal.log_integrity_event(
+                "stale_order_id",
+                f"startup: refreshed {len(refreshed)} bracket leg id(s) from "
+                f"the broker — "
+                + ", ".join(f"{t}.{f}" for t, f, _, _ in refreshed))
+    except Exception as e:
+        logger.warning(f"order-id refresh failed: {e}")
     write_positions(positions)
 
     # Refresh the candidate universe once per session start (graceful on failure).
@@ -440,6 +504,39 @@ def _worker_loop():
                 f"({state['detail']}) — shadow verdicts will be errors")
     except Exception as e:
         logger.warning(f"Ollama pre-flight failed: {e}")
+
+    # Anthropic must be reachable before the first gatekeeper call. 2026-09-08:
+    # credits ran out at 09:36 ET and four signals (FCX, XOM, SMCI, BE) got
+    # errors instead of verdicts. The fail-closed gate handled it correctly —
+    # it just did so silently, and the operator found out from the next day's
+    # memo. One ping turns that into an alert while the session is still live.
+    try:
+        import claude_integration as _ci
+        preflight = _ci.credit_preflight()
+        if preflight["ok"]:
+            logger.info("Anthropic pre-flight: credits available")
+        else:
+            logger.error(f"Anthropic pre-flight FAILED "
+                         f"({preflight['reason']}): {preflight['detail']}")
+            journal.log_integrity_event(
+                "anthropic_unavailable",
+                f"gatekeeper: {preflight['reason']} — {preflight['detail']}")
+            if preflight["reason"] in ("billing", "auth", "no_key"):
+                # Billing and auth do not clear on their own; alert once and
+                # carry on, because the gate already refuses to trade without
+                # a verdict.
+                try:
+                    send_discord_notification(
+                        "WORKER", "SELL", 0.0,
+                        f"⚠ Anthropic unavailable at session start "
+                        f"({preflight['reason']}) — the gatekeeper will "
+                        f"error and every signal will fail closed. "
+                        f"{preflight['detail'][:120]}")
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Anthropic pre-flight could not run: {e}")
+
 
     # Hold off system sleep for the session: on 2026-08-31 the machine slept
     # at 12:36 ET and the frozen worker looked exactly like a hang.
@@ -746,7 +843,8 @@ def _worker_loop():
                         trail_df = daily_df_for_trail
                     position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
                                                      state, trail_df, risk_profile,
-                                                     current_price)
+                                                     current_price,
+                                                     persist=write_positions)
 
                     entry_price = state.get("entry_price", current_price)
                     pnl_percent = ((current_price / entry_price) - 1) * 100 if entry_price else 0.0
@@ -1137,6 +1235,7 @@ def _worker_loop():
                     signal.extras.get("max_hold_sessions"))
                 if signal.extras.get("max_hold_sessions") else None,
             }
+            write_positions(positions)   # W8: persist the entry immediately
             # Capital persisted on BUY (display cache; broker stays authoritative).
             try:
                 post_buy_equity = broker.get_equity()

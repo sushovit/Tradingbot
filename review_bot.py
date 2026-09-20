@@ -39,7 +39,7 @@ DISCORD_MSG_LIMIT = 2000
 POSITION_AGE_REVIEW = 10        # sessions
 HEARTBEAT_STALE_SECS = 900
 
-REVIEW_SYSTEM_PROMPT = (
+REVIEW_SYSTEM_PROMPT_TEMPLATE = (
     "You are the CEO reviewing a small paper-trading desk's session, post-close. "
     "You receive the day's account report, universe scan, floor status, journal "
     "rows, and the junior analyst's report.\n\n"
@@ -83,11 +83,17 @@ REVIEW_SYSTEM_PROMPT = (
     "journal duplication — each leg carries a distinct broker order id "
     "(NOK 28 sh twice, ORCL 1 sh twice). Cumulative PnL is correct as "
     "recorded. The single-instance lock fixed the cause.\n"
-    "  (d) LOCAL SHADOW ANALYST: as of 2026-09-05 it has approved 0 of "
-    "~275 journaled decisions, with a ~11% error rate whose cause is "
-    "known and fixed (the service was not running at session start). "
-    "Shadow is ADVISORY and non-blocking by CEO ruling. Raise it only if "
-    "a shadow APPROVAL appears, or the error rate moves materially.\n\n"
+    "  (d) LOCAL SHADOW ANALYST: {shadow_fact} Shadow is ADVISORY and "
+    "non-blocking by CEO ruling. Raise it only if a shadow APPROVAL "
+    "appears, or the error rate moves materially from the figure above.\n"
+    "  (e) A WORKER RESTART is an ops artifact, not a decision. It resets "
+    "the cycle counter, so cycle numbers starting again at #1 mid-session "
+    "mean a restart, not a new session. It also empties in-memory caches, "
+    "which before 2026-09-20 could make the gatekeeper re-ask about a "
+    "signal bar it had already declined (SPCX 09-17: 68, restart, 78, "
+    "bought). Flag restart artifacts as ops events; do NOT grade a re-ask "
+    "as a second decision, and do not read a duplicated verdict as the "
+    "gatekeeper changing its mind.\n\n"
     "HARD CONSTRAINT — YOU ARE READ-ONLY. You cannot place, modify, or cancel "
     "orders, and you must NOT emit specific orders for automatic execution "
     "(no entry/stop/target order sheets). Discuss risk and structure in prose; "
@@ -220,6 +226,33 @@ def position_sessions_held(ticker: str):
         return int(len(pd.bdate_range(opened, clockline.now_et().date())) - 1)
     except Exception:
         return None
+
+
+def shadow_fact() -> str:
+    """The live shadow figures, computed at prompt-build time.
+
+    A hardcoded snapshot drifts and then gets argued about: on 2026-09-20
+    the desk believed the baseline was ~38% while the journal held 10.4%
+    over 316 decisions. Deriving it removes the argument."""
+    try:
+        s = journal.shadow_error_rate()
+        if not s["total"]:
+            return "no shadow decisions journaled yet."
+        return (f"it has approved {s['approved']} of {s['total']} journaled "
+                f"decisions, with a {s['rate_pct']}% error rate whose cause "
+                f"is known (the service was not running at session start).")
+    except Exception:
+        return ("its approval count and error rate are known and tracked in "
+                "the journal.")
+
+
+def review_system_prompt() -> str:
+    return REVIEW_SYSTEM_PROMPT_TEMPLATE.replace("{shadow_fact}",
+                                                 shadow_fact())
+
+
+# Kept as a module attribute so existing callers and tests keep working.
+REVIEW_SYSTEM_PROMPT = review_system_prompt()
 
 
 def probation_lines() -> str:

@@ -790,6 +790,27 @@ def probation_trades(setup_name: str, limit: int = 20) -> list:
     return out
 
 
+def shadow_error_rate() -> dict:
+    """Live shadow-analyst counts: {'total','errors','approved','rate_pct'}.
+
+    Computed, not hardcoded. The review prompt used to carry a dated
+    snapshot, which drifts and then gets argued about — on 2026-09-20 the
+    desk believed the baseline was ~38% while the journal said 10.4%. A
+    number the prompt derives at build time cannot go stale."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "SUM(CASE WHEN json_extract(verdict,'$.error') IS NOT NULL "
+            "THEN 1 ELSE 0 END) AS e, "
+            "SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END) AS a "
+            "FROM decisions WHERE source='local_shadow'").fetchone()
+    total = int(row["n"] or 0)
+    errors = int(row["e"] or 0)
+    return {"total": total, "errors": errors,
+            "approved": int(row["a"] or 0),
+            "rate_pct": round(100.0 * errors / total, 1) if total else None}
+
+
 def cache_gatekeeper_rejection(ticker: str, setup_name: str, bar_key: str,
                                date_str: str = None) -> bool:
     """Record that the gatekeeper DECLINED this (ticker, setup, signal bar).

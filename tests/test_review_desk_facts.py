@@ -89,16 +89,25 @@ def test_fact_c_matches_what_the_journal_actually_holds():
 # ------------------------------------------------------------ (d) shadow
 
 def test_fact_d_records_zero_approvals_and_the_known_error_rate():
+    """S2 (2026-09-20) replaced W2's dated snapshot with a COMPUTED figure.
+    A hardcoded number drifts and then gets argued about — the desk believed
+    the baseline was ~38% while the journal held 10.4% over 316 decisions."""
     assert "approved 0 of" in PROMPT
-    assert "~275" in PROMPT
-    assert "~11% error rate" in PROMPT
+    assert "error rate" in PROMPT
     assert "ADVISORY and non-blocking" in PROMPT
+    # The figure is real, not a placeholder left unrendered.
+    assert "{shadow_fact}" not in PROMPT
 
 
-def test_fact_d_is_dated_so_it_reads_as_a_snapshot_not_a_law():
-    """The count drifts every session. Dating it stops the prompt asserting a
-    stale number as present truth."""
-    assert "as of 2026-09-05" in PROMPT
+def test_fact_d_tracks_the_journal_rather_than_a_frozen_date():
+    """The count drifts every session. W2 dated it; S2 computes it, which is
+    strictly better — the prompt can no longer assert a stale number."""
+    import review_bot
+    live = review_bot.journal.shadow_error_rate()
+    if live["total"]:
+        assert f"approved {live['approved']} of {live['total']}" in PROMPT
+        assert f"{live['rate_pct']}% error rate" in PROMPT
+    assert "as of 2026-09-05" not in PROMPT      # the frozen date is gone
 
 
 def test_fact_d_still_asks_for_an_alert_if_it_changes():
