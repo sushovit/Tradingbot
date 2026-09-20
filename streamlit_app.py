@@ -902,7 +902,12 @@ def _worker_loop():
             # --- AI gatekeeper (Claude authoritative; shadow journals local model) ---
             # Never re-ask about a signal bar the gatekeeper already declined.
             gate_key = (ticker, signal.setup_name, signal_bar_key)
-            if gate_key in gatekeeper_rejected:
+            # The journal is the authority: the in-memory set dies with the
+            # process, and a hand restart mid-session is exactly when a
+            # declined bar gets re-asked (SPCX 2026-09-17, 68 then 78).
+            if gate_key in gatekeeper_rejected or journal.is_gatekeeper_rejected(
+                    ticker, signal.setup_name, signal_bar_key):
+                gatekeeper_rejected.add(gate_key)      # warm the fast path
                 status_updates.append(f"{ticker}: Gatekeeper blocked (cached this bar)")
                 continue
             # Error backoff (Goal 21): after 3 consecutive errors on the same
@@ -962,6 +967,13 @@ def _worker_loop():
                             if len(gatekeeper_rejected) > 20000:
                                 gatekeeper_rejected.clear()
                             gatekeeper_rejected.add(gate_key)
+                            # Persist it, so a restart cannot un-reject it.
+                            try:
+                                journal.cache_gatekeeper_rejection(
+                                    ticker, signal.setup_name, signal_bar_key)
+                            except Exception as e:
+                                logger.error(f"could not cache gatekeeper "
+                                             f"rejection for {ticker}: {e}")
                         status_updates.append(f"{ticker}: Gatekeeper blocked ({reason_msg})")
                         logger.info(f"Gatekeeper blocked {ticker}: {verdict.get('reasoning', reason_msg)}")
                         continue
