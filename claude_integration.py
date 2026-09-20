@@ -58,6 +58,44 @@ def _get_client():
     return _claude_client
 
 
+def credit_preflight(client=None) -> dict:
+    """One cheap Anthropic call, to learn at STARTUP whether the gatekeeper
+    can actually be asked.
+
+    2026-09-08: credits ran out at 09:36 ET. Four signals (FCX, XOM, SMCI,
+    BE) reached the gatekeeper and got errors instead of verdicts. The desk
+    failed closed, which is correct — but it failed closed silently, and the
+    operator only learned about it from the next day's memo. One ping at
+    startup turns that into an alert while the session can still be saved.
+
+    Returns {'ok', 'reason', 'detail'} and never raises. `reason` is
+    'ok' | 'no_key' | 'billing' | 'auth' | 'unavailable'; billing and auth
+    are the ones worth waking someone for, because they do not clear on
+    their own."""
+    result = {"ok": False, "reason": "unavailable", "detail": ""}
+    client = client or _get_client()
+    if client is None:
+        result["reason"] = "no_key"
+        result["detail"] = "ANTHROPIC_API_KEY is not set"
+        return result
+    try:
+        client.messages.create(
+            model=get_model("gatekeeper"),
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ok"}],
+        )
+        result.update(ok=True, reason="ok", detail="credits available")
+        return result
+    except Exception as e:
+        text = str(e).lower()
+        if "credit" in text or "billing" in text or "quota" in text                 or "insufficient" in text:
+            result["reason"] = "billing"
+        elif "authentication" in text or "api key" in text                 or "401" in text or "invalid x-api-key" in text:
+            result["reason"] = "auth"
+        result["detail"] = f"{type(e).__name__}: {str(e)[:200]}"
+        return result
+
+
 # =============================================================================
 # CORE API HELPER
 # =============================================================================

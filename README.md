@@ -205,6 +205,34 @@ you can measure whether it's good enough before trusting it.
    switching to `"local"` only after a few hundred shadow decisions with high
    agreement.
 
+## Scheduled session start
+
+`jobs/start_worker.bat` starts the desk and refuses to on a non-trading day
+— it asks the Alpaca calendar via `Broker.is_open_today()` first, so a
+holiday is a no-op rather than a worker sitting in a closed market
+(2026-09-07 was Labor Day).
+
+Import the weekday 19:10 Nepal schedule once, as the user who owns the
+desk:
+
+```
+schtasks /Create /TN "TradingBot\StartWorker" /XML "D:\TradingBot\jobs\StartWorker.xml"
+```
+
+Check it, run it by hand, or remove it:
+
+```
+schtasks /Query  /TN "TradingBot\StartWorker" /V /FO LIST
+schtasks /Run    /TN "TradingBot\StartWorker"
+schtasks /Delete /TN "TradingBot\StartWorker" /F
+```
+
+The task launches through `run_hidden.vbs`, so no console window appears.
+Its own output lands in `logs/start_worker.log`; the worker's own log is
+`logs/worker.log`. `MultipleInstancesPolicy` is `IgnoreNew`, and
+`run_worker.py` refuses to start beside a live owner PID regardless, so a
+double-start is guarded in two places.
+
 ## Tests
 
 ```powershell

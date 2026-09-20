@@ -219,6 +219,26 @@ class Broker:
 
     # ---------------- Screener (market data v1beta1) ----------------
 
+    def is_open_today(self) -> bool:
+        """Is today a TRADING day? (Not "is the market open right now".)
+
+        Used by the scheduled start so the worker is not launched into a
+        holiday. 2026-09-07 was Labor Day and the plan's "start it Monday"
+        would have started it into a closed market."""
+        import datetime as _dt
+        from alpaca.trading.requests import GetCalendarRequest
+        today = _dt.date.today()
+        try:
+            days = _retry(self.trading.get_calendar,
+                          GetCalendarRequest(start=today, end=today),
+                          what="is_open_today")
+            return any(str(d.date)[:10] == today.isoformat() for d in days)
+        except Exception:
+            # Unknown: let the worker start. Its own session_clock refuses to
+            # trade outside the window anyway, so a false start is cheap and
+            # a false SKIP would silently lose a session.
+            return True
+
     def get_most_actives(self, top: int = 50) -> list:
         """Most-active symbols by share volume: [{'symbol', 'volume'}, ...]"""
         req = MostActivesRequest(by=MostActivesBy.VOLUME, top=top)
