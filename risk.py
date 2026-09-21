@@ -11,6 +11,10 @@ MIN_REWARD_RISK = 1.5
 # Per-position notional cap fallback when bot_config.json lacks
 # "max_position_pct" — policy lives in CONFIG, this is only the safe default.
 DEFAULT_MAX_POSITION_PCT = 0.30
+# S4 (agenda 10.1): how far one whole share's risk may exceed the per-trade
+# budget before the signal is refused. 0.0 = the old behaviour (strict floor);
+# policy lives in CONFIG ("min_lot_tolerance"), this is only the safe default.
+DEFAULT_MIN_LOT_TOLERANCE = 0.0
 
 
 def max_position_pct(config: dict) -> float:
@@ -25,6 +29,41 @@ def max_position_pct(config: dict) -> float:
     if not (0.0 < value <= 1.0):
         return DEFAULT_MAX_POSITION_PCT
     return value
+
+
+def min_lot_tolerance(config: dict) -> float:
+    """Minimum-lot tolerance as a FRACTION, from bot_config.json
+    "min_lot_tolerance" (0.15 = one share may risk up to 15% over budget).
+
+    Whole-share sizing floors: a $50 budget against a $57 stop distance is
+    0 shares, and the setup is scored as if it never fired. The tolerance
+    buys back the band immediately above the floor at a KNOWN, journaled
+    overspend rather than a silent one. Falls back to 0.0 — no tolerance —
+    for old configs or invalid values, so an absent key can never widen
+    risk by accident."""
+    try:
+        value = float((config or {}).get("min_lot_tolerance",
+                                         DEFAULT_MIN_LOT_TOLERANCE))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_LOT_TOLERANCE
+    if not (0.0 <= value <= 1.0):
+        return DEFAULT_MIN_LOT_TOLERANCE
+    return value
+
+
+def actual_risk_pct(equity: float, shares: int,
+                    entry: float, stop: float) -> float:
+    """What this position ACTUALLY risks, as a percent of effective equity.
+
+    Journaled on every BUY row. Under the minimum-lot tolerance the realised
+    risk exceeds the configured budget by design; the ledger has to say so,
+    or a month of 1.1% trades reads back as a month of 1.0% trades."""
+    if not equity or equity <= 0 or not shares:
+        return 0.0
+    risk_per_share = entry - stop
+    if risk_per_share <= 0:
+        return 0.0
+    return round(100.0 * (shares * risk_per_share) / float(equity), 4)
 
 
 def effective_equity(broker_equity: float, config: dict) -> float:
@@ -98,19 +137,33 @@ def check_signal(entry: float, stop, target, equity: float,
 def position_size(equity: float, risk_per_trade_pct: float,
                   entry: float, stop: float,
                   open_notional_usd: float = 0.0,
-                  position_cap_pct: float = None) -> int:
+                  position_cap_pct: float = None,
+                  min_lot_tolerance: float = DEFAULT_MIN_LOT_TOLERANCE) -> int:
     """Risk-based sizing in WHOLE shares: (entry - stop) * shares equals the
     per-trade dollar risk budget. Returns 0 if geometry is invalid.
 
     Notional is capped at position_cap_pct of equity (config
     "max_position_pct") AND at remaining cash (no margin).
-    `equity` must already be the effective equity."""
+    `equity` must already be the effective equity.
+
+    MINIMUM-LOT TOLERANCE (S4): when the budget cannot afford one whole
+    share, a single share is still allowed if its risk is within
+    min_lot_tolerance of the budget (0.15 = up to 15% over). The notional
+    caps are applied AFTER, so the tolerance can never buy a share the
+    account cannot pay for."""
     cap_pct = position_cap_pct if position_cap_pct else DEFAULT_MAX_POSITION_PCT
     risk_per_share = entry - stop
     if risk_per_share <= 0 or equity <= 0:
         return 0
     dollar_risk = equity * (risk_per_trade_pct / 100.0)
     shares = math.floor(dollar_risk / risk_per_share)
+    if shares < 1 and min_lot_tolerance > 0:
+        # Epsilon, not sloppiness: a tolerance stated as a ratio (1.15x) must
+        # admit the share whose risk IS 1.15x the budget, and binary floats
+        # put 50 * 1.15 just below 57.50.
+        ceiling = dollar_risk * (1.0 + min_lot_tolerance)
+        if risk_per_share <= ceiling + 1e-9:
+            shares = 1
     max_notional = min(equity * cap_pct,
                        max(equity - open_notional_usd, 0.0))
     if shares * entry > max_notional:

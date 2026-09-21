@@ -362,6 +362,21 @@ following weekend if needed, since the cap change alone does nothing until
 broker equity exceeds $2,000). Also `universe.max_price: 1200` (25% of $5k).
 Wrong if: nothing — this is a mirror of the live intent, not a bet.
 
+S4 landed 2026-09-21: `capital_cap_usd` 5000, `universe.max_price` 1200,
+Moderate `risk_per_trade_pct` 1.0, `max_positions` 4, `daily_loss_limit_pct`
+4.0, plus a minimum-lot tolerance (`min_lot_tolerance: 0.15`) — when one
+whole share's risk exceeds the budget by no more than 15%, size 1 share and
+journal `risk_pct_actual` on the BUY row. **The paper-account reset to
+$5,000 is the OWNER's action at Alpaca, taken while flat.** Until it
+happens the cap is inert: `effective_equity` is the MIN of broker equity
+and the cap, so at $1,977 of paper equity sizing is unchanged. What bites
+on 09-21 is `max_positions` 3 → 4, the 4% daily breaker, and the risk
+percent — the ARM signal journaled `size_zero` this week (stop $15.27 vs a
+$14.85 budget) sizes 1 share at today's $1,977 simply because 0.75% → 1.0%
+raises the budget to $19.78, and 3 shares once the reset lands. The
+tolerance is not what unlocks ARM; it covers the band above the floor that
+the cap only moves.
+
 **10.2 Gatekeeper prompt: setup-specific criteria for reclaims (the big one).**
 Evidence: 19 of 24 reclaim rejections this week cited low ADX or sub-45 RSI.
 A washout-and-reclaim *is* a low-ADX, depressed-RSI pattern by construction;

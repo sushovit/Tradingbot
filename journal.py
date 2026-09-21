@@ -133,6 +133,11 @@ def init_db():
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
         if "broker_order_id" not in tcols:
             conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
+        if "risk_pct_actual" not in tcols:
+            # S4 (agenda 10.1): what the entry ACTUALLY risked, as a percent
+            # of effective equity. Under the minimum-lot tolerance that is
+            # not the configured budget, and the ledger must say which.
+            conn.execute("ALTER TABLE trades ADD COLUMN risk_pct_actual REAL")
         if "sector" not in tcols:
             # Boardroom #2 item 7: crypto/DAT names stay tradeable at standard
             # risk, but the class must be MEASURABLE. Every fill carries the
@@ -543,7 +548,7 @@ def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
               reason: str = "", decision_id=None,
               broker_order_id: str = None, tier: str = "A",
-              sector: str = None) -> int:
+              sector: str = None, risk_pct_actual: float = None) -> int:
     """Journal one fill (BUY or SELL). Returns the trade id."""
     if sector is None:
         try:
@@ -555,10 +560,11 @@ def log_trade(ticker: str, action: str, qty: float, price: float,
         cur = conn.execute(
             """INSERT INTO trades
                (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason,
-                decision_id, broker_order_id, tier, sector)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                decision_id, broker_order_id, tier, sector, risk_pct_actual)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now_et(), ticker, action.upper(), qty, price, pnl_usd, pnl_pct,
-             reason, decision_id, broker_order_id, str(tier).upper(), sector),
+             reason, decision_id, broker_order_id, str(tier).upper(), sector,
+             risk_pct_actual),
         )
         conn.commit()
         return cur.lastrowid
