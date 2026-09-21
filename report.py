@@ -232,6 +232,49 @@ def build_report() -> str:
     except Exception as e:
         lines.append(f"_Intern account unavailable: {e}_")
 
+    # --- Rejection outcomes (S3): is each gate earning its keep? ---
+    lines.append(chr(10) + "## Rejection outcomes, this month")
+    try:
+        import outcomes as _outcomes
+        rows = _outcomes.monthly_table()
+        if not rows:
+            lines.append("_Nothing evaluated yet — outcomes.py runs nightly "
+                         "after the shutdown._")
+        else:
+            lines.append("| Rejection reason | Outcome | Count | Avg R | "
+                         "Median R |")
+            lines.append("|---|---|---|---|---|")
+            for r in rows:
+                avg = "—" if r["avg_r"] is None else f"{r['avg_r']:+.3f}"
+                med = ("—" if r.get("median_r") is None
+                       else f"{r['median_r']:+.3f}")
+                lines.append(f"| {r['reason_key']} | {r['outcome']} | "
+                             f"{r['count']} | {avg} | {med} |")
+            blind = sum(r["count"] for r in rows
+                        if r["outcome"] == "no_geometry")
+            total = sum(r["count"] for r in rows)
+            if blind:
+                lines.append("")
+                lines.append(
+                    f"_{blind} of {total} rejections carry no entry/stop and "
+                    f"cannot be replayed: a deterministic filter rejects "
+                    f"BEFORE geometry exists. That count is the finding — it "
+                    f"is how much of the gate stack we currently cannot "
+                    f"grade._")
+            lines.append("")
+            lines.append("_Median is shown beside the mean because one "
+                         "pathological stop can own an average — a reclaim "
+                         "with an 8-cent stop replays to -32.9R. Read the "
+                         "median where the counts are small._")
+            lines.append("")
+            lines.append("_`target` means the trade we declined would have "
+                         "reached its 3R level within 10 sessions; `stop` "
+                         "that it would have been stopped; `neither` that it "
+                         "was still open at the horizon, with Avg R showing "
+                         "where it stood._")
+    except Exception as e:
+        lines.append(f"_Unavailable: {e}_")
+
     # --- Setup probation (work order 2026-09-02) ---
     lines.append(chr(10) + "## Setup probation")
     try:
