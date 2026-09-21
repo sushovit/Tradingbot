@@ -89,7 +89,7 @@
         "mean_reversion_reclaim"
     ],
     "volume_multipliers": {
-        "momentum_continuation": 1.3,
+        "momentum_continuation": 1.0,
         "mean_reversion_reclaim": 1.3
     },
     "use_spy_filter": true,
