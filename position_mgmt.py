@@ -60,12 +60,37 @@ def is_bot_managed(state: dict) -> bool:
     return (state or {}).get("source") == "bot"
 
 
-def compute_trailing_stop(df, risk_profile: dict, current_price: float):
+def trailing_type_for(state: dict, risk_profile: dict) -> str:
+    """Which trailing rule applies to THIS position.
+
+    A daily position reads `daily_trailing` from its profile; an intraday
+    one reads `trailing_stop_type` as before. `daily_trailing` falls back to
+    `trailing_stop_type`, so a profile that does not mention it keeps the
+    behaviour it already had — the key can only ever be an explicit choice.
+    """
+    profile = risk_profile or {}
+    if (state or {}).get("timeframe") == "daily":
+        return str(profile.get("daily_trailing",
+                               profile.get("trailing_stop_type", "ATR"))).lower()
+    return str(profile.get("trailing_stop_type", "ATR")).lower()
+
+
+def compute_trailing_stop(df, risk_profile: dict, current_price: float,
+                          trailing_type: str = None):
     """New trailing-stop candidate from the profile's ATR/percent rule,
-    or None if it can't be computed."""
-    trailing_stop_type = risk_profile.get('trailing_stop_type', 'ATR')
+    or None if it can't be computed. Type "none" means the position does
+    not trail at all: there is no candidate, ever."""
+    trailing_stop_type = (trailing_type if trailing_type is not None
+                          else risk_profile.get('trailing_stop_type', 'ATR'))
     trailing_stop_value = risk_profile.get('trailing_stop_value', 2.0)
-    if trailing_stop_type == 'ATR':
+    trailing_stop_type = str(trailing_stop_type).lower()
+    if trailing_stop_type == 'none':
+        return None
+    # Case-insensitive: the profile spells it 'ATR', trailing_type_for hands
+    # back a normalised 'atr'. An exact-match test here would have read the
+    # normalised form as "not ATR" and silently trailed every intraday
+    # position on the percent rule instead.
+    if trailing_stop_type == 'atr':
         atr_series = ta.atr(df['high'], df['low'], df['close'], length=14)
         if atr_series is None or atr_series.dropna().empty:
             return None
@@ -155,6 +180,17 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
     if not is_bot_managed(state):
         return False
 
+    # Trailing type "none": the structural stop and the target stand for the
+    # life of the trade. Daily positions resolve this from the profile's
+    # `daily_trailing`. The study behind it: on daily structure the ATR trail
+    # (with or without the breakeven floor) gave back more than it saved —
+    # a daily stop is a THESIS level, and moving it on price alone converts a
+    # 4R plan into a 1R scalp. Nothing downstream reads `reached_1r` except
+    # ratchet_floor, which this branch skips, so returning here costs no
+    # bookkeeping.
+    if trailing_type_for(state, risk_profile) == "none":
+        return False
+
     r = r_multiple(state, current_price)
     at_one_r = reached_one_r(state, current_price)
     if not at_one_r and r is not None and r < 1.0:
@@ -165,7 +201,9 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
         positions.setdefault(ticker, state)["reached_1r"] = True
         state["reached_1r"] = True
 
-    new_stop = compute_trailing_stop(df, risk_profile, current_price)
+    new_stop = compute_trailing_stop(
+        df, risk_profile, current_price,
+        trailing_type=trailing_type_for(state, risk_profile))
     new_stop, floored = ratchet_floor(state, new_stop, current_price)
     if new_stop is None:
         return False

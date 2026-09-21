@@ -109,6 +109,7 @@
             "atr_multiplier": 1.5,
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.0,
+            "daily_trailing": "none",
             "use_volume_filter": true
         },
         "Moderate": {
@@ -120,6 +121,7 @@
             "atr_multiplier": 2.0,
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.5,
+            "daily_trailing": "none",
             "use_volume_filter": true
         }
     },
