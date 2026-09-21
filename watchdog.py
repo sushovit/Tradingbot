@@ -29,6 +29,10 @@ STATUS_FILE = "bot_status.log"
 WORKER_SCRIPT = "run_worker.py"
 PYTHON = os.path.join("tradingbot", "Scripts", "python.exe")
 STALE_SECS = 300                 # 5 minutes
+# A worker needs ~90s to reach its first cycle (universe scan, Ollama
+# and Anthropic pre-flights, SPY regime). Below this age a live owner
+# PID is starting up, not wedged.
+STARTUP_GRACE_SECS = 300
 ALERT_MARKER = ".watchdog_alert"  # suppresses repeat alerts for one restart
 
 
@@ -40,10 +44,42 @@ def heartbeat_age(status_file: str = STATUS_FILE):
         return None
 
 
-def needs_restart(lock_exists: bool, age_secs, stale_secs: int = STALE_SECS):
-    """Pure decision function. Returns (restart: bool, reason: str)."""
+def lock_age(lock_file: str = LOCK_FILE):
+    """Seconds since the lock file was written, or None if there is none.
+
+    write_lock() is called ONCE at startup and never refreshed, so this is
+    the owning process's age. That is what makes it usable as a startup
+    grace window: it expires on its own."""
+    try:
+        return time.time() - os.path.getmtime(lock_file)
+    except OSError:
+        return None
+
+
+def needs_restart(lock_exists: bool, age_secs, stale_secs: int = STALE_SECS,
+                  lock_pid_alive: bool = None, lock_age_secs=None,
+                  startup_grace_secs: int = STARTUP_GRACE_SECS):
+    """Pure decision function. Returns (restart: bool, reason: str).
+
+    STARTUP GRACE (2026-09-21). A worker takes about 90 seconds to reach its
+    first cycle. Before this, the watchdog read `lock exists` + `heartbeat
+    ancient` and restarted two healthy workers that had just been started,
+    because the heartbeat it was reading was the PREVIOUS session's -- 235k
+    seconds old, from Friday. The relaunch then inherited the same window,
+    so the failure repeated instead of resolving.
+
+    A live owner PID beside a lock file younger than the grace window is a
+    worker that is STARTING, not one that is wedged. Both conditions are
+    required: the PID proves something is actually there, and the lock age
+    bounds the exemption so a genuinely hung worker is still killed once the
+    window passes."""
     if not lock_exists:
         return False, "no lock file — desk is stopped deliberately"
+    if (lock_pid_alive and lock_age_secs is not None
+            and lock_age_secs < startup_grace_secs):
+        return False, (f"starting up (owner PID alive, lock "
+                       f"{int(lock_age_secs)}s old < {startup_grace_secs}s "
+                       f"grace)")
     if age_secs is None:
         return True, "lock present but no status file at all"
     if age_secs > stale_secs:
@@ -150,11 +186,20 @@ def main() -> int:
     except Exception as e:
         print(f"watchdog: session-window check failed ({e}); continuing.")
 
+    import run_worker
+
     lock_exists = os.path.exists(LOCK_FILE)
     age = heartbeat_age()
-    restart, reason = needs_restart(lock_exists, age)
+    owner = lock_owner_pid()
+    owner_alive = bool(owner) and run_worker.pid_alive(owner)
+    lock_secs = lock_age()
+    restart, reason = needs_restart(lock_exists, age,
+                                    lock_pid_alive=owner_alive,
+                                    lock_age_secs=lock_secs)
 
-    print(f"watchdog: lock={lock_exists} heartbeat_age="
+    print(f"watchdog: lock={lock_exists} lock_age="
+          f"{int(lock_secs) if lock_secs is not None else 'n/a'}s "
+          f"owner={owner or 'none'} alive={owner_alive} heartbeat_age="
           f"{int(age) if age is not None else 'n/a'}s -> {reason}")
     if not restart:
         if os.path.exists(ALERT_MARKER):
