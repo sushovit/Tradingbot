@@ -51,10 +51,13 @@ def test_second_launch_exits_nonzero_and_places_no_orders(tmp_path, monkeypatch,
 
 # ------------------------------------------------------------------ B
 
-def test_config_volume_multipliers_are_1_3():
+def test_config_reclaim_multiplier_is_1_3():
+    """Momentum's half of this assertion was retired by S5 (2026-09-21,
+    ratified item 10.5): its multiplier is now 1.0. Reclaim keeps 1.3, and
+    the 1.42x ORCL case below still pins the 2026-08-13 ruling itself by
+    passing the thresholds explicitly."""
     with open("bot_config.json") as f:
         mults = json.load(f)["volume_multipliers"]
-    assert mults["momentum_continuation"] == 1.3
     assert mults["mean_reversion_reclaim"] == 1.3
 
 
