@@ -283,7 +283,8 @@ def probation_section() -> list:
         limit = _risk.probation_limit(cfg)
         lines = ["", "## Setup probation"]
         for name in setups:
-            n = _journal.live_entry_count(name)
+            n = _journal.live_entry_count(
+                name, _risk.probation_min_prompt_version(name, cfg))
             mark = "⏳" if _risk.on_probation(name, n, cfg) else "✅"
             open_n = sum(1 for s in _positions.values()
                          if s.get("in_position") and s.get("setup") == name)

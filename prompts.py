@@ -66,6 +66,12 @@ INTERN_DESK_REQUIRED_KEYS = ["stance", "setup_name", "conviction",
 # v4 (2026-08-10): fixes the ADX-mono-42 collapse — >=2 distinct indicators
 # plus a price-structure reference per verdict, ADX directional context,
 # self-consistency clause tying the score to the cited numbers.
+GATEKEEPER_PROMPT_VERSION = 5
+# v5 (2026-09-21, ratified item 10.2): setup-specific decision rules. Every
+# gatekeeper verdict is journaled with this number, because a prompt change
+# splits the statistics — a reclaim approval rate before and after v5 are
+# measurements of two different gates and must never be pooled.
+
 INTERN_PROMPT_VERSION = 4
 
 
@@ -142,6 +148,74 @@ Return JSON with exactly these keys, in this order:
 }}"""
 
 
+DEFAULT_DECISION_RULES = """=== DECISION RULES ===
+APPROVE only if ALL of:
+  1. ADX > 25 (trending market, not ranging)
+  2. Fewer than 3 EMA crossovers in prior 20 candles (clean trend, not whipsaw)
+  3. Volume is increasing or neutral on the signal candle
+  4. Distance to resistance > 1.5% (target has clear path)
+  5. RSI between 45 and 75 (momentum present, not overextended)
+  6. No earnings announcement or major analyst downgrade in news
+
+REJECT if ANY of:
+  - ADX < 20 (market is ranging - the signal is meaningless)
+  - 3+ crossovers in 20 candles (classic whipsaw pattern)
+  - Volume declining AND RSI < 50 (weak, low-conviction move)
+  - Distance to resistance < 0.5% (price is immediately at resistance)
+  - RSI > 75 (overextended at entry, poor risk/reward)
+  - News contains: earnings report, analyst downgrade, negative guidance
+"""
+
+RECLAIM_DECISION_RULES = """=== DECISION RULES - mean_reversion_reclaim ===
+This setup is a washout and a reclaim. It is LOW-ADX and DEPRESSED-RSI BY
+CONSTRUCTION: the pattern exists only because the name sold off hard and has
+just stopped going down. The generic trend criteria - ADX above 25, an RSI
+floor, volume expansion as thrust - do not apply to it, and grading it with
+them rejects the setup for being itself.
+
+ADX IS INFORMATIONAL HERE. It is NOT a rejection criterion at any value.
+Do not reject, discount or caveat a reclaim for low ADX, and do not cite a
+"ranging market" as a reason to decline one.
+
+RSI: judge DIRECTION, not level. There is no RSI floor for this setup. What
+matters is that RSI has TURNED UP - rising over the last 3 bars. RSI at 38
+and rising is the setup working; RSI at 55 and falling is not.
+
+APPROVE only if ALL of:
+  1. RSI is RISING over the last 3 bars (momentum has turned)
+  2. Reclaim-bar volume >= the 20-bar average volume (the reclaim was
+     participated in, not a drift)
+  3. The close is ABOVE the reclaim level (the level held into the close)
+  4. No earnings announcement within 5 sessions
+
+REJECT if ANY of:
+  - RSI > 75 (overextended at entry - the bounce has already happened)
+  - An earnings announcement within 5 sessions (that is an event, not a
+    pattern)
+  - RSI still FALLING over the last 3 bars (no turn yet - this is a falling
+    knife, not a reclaim)
+  - Reclaim-bar volume below the 20-bar average
+  - The close at or below the reclaim level
+
+Everything else is a conviction input, not a veto.
+"""
+
+SETUP_DECISION_RULES = {
+    "mean_reversion_reclaim": RECLAIM_DECISION_RULES,
+}
+
+
+def decision_rules_for(setup_name: str) -> str:
+    """The decision-rules block this setup is graded against.
+
+    Evidence for the split (week of 2026-09-08): 19 of 24 reclaim rejections
+    cited low ADX or sub-45 RSI, both of which the pattern has by
+    construction, and the live gate admitted roughly 1 reclaim in 9 against
+    a 3-year backtest of +0.37R over 785 trades. A setup-specific block is
+    the fix; the trend and momentum setups keep the rules they had."""
+    return SETUP_DECISION_RULES.get(setup_name, DEFAULT_DECISION_RULES)
+
+
 def get_system_prompt(role: str = "gatekeeper") -> str:
     """Role-specific system prompt. 'gatekeeper' (Claude) is unchanged;
     'junior_analyst' (local shadow) gets the observed-analyst framing;
@@ -176,6 +250,19 @@ def build_gatekeeper_user_prompt(
     setup_description = setup_description or (
         f"EMA{fast_ema} crossed above EMA{slow_ema} on {interval_mins}-minute chart"
     )
+    decision_rules = decision_rules_for(setup_name)
+    # "<20 = ranging/avoid" sitting in the metrics while the rubric says ADX
+    # is informational is exactly the contradiction that produced the 19-of-24
+    # reclaim rejections. The annotation follows the rubric.
+    adx_note = ("(informational for this setup - NOT a rejection criterion)"
+                if setup_name in SETUP_DECISION_RULES
+                else "(>25 = trending, <20 = ranging/avoid)")
+    # Likewise "<45 = weak momentum": this setup has no RSI floor, it has a
+    # direction test. A depressed RSI is the entry condition.
+    rsi_note = ("(>75 = overextended; there is NO floor for this setup - "
+                "judge DIRECTION over the last 3 bars)"
+                if setup_name in SETUP_DECISION_RULES
+                else "(ideal: 50-70; >75 = overextended; <45 = weak momentum)")
     return f"""TRADE SETUP UNDER REVIEW: {ticker}
 Setup type: {setup_name}
 Setup: {setup_description}
@@ -184,8 +271,8 @@ Setup: {setup_description}
 {candle_data_str}
 
 === KEY DERIVED METRICS ===
-- ADX: {adx_val:.1f} (>25 = trending, <20 = ranging/avoid)
-- RSI: {rsi_val:.1f} (ideal: 50-70; >75 = overextended; <45 = weak momentum)
+- ADX: {adx_val:.1f} {adx_note}
+- RSI: {rsi_val:.1f} {rsi_note}
 - EMA Spread: {ema_spread_pct:.2f}% (higher = stronger trend separation)
 - Volume Trend: {volume_trend} (increasing = confirmation; decreasing = suspect)
 - EMA Crossovers in last 20 candles: {crossover_count} (>2 = choppy/whipsaw zone)
@@ -234,22 +321,7 @@ ADX below 20 = no trend; 20-25 = weak trend; 25-40 = trending; above 40 =
 strong trend. NEVER describe a value above 25 as low, and NEVER call a
 market "ranging" when ADX is above 25 — that is a contradiction.
 
-=== DECISION RULES ===
-APPROVE only if ALL of:
-  1. ADX > 25 (trending market, not ranging)
-  2. Fewer than 3 EMA crossovers in prior 20 candles (clean trend, not whipsaw)
-  3. Volume is increasing or neutral on the signal candle
-  4. Distance to resistance > 1.5% (target has clear path)
-  5. RSI between 45 and 75 (momentum present, not overextended)
-  6. No earnings announcement or major analyst downgrade in news
-
-REJECT if ANY of:
-  - ADX < 20 (market is ranging — the signal is meaningless)
-  - 3+ crossovers in 20 candles (classic whipsaw pattern)
-  - Volume declining AND RSI < 50 (weak, low-conviction move)
-  - Distance to resistance < 0.5% (price is immediately at resistance)
-  - RSI > 75 (overextended at entry, poor risk/reward)
-  - News contains: earnings report, analyst downgrade, negative guidance
+{decision_rules}
 
 Return JSON with exactly these keys:
 {{

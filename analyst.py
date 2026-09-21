@@ -17,6 +17,7 @@ import logging
 import threading
 
 import journal
+import prompts
 import claude_integration
 import local_analyst
 
@@ -80,6 +81,13 @@ def get_verdict(mode: str, ticker: str, setup_name: str, context: dict,
     both models). context is the decision context journaled with the verdict.
     """
     mode = (mode or "shadow").lower()
+
+    # Stamp the prompt version on EVERY verdict, before any branch. A prompt
+    # change splits the statistics: a reclaim approval rate from v4 and one
+    # from v5 measure two different gates and must never be pooled. It is
+    # also what scopes the reclaim probation count (agenda 10.2).
+    context = dict(context or {})
+    context["prompt_version"] = prompts.GATEKEEPER_PROMPT_VERSION
 
     if mode == "local":
         verdict = local_analyst.get_gatekeeper_decision(**gk_kwargs)

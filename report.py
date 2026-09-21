@@ -293,7 +293,8 @@ def build_report() -> str:
                          f"{limit} live trades (go-live {go_live}). "
                          f"Each of those {limit} gets a graded line below.")
             for name in setups:
-                n = journal.live_entry_count(name)
+                n = journal.live_entry_count(
+                    name, _risk.probation_min_prompt_version(name, _cfg))
                 state = ("PROBATION" if _risk.on_probation(name, n, _cfg)
                          else "graduated")
                 lines.append(f"- **{name}: {n}/{limit} probation** ({state})")
