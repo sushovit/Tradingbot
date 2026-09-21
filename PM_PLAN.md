@@ -83,6 +83,24 @@ session is Tuesday 09-08.
   last bar is yesterday → not evaluated; same frame plus today's partial
   bar → evaluated once, on yesterday's bar. Deploy before Tuesday 09-08.
 
+### Status 2026-09-09: W6 (7e3dfac) and W7 landed. Incidents 09-08:
+Anthropic credits exhausted 09:36 ET (4 signals errored); DNS drop 14:42 ET
+exposed the intraday-ATR fallback (W7). SLB exited 57.10 on that stop;
+CRCL stop 95.80, owner decision: leave it. Both ops-incident.
+
+- **W8 — Stale stop-order id (weekend 09-12/13, not before).** positions.json
+  tracks CRCL's superseded stop id (REPLACED, 90.32) while the live leg is
+  another id at 95.80. Harmless today: exit detection falls through to
+  resolve_exit_fill, and a ratchet against the dead id only logs a warning.
+  Root cause FIRST, from worker.log and the order history: (a) Alpaca's
+  replace response carried an id that was itself superseded (`replaced_by`
+  chain on held bracket legs) → follow the chain at replace time; or (b) the
+  state write raced the network drop → call write_positions() immediately
+  after every replace/submit/close (pulls the Phase 2 item forward). Then:
+  startup reconcile_positions must refresh stop_order_id / target_order_id
+  for TRACKED positions from broker.get_live_orders(), as W4 did for entry
+  prices. Tests for the chosen cause and for the reconcile.
+
 ## Weekend work orders — paste-ready (run in this order, one at a time)
 
 Preamble for every order:
@@ -211,3 +229,136 @@ Profitability. Twelve closed trades is not evidence of an edge or its
 absence. This plan is built to find out whether one exists at the lowest
 possible cost, and to make sure that if the desk goes live, a bad week is
 a bad week and not a catastrophe.
+
+## Sunday 2026-09-20 deploy — work orders (pending Saturday ratification)
+
+Only items ratified on Saturday are run. Order matters: S1–S3 are
+correctness/ops and run regardless; S4–S8 are policy and run only if
+ratified; S9–S10 are research and can slip a week.
+
+Preamble for every order:
+```
+Read PM_PLAN.md and BOARDROOM_AGENDA.md item 10 first. The worker is
+stopped for the weekend. Work on a branch named for the order; full suite
+green before merge; merge to main and push; report the commit hash. Do not
+start the worker. Do not change anything item 10 does not ratify.
+```
+
+**S1 — Single-instance + persisted gatekeeper cache (10.3).**
+```
+(a) run_worker.py: refuse to start when bot.run exists AND its PID is
+alive (tasklist), regardless of heartbeat age; print the owner PID. Keep
+--force-takeover as the only override. (b) Move the gatekeeper's
+per-(ticker, setup, bar) rejection cache into the journal: on a genuine
+rejection write a row; before asking Claude, check the journal for that
+key on today's date. A restart must not re-ask about a bar already
+rejected. Evidence: 2026-09-17 SPCX asked at 09:54 (68, blocked) and again
+at 09:57 after a hand restart (78, bought). Tests: second start refused
+while PID alive; rejection survives a simulated restart; --force-takeover
+still works.
+```
+
+**S2 — Ops bundle (10.14).**
+```
+(a) API credit pre-flight in _worker_loop startup: one cheap Anthropic
+call; on a billing/auth error journal ops event `anthropic_unavailable`,
+Discord-alert once, continue (fail-closed gate already handles the rest).
+(b) review_bot.py prompt facts: shadow error baseline is ~38% not ~11%;
+stops at/after +1R sit at max(ATR trail, entry) — report stop distance
+from ENTRY; a worker restart resets the cycle counter and may re-ask the
+gatekeeper — flag restart artifacts, don't grade them as decisions.
+(c) jobs/start_worker.bat + a Task Scheduler XML for weekdays 19:10
+Nepal that runs it only if broker.trading.get_clock().is_open_today (add a
+tiny helper); document the schtasks import command in README.
+(d) W8: startup reconcile_positions refreshes stop_order_id/target_order_id
+for tracked positions from get_live_orders(); root-cause note in the
+commit (replaced_by chain vs lost write) and write_positions() immediately
+after every replace/submit/close.
+```
+
+**S3 — Rejection-outcome tracker (10.11).**
+```
+New outcomes.py (nightly, after the 16:15 shutdown, via jobs/outcomes.bat):
+for every decision journaled today with approved=0 (source rules or
+claude) that carries entry/stop/target, replay the bracket forward on daily
+bars for up to 10 sessions; journal outcome ∈ {target, stop, neither,
+no_geometry} with R achieved. report.py gains a monthly table:
+rejection reason × outcome × count × avg R. No trading behaviour changes.
+Tests with a fixture of 3 rejections and known bars.
+```
+
+**S4 — Capital cap and sizing (10.1, 10.7, 10.8) — if ratified.**
+```
+bot_config.json: capital_cap_usd 5000; universe.max_price 1200;
+risk_profiles.Moderate.risk_per_trade_pct 1.0; max_positions 4;
+daily_loss_limit_pct 4.0. risk.position_size: minimum-lot tolerance —
+if one share's risk exceeds the budget by <= 15% (config
+`min_lot_tolerance: 0.15`), size 1 share and journal risk_pct_actual on
+the BUY row. Tests: ARM case (270.11/254.84 at $5k, 1%) sizes 3 shares;
+a $600 stop-distance signal still sizes 0; tolerance boundary at 1.15.
+Note in the agenda: paper account reset to $5,000 is the OWNER's action
+at Alpaca, while flat.
+```
+
+**S5 — Momentum volume multiplier (10.4) — if ratified.**
+```
+bot_config.json volume_multipliers.momentum_continuation: 1.0. Reclaim
+stays 1.3. One test asserting the config values. Nothing else.
+```
+
+**S6 — Exit rule for daily setups (10.6) — if ratified.**
+```
+Add trailing_stop_type "none" handling: for positions with
+timeframe == "daily", maybe_ratchet_stop returns False always (structural
+stop and target stand). Intraday positions unchanged (ATR trail + floor).
+Config: risk_profiles.*.daily_trailing: "none". Tests: daily position at
++2R → no replace_stop call; intraday position at +2R → existing behaviour.
+```
+
+**S7 — Reclaim gatekeeper rubric (10.2) — if ratified; PROBATION.**
+```
+prompts.py: add a setup-specific rubric block selected by setup_name.
+For mean_reversion_reclaim: ADX is informational, NOT a rejection
+criterion; require RSI rising over the last 3 bars (not a fixed floor);
+reclaim-bar volume >= 20-bar average; close above the reclaim level;
+reject if RSI > 75 or earnings within 5 sessions. Trend/momentum blocks
+unchanged. Journal prompt_version on every verdict (bump to v5). Add
+mean_reversion_reclaim to setup_probation.setups with trades: 20,
+max_concurrent: 1, counted from prompt_version v5 only. Tests: the
+rendered reclaim prompt contains the rubric and not the ADX-reject
+language; probation count ignores pre-v5 rows.
+```
+
+**S8 — Soft volume band and conviction-scaled sizing (10.9, 10.10) — if
+ratified; both probation.**
+```
+(a) mean_reversion_reclaim: volume in [1.0, 1.3) × avg no longer a
+Rejection — emit the Signal with extras.volume_ratio and a `soft_volume`
+flag; build_gatekeeper_kwargs states the shortfall. Journal the flag.
+(b) sizing: conviction >= 80 → risk × 1.25 (config
+`conviction_size_mult: {"80": 1.25}`); journal the multiplier on the BUY
+row. Tests for both; the size multiplier must never push notional over
+max_position_pct.
+```
+
+**S9 — Research lanes (10.13), backtest only, can slip.**
+```
+Two lanes in backtest.py behind a research flag (never enabled in the
+live loop): oversold_bounce (RSI14 < 30 then first close > EMA9, stop =
+bounce-bar low, 3R) and base_breakout (20-day range < 8% of price, close >
+range high on >= 1.3x volume, stop = range low, 3R). Append the 3y tables
+as agenda item 11. No config or strategy file changes.
+```
+
+**S10 — Host scoping (10.15), document only.**
+```
+Write HOSTING.md: what in the repo is Windows-only (keep_awake,
+watchdog taskkill/wmic, jobs/*.bat, run_hidden.vbs), the cron/systemd
+equivalents, what a $5–10/mo Linux VPS needs (Python 3.11, no GPU; shadow
+analyst off or remote), and the cutover checklist. No code changes.
+```
+
+After the batch: `python -m pytest tests -q`, `git log --oneline -12`,
+append "Deployed 2026-09-20: <list>" to agenda item 10, and start the
+worker Monday 09-21 before 19:15 Nepal (or let the new scheduled task do
+it and verify in worker.log).

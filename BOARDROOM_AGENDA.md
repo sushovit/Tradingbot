@@ -316,3 +316,144 @@ needed unless price closes below 90.32 or the target is hit.
 **2026-09-08 ops incident.** DNS drop at 14:42 ET -> daily bars unavailable -> CRCL/SLB stops ratcheted on 5-min ATR to 0.5% under price (W7, fixed 09-09). SLB exited 57.10 (+$6.20) on that stop; CRCL's stop stands at 95.80. SLB's exit and CRCL's eventual stop-out are both ops-incident — exclude from the exit-rule comparison.
 
 **Owner decision 2026-09-09 on CRCL: leave the 95.80 stop as is.** No manual adjustment. The ratchet is monotonic, so the stop will not widen on its own; CRCL will exit at 95.80 (+$5.48/sh on a 90.32 entry) unless the 122.13 target is reached first.
+
+---
+
+## 10. PROPOSAL for the boardroom of Saturday 2026-09-19 (PM draft, 2026-09-18)
+
+Status: **RATIFIED 2026-09-20 by the PM on the owner's delegation (09-10),
+with these exceptions: 10.6 (exit rule) HELD — breakeven floor stays until
+the owner and PM discuss; 10.1 cap set in config but effective only on the
+paper-account reset, which waits for SPCX/SWKS to exit naturally (no manual
+close).** Ratified items deploy Sunday 09-20 after tests; live Monday
+09-21. Stats split at 09-21. Each item: what / evidence / change / how we'd
+know it was wrong.
+
+### The week's evidence (2026-09-08 → 09-18, corrected system)
+
+Nine sessions since the regime, bar, entry-price and ratchet fixes. Regime
+read **chop every day** (SPY below its 20-day EMA all week), so continuation
+setups were blocked and only `mean_reversion_reclaim` could fire.
+
+| | Count |
+|---|---|
+| Reclaims that reached the gatekeeper | 27 |
+| Approved | 3 (ARM 74 → size_zero; SWKS 74 → bought; SPCX 78 → bought after a restart re-ask; first ask was 68) |
+| Rejected citing ADX < 20/25 or RSI < 45/50 ("ranging market") | **19 of 24** |
+| Rejected for RSI > 75 (correct: overextended) | 2 (KLAC, LRCX) |
+| Errors (credits, 09-08) | 4 signals |
+| Intraday `adx_low` rejections | 937 (80 in the 25–30 band, 19 in 28–30) |
+| `size_zero` | 1 (ARM: stop $15.27 vs budget $14.85) |
+| Late starts (> 09:35 ET) | 5 of 9 |
+| Second worker started by hand | 2 (09-11, 09-17 — the 09-17 one traded) |
+| Network events (laptop Wi-Fi) | 6 sessions; Alpaca-side outage 1 (09-11, 46 min) |
+
+Open: SWKS 1 @ 89.86 (stop 74.94 / 127.54), SPCX 1 @ 154.25 (stop 144.44 /
+183.06). A-book realized −$20.65 over 13 exits. Cash $1,982.
+
+### Decisions proposed
+
+**10.1 Capital cap → $5,000.** Owner would fund $5k live (09-10). Change:
+`capital_cap_usd: 5000`; reset the Alpaca paper account to $5,000 cash
+**while flat or accept that reset wipes broker positions** — do it Sunday
+after closing SWKS/SPCX by hand if they are still open, or wait for them to
+exit (owner's call; PM recommends waiting for natural exits and resetting the
+following weekend if needed, since the cap change alone does nothing until
+broker equity exceeds $2,000). Also `universe.max_price: 1200` (25% of $5k).
+Wrong if: nothing — this is a mirror of the live intent, not a bet.
+
+**10.2 Gatekeeper prompt: setup-specific criteria for reclaims (the big one).**
+Evidence: 19 of 24 reclaim rejections this week cited low ADX or sub-45 RSI.
+A washout-and-reclaim *is* a low-ADX, depressed-RSI pattern by construction;
+the prompt is grading it with trend-continuation rules. The 3-year study
+says reclaim is the desk's best setup (+0.37R, 785 trades) and the live gate
+is admitting ~1 in 9. Change (`prompts.py`): a per-setup rubric block for
+`mean_reversion_reclaim` — ADX is *not* a rejection criterion; RSI must have
+turned up from its low (rising over the last 3 bars) rather than exceed 45;
+reclaim-bar volume ≥ prior average; close above the reclaim level; no
+earnings inside 5 sessions. Keep RSI > 75 as an over-extension reject.
+Trend/momentum rubric unchanged. Journal `prompt_version` on every verdict.
+Wrong if: reclaim approval rate rises but the 20-trade probation for the
+new rubric shows expectancy below +0.2R. Run as **probation** (one open
+reclaim at a time until 20 trades under the new rubric).
+
+**10.3 Persist the gatekeeper's per-bar cache; harden single-instance.**
+Evidence: SPCX 09-17 — first ask 68 (blocked), restart, re-ask 78 (bought).
+Change: cache `(ticker, setup, bar)` rejections in the journal, not memory;
+`run_worker.py` refuses a second start if `bot.run` exists and the PID is
+alive, regardless of heartbeat age. Wrong if: a legitimate crash-restart
+gets refused — the watchdog path uses `--force-takeover` and is unaffected.
+
+**10.4 Momentum volume multiplier 1.3 → 1.0; reclaim stays 1.3.** Evidence:
+item 5 (momentum 1.0–1.3×: +0.37R vs ≥1.3×: +0.30R; reclaim the reverse).
+Change: `volume_multipliers.momentum_continuation: 1.0`. Wrong if: momentum
+expectancy over the next 30 signals is below +0.25R.
+
+**10.5 ADX threshold: keep 30.** Evidence: item 4 (25–30: +0.13R, PF 1.16;
+≥30: +0.60R, PF 1.99). This week's 80 signals in the 25–30 band are the
+band the study says not to trade. No change.
+
+**10.6 Exit rule: static structural stop, no trail, no floor** — for the
+daily setups only. Evidence: item 6 (static beats ATR trail beats floor on
+expectancy for all three setups; floor lowers MaxDD on reclaim only).
+Live evidence: SLB and CRCL were both scratched by a 5-min-ATR ratchet
+(ops incident) — no live trade has yet reached its 3R target under any
+rule. Change: `trailing_stop_type: "none"` for daily setups; intraday
+`trend_continuation` keeps the ATR trail + floor (the study did not model
+intraday). Wrong if: reclaim MaxDD over the next 30 trades exceeds 12R.
+**PM flags this as the one to argue about** — it trades smoothness for
+expectancy, and the owner's tolerance for a −10% open position (SWKS on
+09-14) is the real input.
+
+**10.7 Sizing at $5,000: Moderate 0.75% → 1.0%; max_positions 3 → 4;
+daily-loss breaker 3% → 4%.** Evidence: ARM size_zero (stop $15.27 vs $14.85
+budget); at $5k and 1.0% the budget is $50. 4 positions × 1% = 4% max open
+risk, so the breaker must move with it or it binds at 3 positions. Wrong if:
+any single day's realized loss exceeds 4% — the breaker then did its job and
+the setting stands; if it happens twice in a month, revert to 3/3%.
+
+**10.8 Minimum-lot tolerance.** Change (`risk.position_size`): if 1 share's
+risk exceeds the budget by ≤ 15%, take 1 share and journal `risk_pct_actual`.
+Mostly moot at $5k, cheap, keeps the ARM case from recurring on high-priced
+names. Wrong if: journaled actual risk ever exceeds 1.15× budget (test).
+
+**10.9 Soft volume band → gatekeeper.** Signals failing volume in the
+1.0–1.3× band go to Claude with the shortfall stated, instead of dying.
+Reclaim only (momentum is covered by 10.4). Wrong if: approval rate on
+soft-band reclaims exceeds the hard-band rate — then the gate isn't
+discriminating and the band should close.
+
+**10.10 Conviction-scaled sizing — PROBATION, not ratified.** 70–79 base
+risk, 80+ at 1.25× base. No study; run it as a probation lane of 20 trades
+with the multiplier journaled, decide on the sample.
+
+**10.11 Rejection-outcome tracker — COMMISSION.** Nightly job: for every
+signal rejected today (filter or gatekeeper), replay its bracket forward
+for 10 sessions and journal target/stop/neither against the rejection
+reason. Report: rejections × outcome by filter, monthly. This is how every
+future boardroom decides which gate is earning its keep. No policy change.
+
+S3 landed ee0633e; first table 2026-09-20; coverage 7.7% — deterministic
+rejections carry no geometry (S11, next weekend).
+
+**10.12 Crypto-beta class: measure, don't exclude.** Sector tag exists; 3
+trades tagged. Revisit at 20 trades. No change.
+
+**10.13 Non-trend research lanes — backtest only.** Commission two
+`backtest.py` lanes: oversold-bounce (RSI < 30 → first close above EMA9) and
+base-breakout (20-day range < 8% → close above range high). Report by the
+next boardroom; nothing goes live from this item.
+
+**10.14 Ops (all small; all Sunday):** API-credit pre-flight + billing
+auto-reload; review prompt facts (shadow baseline ~38%; floor rule;
+restart artifacts); scheduled auto-start at 19:10 Nepal weekdays gated by
+`get_clock()`; W8 stale stop-id reconcile; Wi-Fi adapter power management
+off (owner, by hand); worker must never be started twice (10.3).
+
+**10.15 Host (Phase 2, not this weekend):** VPS before go-live. The
+laptop's Wi-Fi produced timeouts in 6 of 9 sessions; a live desk cannot
+run on it. Scope in the next plan.
+
+### Not proposed
+Prediction model (12 labelled outcomes); lowering `claude_conviction_threshold`
+(the histogram is bimodal, nothing lives at 60–69); a mobile/Termux host.
