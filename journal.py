@@ -133,6 +133,11 @@ def init_db():
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
         if "broker_order_id" not in tcols:
             conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
+        if "size_mult" not in tcols:
+            # S8: the conviction multiplier this entry was sized with. 1.0 is
+            # the normal budget; the column is what makes "did scaled sizing
+            # pay?" a query instead of an argument.
+            conn.execute("ALTER TABLE trades ADD COLUMN size_mult REAL")
         if "risk_pct_actual" not in tcols:
             # S4 (agenda 10.1): what the entry ACTUALLY risked, as a percent
             # of effective equity. Under the minimum-lot tolerance that is
@@ -548,7 +553,8 @@ def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
               reason: str = "", decision_id=None,
               broker_order_id: str = None, tier: str = "A",
-              sector: str = None, risk_pct_actual: float = None) -> int:
+              sector: str = None, risk_pct_actual: float = None,
+              size_mult: float = None) -> int:
     """Journal one fill (BUY or SELL). Returns the trade id."""
     if sector is None:
         try:
@@ -560,11 +566,12 @@ def log_trade(ticker: str, action: str, qty: float, price: float,
         cur = conn.execute(
             """INSERT INTO trades
                (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason,
-                decision_id, broker_order_id, tier, sector, risk_pct_actual)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                decision_id, broker_order_id, tier, sector, risk_pct_actual,
+                size_mult)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now_et(), ticker, action.upper(), qty, price, pnl_usd, pnl_pct,
              reason, decision_id, broker_order_id, str(tier).upper(), sector,
-             risk_pct_actual),
+             risk_pct_actual, size_mult),
         )
         conn.commit()
         return cur.lastrowid

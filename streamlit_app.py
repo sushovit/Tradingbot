@@ -148,6 +148,33 @@ def fetch_news_headlines(ticker):
         return []
 
 
+def describe_setup(signal) -> str:
+    """The setup line the gatekeeper reads.
+
+    S8: when a reclaim fired on SOFT volume, the prompt must SAY SO. The
+    deterministic filter used to refuse that band outright; sending it up
+    silently would hand the model a signal that looks fully qualified and
+    quietly lower the bar. The shortfall is stated with its number so the
+    model can weigh it, which is the whole point of moving the decision from
+    the filter to the gatekeeper."""
+    description = signal.reasoning or ""
+    extras = getattr(signal, "extras", None) or {}
+    if not extras.get("soft_volume"):
+        return description
+    ratio = extras.get("volume_ratio")
+    required = extras.get("volume_mult_required")
+    try:
+        shortfall = (f"{float(ratio):.2f}x the 20-bar average, below the "
+                     f"{float(required):.2f}x this setup normally requires")
+    except (TypeError, ValueError):
+        shortfall = "below the volume this setup normally requires"
+    return (f"{description} SOFT VOLUME: the reclaim bar traded {shortfall}. "
+            f"It cleared the reduced floor and is in front of you "
+            f"deliberately, not by oversight - the volume test is yours to "
+            f"make. It does still meet the volume-at-or-above-the-20-bar-"
+            f"average condition in your rubric.")
+
+
 def build_gatekeeper_kwargs(signal, df, risk_profile, interval_mins, news_headlines):
     """Assemble the shared gatekeeper arguments for any strategy's signal.
     Ensures df20 carries ema_fast/ema_slow/rsi_14/adx_14 for the prompt."""
@@ -199,7 +226,7 @@ def build_gatekeeper_kwargs(signal, df, risk_profile, interval_mins, news_headli
         "slow_ema": slow_ema,
         "news_headlines": news_headlines,
         "setup_name": signal.setup_name,
-        "setup_description": signal.reasoning,
+        "setup_description": describe_setup(signal),
     }
 
 
@@ -1018,6 +1045,7 @@ def _worker_loop():
                 continue
 
             decision_id = None
+            conviction = None        # no gatekeeper -> no conviction scaling
             if use_claude_filter:
                 try:
                     news_headlines = fetch_news_headlines(ticker)
@@ -1028,6 +1056,11 @@ def _worker_loop():
                         "setup": signal.setup_name, "entry": signal.entry,
                         "stop": signal.stop, "target": signal.target,
                         "reasoning": signal.reasoning, "equity": equity,
+                        # S8: which signals reached the gatekeeper on soft
+                        # volume, and what the shortfall was. Without this the
+                        # band's effect on approval rate is unmeasurable.
+                        "soft_volume": bool(signal.extras.get("soft_volume")),
+                        "volume_ratio": signal.extras.get("volume_ratio"),
                     }
                     verdict, decision_id = analyst.get_verdict(
                         analyst_mode, ticker, signal.setup_name,
@@ -1112,6 +1145,12 @@ def _worker_loop():
                 continue
             entry_risk_pct = risk.setup_risk_pct(signal.setup_name, live_n,
                                                  base_risk_pct, config)
+            # S8: conviction-scaled sizing. The multiplier scales the RISK
+            # BUDGET only - position_size still applies max_position_pct and
+            # the no-margin rule afterwards, so a high-conviction signal can
+            # never buy a larger position than the cap allows.
+            size_mult = risk.conviction_multiplier(conviction, config)
+            entry_risk_pct = entry_risk_pct * size_mult
             qty = risk.position_size(equity, entry_risk_pct,
                                      signal.entry, signal.stop,
                                      open_notional_usd=open_notional,
@@ -1213,7 +1252,8 @@ def _worker_loop():
                                          reason=signal.setup_name,
                                          decision_id=decision_id,
                                          broker_order_id=str(order.id),
-                                         risk_pct_actual=risk_pct_actual)
+                                         risk_pct_actual=risk_pct_actual,
+                                         size_mult=size_mult)
             positions[ticker] = {
                 "in_position": True,
                 "source": "bot",   # ownership: the bot manages ONLY its own entries

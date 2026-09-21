@@ -233,6 +233,39 @@ def probation_max_concurrent(config: dict = None) -> int:
         return PROBATION_MAX_CONCURRENT
 
 
+def conviction_multiplier(conviction, config: dict = None) -> float:
+    """Risk-budget multiplier for a gatekeeper conviction score.
+
+    `conviction_size_mult` maps a conviction THRESHOLD to a multiplier, e.g.
+    {"80": 1.25}: at 80 and above, risk 1.25x the normal budget. The highest
+    threshold the score clears wins, so the map can grow tiers without code.
+
+    Returns 1.0 for an unknown or unscored signal - a missing conviction is
+    never treated as a high one. The multiplier scales the BUDGET only;
+    position_size applies the notional cap afterwards, so this can never
+    push a position past max_position_pct."""
+    mapping = ((config or {}).get("conviction_size_mult") or {})
+    if conviction is None or not mapping:
+        return 1.0
+    try:
+        score = float(conviction)
+    except (TypeError, ValueError):
+        return 1.0
+    best = 1.0
+    best_threshold = None
+    for key, value in mapping.items():
+        try:
+            threshold, multiplier = float(key), float(value)
+        except (TypeError, ValueError):
+            continue
+        if multiplier <= 0:
+            continue
+        if score >= threshold and (best_threshold is None
+                                   or threshold > best_threshold):
+            best, best_threshold = multiplier, threshold
+    return best
+
+
 def probation_min_prompt_version(setup_name: str, config: dict = None):
     """The prompt version a setup's probation counts FROM, or None.
 
