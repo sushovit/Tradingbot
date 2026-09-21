@@ -326,7 +326,10 @@ with these exceptions: 10.6 (exit rule) HELD — breakeven floor stays until
 the owner and PM discuss; 10.1 cap set in config but effective only on the
 paper-account reset, which waits for SPCX/SWKS to exit naturally (no manual
 close).** Ratified items deploy Sunday 09-20 after tests; live Monday
-09-21. Stats split at 09-21. Each item: what / evidence / change / how we'd
+09-21.
+
+**Amended 2026-09-21: the 10.6 hold is LIFTED.** The owner ratified the exit
+rule as merged. 10.1 remains conditional on the paper reset. See 10.6. Stats split at 09-21. Each item: what / evidence / change / how we'd
 know it was wrong.
 
 ### The week's evidence (2026-09-08 → 09-18, corrected system)
@@ -419,6 +422,33 @@ intraday). Wrong if: reclaim MaxDD over the next 30 trades exceeds 12R.
 **PM flags this as the one to argue about** — it trades smoothness for
 expectancy, and the owner's tolerance for a −10% open position (SWKS on
 09-14) is the real input.
+
+**Status: RATIFIED 2026-09-21 by the OWNER, as merged.** Daily setups trail
+nothing — the structural stop and the target stand for the life of the
+trade. Intraday keeps the ATR trail and the +1R breakeven floor.
+
+**Process note, recorded because the agenda is the governance record:** this
+was implemented and merged on 2026-09-21 as S6 (`221c040`, merged
+`996ff80`) while 10.6 was still marked HELD, on a work order that did not
+reference the hold. The code and the ratification agree, and the owner has
+ratified it as merged, so nothing is being reverted — but the merge preceded
+the decision rather than following it, and the ledger should say so.
+
+What landed: `position_mgmt.trailing_type_for()` resolves a position's rule
+from its timeframe; daily reads the profile's new `daily_trailing` key, set
+to `"none"` on both Aggressive and Moderate. `maybe_ratchet_stop` returns
+False immediately for type `"none"`. `daily_trailing` falls back to
+`trailing_stop_type` and an absent `timeframe` reads as intraday, so
+profiles and positions that predate the change keep the behaviour they had.
+
+**Effective immediately on the open positions.** SPCX (entry 154.25, stop
+144.445) and SWKS (entry 89.86, stop 74.94) are both `timeframe: daily` and
+neither had reached +1R, so neither had begun trailing. Their stops are now
+fixed at those levels until the target or the stop fills. The rule reaches
+positions opened under the previous one.
+
+**Wrong if:** reclaim MaxDD over the next 30 trades exceeds 12R — unchanged
+from the proposal, and now the live test of it.
 
 **10.7 Sizing at $5,000: Moderate 0.75% → 1.0%; max_positions 3 → 4;
 daily-loss breaker 3% → 4%.** Evidence: ARM size_zero (stop $15.27 vs $14.85
