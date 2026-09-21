@@ -593,6 +593,7 @@ def _worker_loop():
             analyst_mode = config.get("analyst_mode", "shadow")
             daily_loss_limit_pct = config.get("daily_loss_limit_pct", 3.0)
             position_cap_pct = risk.max_position_pct(config)
+            lot_tolerance = risk.min_lot_tolerance(config)
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
             logger.error(f"Could not load/parse config, skipping iteration: {e}")
             a_time.sleep(30)
@@ -1111,7 +1112,13 @@ def _worker_loop():
             qty = risk.position_size(equity, entry_risk_pct,
                                      signal.entry, signal.stop,
                                      open_notional_usd=open_notional,
-                                     position_cap_pct=position_cap_pct)
+                                     position_cap_pct=position_cap_pct,
+                                     min_lot_tolerance=lot_tolerance)
+            # What this size actually risks. Equal to entry_risk_pct in the
+            # normal case; ABOVE it whenever the minimum-lot tolerance bought
+            # the single share back.
+            risk_pct_actual = risk.actual_risk_pct(equity, qty,
+                                                   signal.entry, signal.stop)
             if qty < 1:
                 # Whole-share reality. Journal the ARITHMETIC, not just the
                 # verdict: stop distance in dollars and the risk budget are
@@ -1202,7 +1209,8 @@ def _worker_loop():
             trade_id = journal.log_trade(ticker, "BUY", qty, fill_price,
                                          reason=signal.setup_name,
                                          decision_id=decision_id,
-                                         broker_order_id=str(order.id))
+                                         broker_order_id=str(order.id),
+                                         risk_pct_actual=risk_pct_actual)
             positions[ticker] = {
                 "in_position": True,
                 "source": "bot",   # ownership: the bot manages ONLY its own entries

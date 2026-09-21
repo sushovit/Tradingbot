@@ -1,9 +1,10 @@
 {
     "interval": 5,
-    "capital_cap_usd": 2000,
+    "capital_cap_usd": 5000,
     "max_position_pct": 0.25,
-    "max_positions": 3,
-    "daily_loss_limit_pct": 3.0,
+    "min_lot_tolerance": 0.15,
+    "max_positions": 4,
+    "daily_loss_limit_pct": 4.0,
     "session_end_et": "16:15",
     "analyst_mode": "shadow",
     "models": {
@@ -13,7 +14,7 @@
     },
     "universe": {
         "min_price": 5,
-        "max_price": 480,
+        "max_price": 1200,
         "min_dollar_volume": 20000000,
         "max_candidates": 20,
         "skip_etfs": true,
@@ -114,7 +115,7 @@
             "fast_ema": 9,
             "slow_ema": 21,
             "adx_threshold": 30,
-            "risk_per_trade_pct": 0.75,
+            "risk_per_trade_pct": 1.0,
             "rr_ratio": 3.0,
             "atr_multiplier": 2.0,
             "trailing_stop_type": "ATR",
