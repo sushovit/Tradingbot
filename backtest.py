@@ -29,6 +29,7 @@ import sys
 from datetime import datetime
 
 import pandas as pd
+import pandas_ta as ta
 
 import risk
 from strategies import REGISTRY
@@ -448,9 +449,103 @@ def detect_post_earnings_continuation(window: pd.DataFrame):
     return None
 
 
+# ---- S9 (agenda 10.13): NON-TREND research lanes, backtest only ----------
+# Every setup the desk runs is a trend or a reversion-to-trend pattern, so
+# the book has one factor behind it and the SPY regime filter switches most
+# of it off at once. These two are commissioned to find out whether a
+# non-trend lane exists at all. Nothing here is wired live: they carry no
+# entry in RESEARCH_STATUS, no strategies/ module and no config key, so the
+# live loop cannot reach them even by accident.
+
+OVERSOLD_RSI = 30.0          # the washout threshold
+OVERSOLD_LOOKBACK = 10       # bars the oversold reading may sit behind the turn
+BASE_MAX_RANGE_PCT = 8.0     # a "base" is a 20-day range tighter than this
+BASE_LOOKBACK = 20           # bars forming the base
+BASE_VOLUME_MULT = 1.3       # the breakout has to be participated in
+
+
+def detect_oversold_bounce(window: pd.DataFrame):
+    """RSI14 below 30, then the FIRST close back above EMA9. Stop at that
+    bounce bar's low.
+
+    Not a reclaim: mean_reversion_reclaim needs a 10% drawdown from the
+    20-bar high and measures the reclaim against the prior bar's HIGH. This
+    lane asks a narrower question — does a pure oversold-momentum turn pay,
+    with no drawdown or structure condition at all?
+
+    window[-1] is the entry bar (only its open is ever used); window[-2] is
+    the completed trigger bar. No lookahead."""
+    if len(window) < 40:
+        return None
+    hist = window.iloc[:-1]                       # completed bars only
+    close = hist["close"]
+    rsi = ta.rsi(close, length=14)
+    if rsi is None or rsi.dropna().empty:
+        return None
+    ema9 = close.ewm(span=9, adjust=False).mean()
+
+    bar = hist.iloc[-1]
+    e9_now, e9_prev = float(ema9.iloc[-1]), float(ema9.iloc[-2])
+
+    # 1. the trigger bar closes above EMA9 ...
+    if float(bar["close"]) <= e9_now:
+        return "close_not_above_ema9"
+    # 2. ... and is the FIRST to do so: yesterday was still below.
+    if float(hist["close"].iloc[-2]) > e9_prev:
+        return "not_first_close_above_ema9"
+    # 3. RSI was genuinely oversold shortly before the turn. The window ends
+    #    AT the trigger bar: a turn that takes longer than OVERSOLD_LOOKBACK
+    #    to arrive is no longer a bounce off that washout.
+    recent = rsi.iloc[-(OVERSOLD_LOOKBACK + 1):]
+    if recent.dropna().empty or not bool((recent < OVERSOLD_RSI).any()):
+        return "not_oversold"
+
+    return {"stop_level": float(bar["low"]), "setup": "oversold_bounce"}
+
+
+def detect_base_breakout(window: pd.DataFrame):
+    """A 20-day range tighter than 8% of price, then a close above the range
+    high on >= 1.3x the base's average volume. Stop at the range low.
+
+    The base is the 20 bars BEFORE the trigger bar, so the trigger's own
+    range and volume can never be part of what defines the base.
+
+    window[-1] is the entry bar (only its open is ever used); window[-2] is
+    the completed trigger bar. No lookahead."""
+    if len(window) < BASE_LOOKBACK + 3:
+        return None
+    hist = window.iloc[:-1]                       # completed bars only
+    bar = hist.iloc[-1]
+    base = hist.iloc[-(BASE_LOOKBACK + 1):-1]
+    if len(base) < BASE_LOOKBACK:
+        return None
+
+    range_high = float(base["high"].max())
+    range_low = float(base["low"].min())
+    reference = float(base["close"].iloc[-1])
+    if reference <= 0 or range_high <= range_low:
+        return None
+
+    # 1. it has to be a BASE, not a trend that happens to end here.
+    range_pct = ((range_high - range_low) / reference) * 100
+    if range_pct >= BASE_MAX_RANGE_PCT:
+        return "range_too_wide"
+    # 2. the trigger closes above the range high ...
+    if float(bar["close"]) <= range_high:
+        return "no_breakout"
+    # 3. ... on real volume. A drift out of a base is not a breakout.
+    base_vol = float(base["volume"].mean())
+    if base_vol <= 0 or float(bar["volume"]) < base_vol * BASE_VOLUME_MULT:
+        return "breakout_volume_low"
+
+    return {"stop_level": range_low, "setup": "base_breakout"}
+
+
 RESEARCH_DETECTORS = {
     "pullback_in_uptrend": detect_pullback_in_uptrend,
     "post_earnings_continuation": detect_post_earnings_continuation,
+    "oversold_bounce": detect_oversold_bounce,
+    "base_breakout": detect_base_breakout,
 }
 RESEARCH_TARGET_R = 3.0
 
