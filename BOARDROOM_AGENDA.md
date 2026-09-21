@@ -472,3 +472,98 @@ run on it. Scope in the next plan.
 ### Not proposed
 Prediction model (12 labelled outcomes); lowering `claude_conviction_threshold`
 (the histogram is bimodal, nothing lives at 60–69); a mobile/Termux host.
+
+---
+
+## 11. RESEARCH RESULT — non-trend lanes (S9, 2026-09-21)
+
+Commissioned by item 10.13. Two lanes added to `backtest.py` behind the
+research flag. **Neither is wired live and neither can be:** no entry in
+`RESEARCH_STATUS`, no `strategies/` module, no config key. The live loop
+dispatches through `strategies.REGISTRY`, which does not contain them.
+
+Universe: the 48 core-watchlist names with cached daily bars, 2023-07-12 to
+2026-07-24. Mechanics identical to the live playbook — next-bar-open entry,
+bracket exit, whole shares, 1% risk on $2,000, 25% position cap, one
+position per symbol at a time. Regime from SPY vs its 20-day EMA.
+
+**oversold_bounce** — RSI14 below 30, then the first close back above EMA9.
+Stop at that bounce bar's low, target 3R.
+
+| Regime | Trades | Win% | Avg R | Expectancy (R) | PF | MaxDD (R) | Avg $ |
+|---|---|---|---|---|---|---|---|
+| trending | 217 | 27.2 | 0.091 | 0.091 | 1.12 | 13.49 | 1.16 |
+| chop | 128 | 39.8 | 0.574 | 0.574 | 1.85 | 12.01 | 10.02 |
+| **all** | **345** | **31.9** | **0.270** | **0.270** | **1.37** | **15.47** | **4.45** |
+
+**base_breakout** — 20-day range under 8% of price, then a close above the
+range high on >= 1.3x the base's average volume. Stop at the range low,
+target 3R.
+
+| Regime | Trades | Win% | Avg R | Expectancy (R) | PF | MaxDD (R) | Avg $ |
+|---|---|---|---|---|---|---|---|
+| trending | 57 | 38.6 | 0.543 | 0.543 | 1.85 | 7.01 | 9.35 |
+| chop | 11 | 36.4 | 0.483 | 0.483 | 1.75 | 4.00 | 9.34 |
+| **all** | **68** | **38.2** | **0.533** | **0.533** | **1.83** | **8.00** | **9.35** |
+
+### Target-R sensitivity
+
+| Target | Setup | Trades | Win% | Expectancy (R) | PF |
+|---|---|---|---|---|---|
+| 2R | oversold_bounce | 359 | 39.8 | 0.209 | 1.32 |
+| 3R | oversold_bounce | 345 | 31.9 | 0.270 | 1.37 |
+| 4R | oversold_bounce | 340 | 26.5 | 0.306 | 1.38 |
+| 2R | base_breakout | 73 | 42.5 | 0.304 | 1.51 |
+| 3R | base_breakout | 68 | 38.2 | 0.533 | 1.83 |
+| 4R | base_breakout | 61 | 27.9 | 0.358 | 1.47 |
+
+### Robustness
+
+| | oversold_bounce | base_breakout |
+|---|---|---|
+| Trades / year | ~115 | ~23 |
+| Symbols producing a trade | 48 of 48 | 31 of 48 |
+| Total R | 93.3 | 36.3 |
+| Top 5 trades as % of total R | 27% | **47%** |
+| Median R | -1.000 | -1.000 |
+| Exits (stop / target / gap) | 209 / 88 / 48 | 36 / 21 / 11 |
+
+**Median R is -1.000 for both, and that is not a defect.** A 3R bracket
+loses small most of the time and is carried by its winners; the mean is the
+number that matters and the median is only there to say that the mean is not
+describing a typical trade. It is recorded because a 2026-09-20 study was
+nearly misread the other way, on an 8-cent stop.
+
+### What the numbers say
+
+**1. The commission found what it was looking for, in oversold_bounce.** It
+earns +0.574R in CHOP against +0.091R trending — PF 1.85 versus 1.12. That
+is the opposite polarity to everything the desk runs, and chop is precisely
+when the SPY filter switches the rest of the book off. Last week the regime
+read chop nine sessions out of nine and only one setup could fire.
+
+**2. Its trending half is not worth having.** +0.091R over 217 trades at
+PF 1.12 is noise with commission risk attached. If this ever goes live it
+goes live chop-only, which would make it the first setup the desk runs
+*because* of the regime rather than in spite of it.
+
+**3. base_breakout looks better and is weaker.** +0.533R overall beats
+reclaim's +0.37R, but 47% of its total R comes from 5 trades out of 68, it
+fires ~23 times a year across 48 names, and 17 of the 48 never produce one.
+Its 3R peak sits between a lower 2R and a much lower 4R, which is the shape
+of a sample too small to have a peak. Not actionable on this evidence.
+
+**4. oversold_bounce wants a wider target, base_breakout does not.**
+Expectancy rises monotonically 2R -> 4R for the bounce (0.209 -> 0.306),
+which is a drift payoff. The breakout's collapse at 4R is on 61 trades and
+should be read as noise, not as a target ruling.
+
+### Recommendation (PM, for the boardroom — nothing is requested now)
+
+Neither lane goes live from this item, per 10.13. The question worth putting
+to the next boardroom is narrower than the commission: **should
+oversold_bounce be developed as a chop-only lane?** That would need a
+deliberate design decision the desk has never made — `spy_filter_exempt`
+currently means "ignore the regime", and this would need "require chop",
+which no config key expresses today. base_breakout should be re-measured
+after another year of bars before it is discussed at all.
