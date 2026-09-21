@@ -145,7 +145,11 @@
         "max_concurrent": 1,
         "setups": [
             "pullback_in_uptrend",
-            "post_earnings_continuation"
-        ]
+            "post_earnings_continuation",
+            "mean_reversion_reclaim"
+        ],
+        "count_from_prompt_version": {
+            "mean_reversion_reclaim": 5
+        }
     }
 }

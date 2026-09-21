@@ -693,7 +693,7 @@ def entry_tier(ticker: str, decision_id=None) -> str:
         return str(row["tier"]).upper() if row and row["tier"] else "A"
 
 
-def live_entry_count(setup_name: str) -> int:
+def live_entry_count(setup_name: str, min_prompt_version: int = None) -> int:
     """How many LIVE entries this setup has taken. Drives probation sizing.
 
     Counts bot BUY fills whose reason is the setup name — the worker journals
@@ -701,14 +701,32 @@ def live_entry_count(setup_name: str) -> int:
     "CEO <setup>" and are deliberately NOT counted: probation measures the
     automated setup, not discretionary use of the same idea."""
     with _lock, _connect() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' AND reason=?",
-            (setup_name,)).fetchone()
+        if min_prompt_version is None:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' AND reason=?",
+                (setup_name,)).fetchone()
+        else:
+            # Only entries whose GATEKEEPER VERDICT came from that prompt
+            # version or later. A BUY with no linked decision is pre-v5 by
+            # construction (v5 is the first version that stamps it) and is
+            # excluded, which is the point: re-probation must measure the
+            # new gate, not inherit credit from the old one.
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM trades t "
+                "JOIN decisions d ON d.id = t.decision_id "
+                "WHERE t.action='BUY' AND t.reason=? AND CAST(COALESCE("
+                "json_extract(d.context, '$.prompt_version'), 0) AS INTEGER) >= ?",
+                (setup_name, int(min_prompt_version))).fetchone()
         return int(row["n"] or 0)
 
 
-def setup_live_counts(setup_names) -> dict:
-    return {name: live_entry_count(name) for name in setup_names}
+def setup_live_counts(setup_names, config: dict = None) -> dict:
+    """Live entry counts per setup, each scoped to its own probation window
+    (see risk.probation_min_prompt_version) when a config is supplied."""
+    import risk as _risk
+    return {name: live_entry_count(
+        name, _risk.probation_min_prompt_version(name, config)
+        if config is not None else None) for name in setup_names}
 
 
 def size_zero_report(month: str = None) -> list:

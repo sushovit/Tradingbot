@@ -233,6 +233,23 @@ def probation_max_concurrent(config: dict = None) -> int:
         return PROBATION_MAX_CONCURRENT
 
 
+def probation_min_prompt_version(setup_name: str, config: dict = None):
+    """The prompt version a setup's probation counts FROM, or None.
+
+    `setup_probation.count_from_prompt_version` maps a setup to the version
+    its re-probation starts at. `mean_reversion_reclaim` is set to 5: the
+    setup has live history, but under a prompt that graded it with
+    trend-continuation rules. Counting those entries toward the new gate's
+    20 would let the old gate's record vouch for a gate nobody has tested."""
+    cfg = ((config or {}).get("setup_probation") or {})
+    mapping = cfg.get("count_from_prompt_version") or {}
+    try:
+        value = mapping.get(setup_name)
+        return None if value is None else int(value)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def on_probation(setup_name: str, live_trades: int,
                  config: dict = None) -> bool:
     """Is this setup still serving probation?"""
