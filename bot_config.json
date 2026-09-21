@@ -3,6 +3,9 @@
     "capital_cap_usd": 5000,
     "max_position_pct": 0.25,
     "min_lot_tolerance": 0.15,
+    "conviction_size_mult": {
+        "80": 1.25
+    },
     "max_positions": 4,
     "daily_loss_limit_pct": 4.0,
     "session_end_et": "16:15",

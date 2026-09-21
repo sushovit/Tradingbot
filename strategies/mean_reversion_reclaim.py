@@ -5,7 +5,9 @@ Trigger (on the last CLOSED bar, the "reclaim bar"):
   - the ticker fell >= 10% from its 20-bar high at some point in the window
   - the reclaim bar closes back ABOVE the prior bar's high
   - AND above EMA9
-  - on volume > 1.2x its 20-bar average
+  - on volume >= 1.0x its 20-bar average (S8: between 1.0x and the
+    configured multiplier the signal still fires, flagged `soft_volume`,
+    and the gatekeeper weighs the shortfall)
 Stop goes below the reclaim bar's low — if price loses the level it just
 reclaimed, the mean-reversion thesis is invalid. Target is the prior 20-bar
 high (the level price is reverting toward), floored at 2R.
@@ -17,6 +19,11 @@ from .base import Strategy, Signal, Rejection
 
 DRAWDOWN_PCT = 10.0
 VOLUME_MULT = 1.2
+# S8 (agenda 10.8): the SOFT volume band. Volume between this floor and the
+# configured multiplier no longer kills the signal deterministically — it is
+# flagged and sent to the gatekeeper to weigh. Below the floor the reclaim
+# was not participated in at all and is still refused here.
+SOFT_VOLUME_FLOOR = 1.0
 LOOKBACK = 20
 # Boardroom 2026-07-28: 3R floor (backtest: reclaim +0.38R at 3R vs +0.28R at
 # 2R). The structural prior-high target still wins when it exceeds 3R.
@@ -61,10 +68,19 @@ class MeanReversionReclaim(Strategy):
             return Rejection(self.name, ticker, "below_ema9",
                              "Reclaim bar closed below EMA9")
         avg_volume = float(window['volume'].mean())
-        if avg_volume <= 0 or float(reclaim_bar['volume']) <= avg_volume * vol_mult:
+        if avg_volume <= 0:
             return Rejection(self.name, ticker, "volume_low",
-                             f"Reclaim volume {reclaim_bar['volume']:.0f} <= "
-                             f"{vol_mult}x avg {avg_volume:.0f}")
+                             "No 20-bar average volume to measure against")
+        volume_ratio = float(reclaim_bar['volume']) / avg_volume
+        # The floor can never exceed the configured multiplier: a config that
+        # sets the requirement BELOW 1.0x must not be tightened by this band.
+        soft_floor = min(SOFT_VOLUME_FLOOR, vol_mult)
+        if volume_ratio < soft_floor:
+            return Rejection(self.name, ticker, "volume_low",
+                             f"Reclaim volume {reclaim_bar['volume']:.0f} = "
+                             f"{volume_ratio:.2f}x avg {avg_volume:.0f}, below "
+                             f"the {soft_floor:.1f}x floor")
+        soft_volume = volume_ratio < vol_mult
 
         # Playbook Rule #3 (gap-abort): a reclaim entry is invalid if the next
         # session opens below the reclaim bar's midpoint — the reclaim failed
@@ -93,7 +109,12 @@ class MeanReversionReclaim(Strategy):
             confidence_hint="medium",
             reasoning=(f"Reclaim after {drawdown_pct:.1f}% washout: close "
                        f"{reclaim_bar['close']:.2f} > prior high {prior_bar['high']:.2f} "
-                       f"and EMA9, volume {reclaim_bar['volume'] / avg_volume:.1f}x avg"),
+                       f"and EMA9, volume {volume_ratio:.1f}x avg"
+                       + (" (SOFT — below the usual requirement)"
+                          if soft_volume else "")),
             extras={"reclaim_bar_low": stop, "high_20": high_20,
-                    "drawdown_pct": drawdown_pct},
+                    "drawdown_pct": drawdown_pct,
+                    "volume_ratio": volume_ratio,
+                    "volume_mult_required": float(vol_mult),
+                    "soft_volume": soft_volume},
         )

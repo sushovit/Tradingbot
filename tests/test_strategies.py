@@ -135,9 +135,22 @@ def test_reclaim_does_not_fire_without_washout():
     assert result is None
 
 
-def test_reclaim_low_volume_rejected():
+def test_reclaim_soft_volume_is_flagged_not_rejected():
+    """S8 (2026-09-21): 1.05x used to be a `volume_low` Rejection. It now
+    reaches the gatekeeper flagged, because a volume shortfall is a
+    judgement and not a condition that is always fatal."""
     df = reclaim_textbook_df().copy()
     df.iloc[-2, df.columns.get_loc("volume")] = 105_000   # only 1.05x average
+    result = MeanReversionReclaim().detect(df, ctx())
+    assert not isinstance(result, Rejection)
+    assert result.extras["soft_volume"] is True
+
+
+def test_reclaim_below_the_volume_floor_is_still_rejected():
+    """The floor is what is left of the old filter: under 1.0x the reclaim
+    was not participated in at all and never reaches the gatekeeper."""
+    df = reclaim_textbook_df().copy()
+    df.iloc[-2, df.columns.get_loc("volume")] = 80_000    # 0.8x average
     result = MeanReversionReclaim().detect(df, ctx())
     assert isinstance(result, Rejection)
     assert result.filter_name == "volume_low"

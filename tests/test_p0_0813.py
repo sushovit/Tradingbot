@@ -104,8 +104,12 @@ def test_reclaim_reads_config_multiplier():
                       columns=["open", "high", "low", "close", "volume"])
     res = MeanReversionReclaim().detect(
         df, {"ticker": "T", "risk_profile": {}, "config": cfg})
-    assert res.__class__.__name__ == "Rejection"      # config threshold applied
-    assert res.filter_name == "volume_low"
+    # S8 (2026-09-21) turned the shortfall from a Rejection into a flag, so
+    # the proof that the config multiplier is READ moved with it: the signal
+    # fires, marked soft, carrying the absurd requirement it fell short of.
+    assert res.__class__.__name__ == "Signal"
+    assert res.extras["soft_volume"] is True
+    assert res.extras["volume_mult_required"] == 9.0
 
 
 # ------------------------------------------------------------------ C
