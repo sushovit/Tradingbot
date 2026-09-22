@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 HEARTBEAT_FRESH_SECS = 60
 LOG_DIR = "logs"
@@ -130,6 +131,44 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def write_startup_status(pid: int = None,
+                         status_file: str = STATUS_FILE) -> bool:
+    """Write a heartbeat line the INSTANT the lock is taken.
+
+    2026-09-21: the watchdog killed two freshly started workers, at 19:25
+    and 19:30 Nepal, because the heartbeat it read was still FRIDAY's
+    (235,498 s old). Startup takes about 90 seconds -- logging, the universe
+    scan, the Ollama and Anthropic pre-flights, the SPY regime read -- and
+    until the first cycle completed, nothing wrote a status line. So the
+    watchdog saw `lock exists` + `heartbeat ancient` and did exactly what it
+    is built to do, to a worker that was doing nothing wrong. It then
+    relaunched, and the replacement inherited the same blind window.
+
+    The heartbeat has to be fresh from second zero, and only the starting
+    process can make it so. Written in the same `[ET timestamp] message`
+    shape write_status() uses, so floor.py parses it unchanged.
+
+    Never fatal: a worker that cannot write this line still starts. The
+    watchdog's own startup grace covers the same window from the other
+    side."""
+    pid = pid or os.getpid()
+    try:
+        from zoneinfo import ZoneInfo
+        stamp = datetime.now(ZoneInfo("America/New_York")).strftime(
+            "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = (f"[{stamp}] Worker starting (PID {pid}) - initialising; "
+            f"first cycle in ~2 min.")
+    try:
+        import safe_io          # local, as in write_lock
+        safe_io.atomic_write_text(status_file, line)
+        return True
+    except Exception as e:
+        print(f"could not write startup status: {e}")
+        return False
+
+
 def running_owner_pid(lock_file: str = LOCK_FILE):
     """PID of a LIVE worker that owns the lock, or None.
 
@@ -218,6 +257,10 @@ def main(argv=None) -> int:
                     return 2
 
     write_lock(os.getpid())
+    # BEFORE anything slow. The lock now says "a worker owns this desk" and
+    # the heartbeat must agree from the same instant, or the watchdog reads
+    # a live lock beside a dead heartbeat and kills what it just started.
+    write_startup_status(os.getpid())
 
     try:
         import json
