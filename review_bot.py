@@ -93,7 +93,28 @@ REVIEW_SYSTEM_PROMPT_TEMPLATE = (
     "signal bar it had already declined (SPCX 09-17: 68, restart, 78, "
     "bought). Flag restart artifacts as ops events; do NOT grade a re-ask "
     "as a second decision, and do not read a duplicated verdict as the "
-    "gatekeeper changing its mind.\n\n"
+    "gatekeeper changing its mind.\n"
+    "  (f) SOFT VOLUME (S8, live 2026-09-21): a mean_reversion_reclaim "
+    "signal whose reclaim bar traded between 1.0x and the configured "
+    "multiplier of its 20-bar average volume is no longer refused in "
+    "code. It is sent to the gatekeeper FLAGGED soft_volume, with the "
+    "shortfall stated, for the gatekeeper to weigh. A soft-volume "
+    "signal in the decision log is the design working. Do NOT report "
+    "it as a filter failure or as the volume rule being skipped, and "
+    "do NOT read 'reached the gatekeeper' as 'approved by the "
+    "rules' - the deterministic filters passing is the START of the "
+    "decision, never the end of it. Below 1.0x is still refused in "
+    "code and never reaches the gatekeeper at all.\n"
+    "  (g) mean_reversion_reclaim IS ON PROBATION (S7, from "
+    "2026-09-21): 20 live trades, ONE concurrent position, counted "
+    "from prompt_version v5 ONLY. The setup has earlier live history, "
+    "but under a gatekeeper prompt that graded it with "
+    "trend-continuation rules, and those entries are deliberately not "
+    "counted toward the new gate. A probation count of 0/20 sitting "
+    "beside older reclaim trades in the ledger is correct - not a "
+    "reset and not a lost record. Grade reclaim trades in the "
+    "PROBATION section alongside pullback_in_uptrend and "
+    "post_earnings_continuation, not as an established setup.\n\n"
     "HARD CONSTRAINT — YOU ARE READ-ONLY. You cannot place, modify, or cancel "
     "orders, and you must NOT emit specific orders for automatic execution "
     "(no entry/stop/target order sheets). Discuss risk and structure in prose; "
@@ -376,8 +397,30 @@ def request_review(bundle: dict) -> dict:
                          "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_prompt}],
             )
-            return {"text": claude_integration.extract_text(resp),
-                    "model": model}
+            text = claude_integration.extract_text(resp)
+            if not text.strip():
+                # 2026-09-21: reports/review_2026-09-21.md was written 129
+                # bytes long - the header and the clock line and nothing
+                # else - because the response carried no text block at all
+                # and "" formatted into the memo without complaint. An
+                # EMPTY memo is a failure, not a memo, and it has to travel
+                # the error path so the retry fires and, if it still fails,
+                # the operator is told. Silence that looks like success is
+                # the worst of both.
+                stop = getattr(resp, "stop_reason", None)
+                kinds = [getattr(b, "type", "?")
+                         for b in (getattr(resp, "content", None) or [])]
+                usage = getattr(resp, "usage", None)
+                last_err = (f"empty review text (stop_reason={stop}, "
+                            f"content blocks={kinds or 'none'}, "
+                            f"output_tokens="
+                            f"{getattr(usage, 'output_tokens', '?')})")
+                print(f"EMPTY REVIEW on attempt {attempt + 1}: {last_err}")
+                if attempt < MAX_RETRIES:
+                    time.sleep(2 ** attempt)
+                    continue
+                return {"error": last_err}
+            return {"text": text, "model": model}
         except Exception as e:
             last_err = str(e)
             message = last_err.lower()
@@ -428,6 +471,21 @@ def main() -> int:
         return 0                      # never crash the scheduled job
 
     review = result["text"]
+    if not review.strip():
+        # Unreachable via request_review, which now fails on empty text.
+        # Kept because THIS is the line that creates the file: a future
+        # caller that skips request_review must not be able to leave a
+        # header-only memo on disk for drop.py to carry to the CEO desk.
+        journal.log_decision(
+            "DESK", "daily_review", {"date": bundle["date"]},
+            {"approved": False, "error": "empty review text",
+             "rejection_reason": "review_unavailable"},
+            source="review_bot")
+        post_discord(f"WARNING: daily review came back empty "
+                     f"({bundle['date']}) - no memo written.")
+        print("Review came back empty - no memo written.")
+        return 0
+
     # Persist the memo so drop.py can carry it to the CEO desk (Discord is
     # delivery, not storage).
     try:
@@ -436,7 +494,7 @@ def main() -> int:
         with open(memo_path, "w", encoding="utf-8") as f:
             f.write(f"# Daily review — {bundle['date']}\n"
                     f"{bundle.get('clock', '')}\n\n{review}\n")
-        print(f"Memo written: {memo_path}")
+        print(f"Memo written: {memo_path} ({len(review)} chars)")
     except OSError as e:
         print(f"(could not write memo file: {e})")
 
