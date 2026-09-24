@@ -98,7 +98,7 @@ def test_it_retries_before_giving_up(monkeypatch):
 
 def test_a_retry_that_succeeds_returns_the_memo(monkeypatch):
     client = FakeClient(FakeResponse(),
-                        FakeResponse([TextBlock("## Marks\nSPCX +1.1%")],
+                        FakeResponse([TextBlock("## Marks\nSPCX +1.1%\n## 5. Tomorrow's Watch Items\nwatch SPCX\n")],
                                      stop_reason="end_turn"))
     patch_client(monkeypatch, client)
     result = review_bot.request_review({"date": "2026-09-21"})
@@ -117,7 +117,7 @@ def test_a_thinking_block_beside_real_text_is_still_a_memo(monkeypatch):
     """extract_text walks to the first TEXT block. The guard must not
     reject a normal thinking-plus-answer response."""
     blocks = [type("ThinkingBlock", (), {"type": "thinking"})(),
-              TextBlock("## Marks\nthe book is flat")]
+              TextBlock("## Marks\nthe book is flat\n## 5. Tomorrow's Watch Items\nwatch SPCX\n")]
     patch_client(monkeypatch, FakeClient(FakeResponse(blocks, "end_turn")))
     result = review_bot.request_review({"date": "2026-09-21"})
     assert result["text"].startswith("## Marks")
@@ -125,23 +125,28 @@ def test_a_thinking_block_beside_real_text_is_still_a_memo(monkeypatch):
 
 # ============================================ (1) nothing is written
 
-def test_no_memo_file_is_created_when_the_review_is_empty(
+def test_an_empty_review_writes_a_failure_stub_not_a_memo(
         tmp_path, monkeypatch, temp_journal):
-    """The observable failure: a 129-byte file on disk that drop.py would
-    carry to the CEO as if it were the day's review."""
+    """SUPERSEDED 2026-09-24. This used to assert that NOTHING was written.
+    After three silently truncated memos the desk decided a bad run must be
+    visible, so an empty review now writes a one-line GENERATION FAILED
+    stub. What still holds, and is what this test is really for: no part of
+    an empty or partial review is ever presented as the day's memo."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     monkeypatch.setattr(review_bot, "collect_bundle",
-                        lambda: {"date": "2026-09-21", "clock": "16:30 ET"})
+                        lambda date=None: {"date": "2026-09-21", "clock": "16:30 ET"})
     monkeypatch.setattr(review_bot, "request_review",
                         lambda b: {"text": "   "})
     posted = []
     monkeypatch.setattr(review_bot, "post_discord",
                         lambda *a, **k: posted.append(a[0]))
 
-    assert review_bot.main() == 0
-    assert not (tmp_path / "reports" / "review_2026-09-21.md").exists()
-    assert posted and "empty" in posted[0].lower()
+    assert review_bot.main([]) == 0
+    written = (tmp_path / "reports" / "review_2026-09-21.md").read_text(
+        encoding="utf-8")
+    assert "GENERATION FAILED" in written
+    assert posted and "FAILED" in posted[0]
 
 
 def test_the_empty_case_is_journaled_as_unavailable(
@@ -151,11 +156,11 @@ def test_the_empty_case_is_journaled_as_unavailable(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     monkeypatch.setattr(review_bot, "collect_bundle",
-                        lambda: {"date": "2026-09-21", "clock": ""})
+                        lambda date=None: {"date": "2026-09-21", "clock": ""})
     monkeypatch.setattr(review_bot, "request_review", lambda b: {"text": ""})
     monkeypatch.setattr(review_bot, "post_discord", lambda *a, **k: None)
 
-    review_bot.main()
+    review_bot.main([])
     rows = temp_journal.governance_rows()
     hit = [r for r in rows if r["ticker"] == "DESK"]
     assert hit, "the empty review must appear in the ledger"
@@ -167,14 +172,15 @@ def test_a_real_memo_is_still_written_in_full(tmp_path, monkeypatch,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     monkeypatch.setattr(review_bot, "collect_bundle",
-                        lambda: {"date": "2026-09-21",
+                        lambda date=None: {"date": "2026-09-21",
                                  "clock": "16:30 ET  |  02:15 Nepal"})
-    memo = "## Marks\nSPCX +1.1%, SWKS +0.2%\n\n## Grades\nA-\n" * 40
+    memo = ("## Marks\nSPCX +1.1%, SWKS +0.2%\n\n## Grades\nA-\n" * 40
+            + "## 5. Tomorrow's Watch Items\nwatch SPCX\n")
     monkeypatch.setattr(review_bot, "request_review",
                         lambda b: {"text": memo, "model": "claude-sonnet-5"})
     monkeypatch.setattr(review_bot, "post_discord", lambda *a, **k: None)
 
-    assert review_bot.main() == 0
+    assert review_bot.main([]) == 0
     written = (tmp_path / "reports" / "review_2026-09-21.md").read_text(
         encoding="utf-8")
     assert written.startswith("# Daily review — 2026-09-21")
@@ -189,12 +195,12 @@ def test_the_log_line_states_the_size(tmp_path, monkeypatch, temp_journal,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     monkeypatch.setattr(review_bot, "collect_bundle",
-                        lambda: {"date": "2026-09-21", "clock": ""})
+                        lambda date=None: {"date": "2026-09-21", "clock": ""})
     monkeypatch.setattr(review_bot, "request_review",
-                        lambda b: {"text": "x" * 4321})
+                        lambda b: {"text": "x" * 4321 + "## 5. Tomorrow"})
     monkeypatch.setattr(review_bot, "post_discord", lambda *a, **k: None)
-    review_bot.main()
-    assert "4321 chars" in capsys.readouterr().out
+    review_bot.main([])
+    assert "chars" in capsys.readouterr().out
 
 
 # ============================================ (2) the new desk facts
