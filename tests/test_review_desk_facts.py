@@ -92,7 +92,11 @@ def test_fact_d_records_zero_approvals_and_the_known_error_rate():
     """S2 (2026-09-20) replaced W2's dated snapshot with a COMPUTED figure.
     A hardcoded number drifts and then gets argued about — the desk believed
     the baseline was ~38% while the journal held 10.4% over 316 decisions."""
-    assert "approved 0 of" in PROMPT
+    # NOT "approved 0 of": on 2026-09-22 and 09-23 the shadow analyst
+    # approved its first two signals (TSLA 75, LLY 85), so the live figure
+    # is no longer zero. That the prompt tracked it without an edit is the
+    # point of S2(b) - a hardcoded 0 would have been wrong for two days.
+    assert re.search(r"approved \d+ of \d+", PROMPT)
     assert "error rate" in PROMPT
     assert "ADVISORY and non-blocking" in PROMPT
     # The figure is real, not a placeholder left unrendered.

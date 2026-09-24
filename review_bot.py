@@ -124,13 +124,111 @@ REVIEW_SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
-def collect_bundle() -> dict:
-    """Assemble the day's evidence. Read-only; missing pieces are noted."""
-    today = clockline.now_et().strftime("%Y-%m-%d")
+# --- Generation budget (2026-09-24) ------------------------------------------
+# Three memos truncated in a row: 09-21 zero chars, 09-22 twenty-four, 09-23
+# 584, each cut mid-sentence. The signature of a thinking-capable model
+# spending the whole output budget before it starts writing.
+#
+# max_tokens is the WHOLE output allowance - thinking and answer share it.
+# At 8000 a long reasoning pass left nothing for the memo. 16000 gives the
+# answer real room; `effort` is what bounds the thinking half.
+#
+# NOT budget_tokens. Sonnet 5 REMOVED that parameter - sending
+# {"type": "enabled", "budget_tokens": N} returns a 400 and would fail every
+# review outright. `output_config.effort` is the supported control: it caps
+# how deep the model reasons, which is the same lever by a different name.
+REVIEW_MAX_TOKENS = 16000
+REVIEW_EFFORT = "medium"          # low | medium | high | xhigh | max
+
+# The memo has five numbered sections (see the duties in the system prompt).
+# If section 5 is missing, generation stopped early whatever the API said.
+REQUIRED_SECTION = "## 5."
+
+
+def memo_is_complete(text: str) -> bool:
+    """Does this text contain the last section the memo is required to have?
+
+    A length check cannot tell a short flat-day memo from a truncated one.
+    The final section header can: it is the last thing written, so its
+    presence means the model reached the end."""
+    return REQUIRED_SECTION in (text or "")
+
+
+def call_diagnostics(resp, max_tokens: int, text: str = "") -> dict:
+    """Everything needed to tell truncation from refusal from an empty
+    answer. None of this was recorded for the three lost memos, which is why
+    the cause took three days to find."""
+    usage = getattr(resp, "usage", None)
+    return {
+        "stop_reason": getattr(resp, "stop_reason", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "max_tokens": max_tokens,
+        "effort": REVIEW_EFFORT,
+        "thinking": "adaptive",
+        "text_chars": len(text or ""),
+        "has_section_5": memo_is_complete(text),
+    }
+
+
+def write_failure_stub(date: str, clock: str, diagnostics: dict) -> str:
+    """Write review_<date>.md saying the generation failed, and return the
+    line that was written.
+
+    A missing file reads as "the job has not run yet". A one-line file that
+    names the failure reads as "the job ran and failed", which is the true
+    state and the one an operator can act on. The three truncated memos were
+    worse than either: they looked like complete reviews of quiet days."""
+    diagnostics = diagnostics or {}
+    line = (f"GENERATION FAILED: {diagnostics.get('stop_reason')}, "
+            f"{diagnostics.get('output_tokens')} output tokens")
+    try:
+        os.makedirs("reports", exist_ok=True)
+        path = os.path.join("reports", f"review_{date}.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# Daily review — {date}\n{clock}\n\n{line}\n")
+        print(f"Failure stub written: {path}")
+    except OSError as e:
+        print(f"(could not write failure stub: {e})")
+    return line
+
+
+def newest_drop_for(date: str):
+    """The last session drop written for an ET date, or None.
+
+    drop/latest.md is a moving pointer, so a backfill has to name the file
+    by date or it would review today's session under yesterday's heading."""
+    try:
+        names = sorted(n for n in os.listdir("drop")
+                       if n.startswith(f"session_ET{date}_")
+                       and n.endswith(".md"))
+    except OSError:
+        return None
+    return os.path.join("drop", names[-1]) if names else None
+
+
+def collect_bundle(date: str = None) -> dict:
+    """Assemble the day's evidence. Read-only; missing pieces are noted.
+
+    `date` re-runs a PAST session (YYYY-MM-DD). The journal rows and the
+    drop are read for that date; the broker positions are not, because the
+    broker only reports the book as it stands now. A backfilled bundle says
+    so, rather than letting the reviewer read today's marks as history."""
+    today = date or clockline.now_et().strftime("%Y-%m-%d")
     bundle = {"date": today, "clock": clockline.two_zone_line()}
+    if date:
+        bundle["backfill"] = (
+            f"BACKFILL: this review was generated later, for the session of "
+            f"{date}. Journal rows, the drop and the intern report are that "
+            f"session's. The OPEN POSITIONS and their marks are CURRENT, not "
+            f"as of {date} - do not read them as that day's closing state, "
+            f"and do not reconcile them against that day's numbers.")
 
     # Session drop (report + universe + floor), if drop.py has run today.
-    drop_path = os.path.join("drop", "latest.md")
+    drop_path = (newest_drop_for(date) if date
+                 else os.path.join("drop", "latest.md"))
+    if drop_path is None:
+        drop_path = os.path.join("drop", "__missing__")
     if os.path.exists(drop_path):
         with open(drop_path, "r", encoding="utf-8", errors="replace") as f:
             drop_text = f.read()
@@ -163,10 +261,10 @@ def collect_bundle() -> dict:
     # Journal rows.
     try:
         journal.init_db()
-        trades = journal.todays_trades()
+        trades = journal.todays_trades(today)
         bundle["trades"] = trades
-        bundle["decision_count"] = journal.decision_count()
-        bundle["realized_pnl"] = journal.daily_realized_pnl()
+        bundle["decision_count"] = journal.decision_count(today)
+        bundle["realized_pnl"] = journal.daily_realized_pnl(today)
     except Exception as e:
         bundle["trades"] = []
         bundle["journal_error"] = str(e)
@@ -332,9 +430,10 @@ def build_user_prompt(bundle: dict) -> str:
         f"${t['price']:,.2f} (PnL ${t['pnl_usd']:+,.2f}) [{t['reason']}]"
         for t in bundle.get("trades", [])) or "- none"
     hb = bundle.get("heartbeat_age_secs")
+    backfill = bundle.get("backfill")
     return f"""SESSION REVIEW — {bundle['date']}
 {bundle['clock']}
-
+{(chr(10) + "*** " + backfill + chr(10)) if backfill else ""}
 === ACCOUNT ===
 Equity: ${bundle.get('equity', 0):,.2f} | Realized PnL today: ${bundle.get('realized_pnl', 0):+,.2f}
 Decisions journaled today: {counts.get('total', bundle.get('decision_count', 0))} total
@@ -384,20 +483,52 @@ def request_review(bundle: dict) -> dict:
     model = claude_integration.get_model("review")
     user_prompt = build_user_prompt(bundle)
 
+    max_tokens = REVIEW_MAX_TOKENS
     last_err = None
+    last_diag = None
     for attempt in range(MAX_RETRIES + 1):
         try:
             resp = client.messages.create(
                 model=model,
-                # Sonnet 5 spends part of this budget on thinking tokens —
-                # the first live memo (2026-07-27) was cut mid-sentence at
-                # 1,229 chars with max_tokens=2000. Give the memo real room.
-                max_tokens=8000,
+                max_tokens=max_tokens,
+                # Thinking and answer share max_tokens. `effort` bounds the
+                # thinking half; budget_tokens is a 400 on Sonnet 5.
+                thinking={"type": "adaptive"},
+                output_config={"effort": REVIEW_EFFORT},
                 system=[{"type": "text", "text": REVIEW_SYSTEM_PROMPT,
                          "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_prompt}],
             )
             text = claude_integration.extract_text(resp)
+            diag = call_diagnostics(resp, max_tokens, text)
+            print(f"review call: model={model} " +
+                  " ".join(f"{k}={v}" for k, v in diag.items()))
+
+            if text.strip() and (diag["stop_reason"] != "end_turn"
+                                 or not memo_is_complete(text)):
+                # TRUNCATION. A memo that stopped early is worse than none:
+                # it reads like a complete review of a quiet day. Both tests
+                # are needed - end_turn alone passed a memo that stopped
+                # after section 2, and the section check alone would accept
+                # a max_tokens cut that happened to get that far.
+                last_err = (f"incomplete review "
+                            f"(stop_reason={diag['stop_reason']}, "
+                            f"{diag['output_tokens']} output tokens, "
+                            f"{diag['text_chars']} chars, "
+                            f"section_5={diag['has_section_5']})")
+                print(f"INCOMPLETE REVIEW on attempt {attempt + 1}: "
+                      f"{last_err}")
+                last_diag = diag
+                if attempt < MAX_RETRIES:
+                    # Double the budget rather than repeat the same request:
+                    # a retry at the ceiling that just truncated will mostly
+                    # truncate again.
+                    max_tokens *= 2
+                    print(f"retrying with max_tokens={max_tokens}")
+                    time.sleep(2 ** attempt)
+                    continue
+                return {"error": last_err, "diagnostics": diag}
+
             if not text.strip():
                 # 2026-09-21: reports/review_2026-09-21.md was written 129
                 # bytes long - the header and the clock line and nothing
@@ -416,10 +547,12 @@ def request_review(bundle: dict) -> dict:
                             f"output_tokens="
                             f"{getattr(usage, 'output_tokens', '?')})")
                 print(f"EMPTY REVIEW on attempt {attempt + 1}: {last_err}")
+                last_diag = diag
                 if attempt < MAX_RETRIES:
+                    max_tokens *= 2
                     time.sleep(2 ** attempt)
                     continue
-                return {"error": last_err}
+                return {"error": last_err, "diagnostics": diag}
             return {"text": text, "model": model}
         except Exception as e:
             last_err = str(e)
@@ -431,7 +564,7 @@ def request_review(bundle: dict) -> dict:
                 continue
             if attempt < MAX_RETRIES:
                 time.sleep(2 ** attempt)
-    return {"error": last_err or "unknown error"}
+    return {"error": last_err or "unknown error", "diagnostics": last_diag}
 
 
 def post_discord(content: str, attach_full: str = None, date: str = None):
@@ -454,8 +587,15 @@ def post_discord(content: str, attach_full: str = None, date: str = None):
         print(f"(Discord post failed: {e})")
 
 
-def main() -> int:
-    bundle = collect_bundle()
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    backfill_date = None
+    if "--date" in argv:
+        i = argv.index("--date")
+        if i + 1 < len(argv):
+            backfill_date = argv[i + 1]
+
+    bundle = collect_bundle(date=backfill_date)
     result = request_review(bundle)
     journal.init_db()
 
@@ -465,25 +605,30 @@ def main() -> int:
             {"approved": False, "error": result["error"],
              "rejection_reason": "review_unavailable"},
             source="review_bot")
-        post_discord(f"⚠️ Daily review unavailable ({bundle['date']}): "
+        line = write_failure_stub(bundle["date"], bundle.get("clock", ""),
+                                  result.get("diagnostics"))
+        post_discord(f"⚠️ Daily review FAILED ({bundle['date']}): {line}\n"
                      f"{result['error'][:300]}")
         print(f"Review unavailable: {result['error']}")
         return 0                      # never crash the scheduled job
 
     review = result["text"]
-    if not review.strip():
+    if not review.strip() or not memo_is_complete(review):
         # Unreachable via request_review, which now fails on empty text.
         # Kept because THIS is the line that creates the file: a future
         # caller that skips request_review must not be able to leave a
         # header-only memo on disk for drop.py to carry to the CEO desk.
         journal.log_decision(
             "DESK", "daily_review", {"date": bundle["date"]},
-            {"approved": False, "error": "empty review text",
+            {"approved": False,
+             "error": "empty or incomplete review text",
              "rejection_reason": "review_unavailable"},
             source="review_bot")
-        post_discord(f"WARNING: daily review came back empty "
-                     f"({bundle['date']}) - no memo written.")
-        print("Review came back empty - no memo written.")
+        line = write_failure_stub(
+            bundle["date"], bundle.get("clock", ""),
+            {"stop_reason": "incomplete", "output_tokens": len(review)})
+        post_discord(f"⚠️ Daily review FAILED ({bundle['date']}): {line}")
+        print(f"Review empty or incomplete - {line}")
         return 0
 
     # Persist the memo so drop.py can carry it to the CEO desk (Discord is

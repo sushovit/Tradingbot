@@ -104,18 +104,20 @@ class FakeResp:
 def test_happy_path_journals_and_posts(temp_journal, monkeypatch):
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     monkeypatch.setattr(review_bot, "collect_bundle",
-                        lambda: {"date": "2026-07-26", "clock": "c",
+                        lambda date=None: {"date": "2026-07-26", "clock": "c",
                                  "positions": [], "trades": [], "equity": 2000.0,
                                  "realized_pnl": 0.0, "decision_count": 3,
                                  "drop": "d", "intern": "i"})
     monkeypatch.setattr(review_bot, "request_review",
-                        lambda b: {"text": "The book was flat today.",
+                        lambda b: {"text": "The book was flat today."
+                                           "\n## 5. Tomorrow's Watch Items\n"
+                                           "watch SPCX\n",
                                    "model": "claude-sonnet-5"})
     posted = []
     monkeypatch.setattr(review_bot, "post_discord",
                         lambda c, **kw: posted.append(c))
 
-    assert review_bot.main() == 0
+    assert review_bot.main([]) == 0
     assert posted and "flat today" in posted[0]
     conn = sqlite3.connect(temp_journal.DB_FILE)
     conn.row_factory = sqlite3.Row
@@ -128,15 +130,18 @@ def test_happy_path_journals_and_posts(temp_journal, monkeypatch):
 def test_api_error_posts_unavailable_and_exits_zero(temp_journal, monkeypatch):
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     monkeypatch.setattr(review_bot, "collect_bundle",
-                        lambda: {"date": "2026-07-26", "clock": "c",
+                        lambda date=None: {"date": "2026-07-26", "clock": "c",
                                  "positions": [], "trades": []})
     monkeypatch.setattr(review_bot, "request_review",
                         lambda b: {"error": "overloaded_error"})
     posted = []
     monkeypatch.setattr(review_bot, "post_discord", lambda c: posted.append(c))
 
-    assert review_bot.main() == 0                    # never crashes
-    assert "review unavailable" in posted[0].lower()
+    assert review_bot.main([]) == 0                    # never crashes
+    # Wording changed 2026-09-24: a failed run now NAMES the failure and
+    # writes a stub, instead of only saying the review is unavailable.
+    assert "failed" in posted[0].lower()
+    assert "overloaded_error" in posted[0]
     conn = sqlite3.connect(temp_journal.DB_FILE)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM decisions WHERE source='review_bot'").fetchall()
