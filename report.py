@@ -292,12 +292,20 @@ def build_report() -> str:
                          f"position at a time per setup, until each has "
                          f"{limit} live trades (go-live {go_live}). "
                          f"Each of those {limit} gets a graded line below.")
+            try:
+                with open("positions.json", encoding="utf-8") as _pf:
+                    _positions = json.load(_pf)
+            except (FileNotFoundError, ValueError):
+                _positions = {}
+            slots = _risk.probation_max_concurrent(_cfg)
             for name in setups:
                 n = journal.live_entry_count(
                     name, _risk.probation_min_prompt_version(name, _cfg))
                 state = ("PROBATION" if _risk.on_probation(name, n, _cfg)
                          else "graduated")
-                lines.append(f"- **{name}: {n}/{limit} probation** ({state})")
+                open_n = _risk.probation_open_count(name, _positions, _cfg)
+                lines.append(f"- **{name}: {n}/{limit} probation** ({state}, "
+                             f"{open_n}/{slots} slot in use)")
     except Exception as e:
         lines.append(f"_Unavailable: {e}_")
 

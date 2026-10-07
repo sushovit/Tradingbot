@@ -727,6 +727,21 @@ def live_entry_count(setup_name: str, min_prompt_version: int = None) -> int:
         return int(row["n"] or 0)
 
 
+def decision_prompt_version(decision_id):
+    """The gatekeeper prompt version stamped on a decision, or None.
+
+    Resolves positions opened before the record carried its own
+    prompt_version: decision_id -> decisions.context.prompt_version. None
+    for an unknown id or an unstamped (pre-versioning) decision."""
+    if decision_id is None:
+        return None
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT json_extract(context, '$.prompt_version') AS v "
+            "FROM decisions WHERE id=?", (int(decision_id),)).fetchone()
+    return None if row is None or row["v"] is None else int(row["v"])
+
+
 def setup_live_counts(setup_names, config: dict = None) -> dict:
     """Live entry counts per setup, each scoped to its own probation window
     (see risk.probation_min_prompt_version) when a config is supplied."""

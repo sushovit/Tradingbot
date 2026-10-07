@@ -286,8 +286,7 @@ def probation_section() -> list:
             n = _journal.live_entry_count(
                 name, _risk.probation_min_prompt_version(name, cfg))
             mark = "⏳" if _risk.on_probation(name, n, cfg) else "✅"
-            open_n = sum(1 for s in _positions.values()
-                         if s.get("in_position") and s.get("setup") == name)
+            open_n = _risk.probation_open_count(name, _positions, cfg)
             slots = _risk.probation_max_concurrent(cfg)
             lines.append(f"- {mark} {name}: {n}/{limit} probation "
                          f"({open_n}/{slots} slot in use)")
