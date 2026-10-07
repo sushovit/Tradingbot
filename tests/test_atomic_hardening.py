@@ -24,6 +24,38 @@ def test_tmp_names_are_unique_per_call():
     assert a.startswith("positions.json.") and a.endswith(".tmp")
 
 
+
+def test_ten_thousand_back_to_back_names_are_unique():
+    """macOS time_ns() repeats within a microsecond; the counter must not."""
+    names = [safe_io._tmp_name("positions.json") for _ in range(10_000)]
+    assert len(set(names)) == len(names)
+
+
+def test_names_are_unique_across_threads():
+    """The shadow analyst writes from its own thread."""
+    import threading
+    results = [[] for _ in range(8)]
+
+    def worker(out):
+        for _ in range(1_000):
+            out.append(safe_io._tmp_name("positions.json"))
+
+    threads = [threading.Thread(target=worker, args=(r,)) for r in results]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    names = [n for r in results for n in r]
+    assert len(names) == 8_000
+    assert len(set(names)) == len(names)
+
+
+def test_the_name_keeps_pid_and_time_and_adds_the_counter():
+    name = safe_io._tmp_name("positions.json")
+    pid, ns, n, ext = name[len("positions.json."):].split(".")
+    assert pid == str(os.getpid())
+    assert ns.isdigit() and n.isdigit() and ext == "tmp"
+
 def test_no_tmp_left_behind_on_success(tmp_path):
     target = tmp_path / "positions.json"
     safe_io.atomic_write_text(str(target), '{"NOK": {}}')
