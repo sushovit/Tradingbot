@@ -261,7 +261,7 @@ quality, not compute.
 | vCPU | 1 | pandas/pandas_ta on 20–60 bar frames is trivial |
 | RAM | 1 GB | 2 GB is more comfortable with pandas + streamlit installed |
 | Disk | 10–25 GB | the journal is kilobytes; `data/` holds ~50 daily CSVs |
-| Python | **3.11+** | dev is on 3.13.8; 3.11 is the floor for `zoneinfo`/`tzdata` use in `clockline.py` and `daily_eval.py` |
+| Python | **3.12+ (pandas_ta 0.4.x)** | dev is on 3.13.8; 3.11 is the floor for `zoneinfo`/`tzdata` use in `clockline.py` and `daily_eval.py` |
 | GPU | **none** | see below |
 | Network | stable, low-jitter | the actual reason for the move |
 
@@ -396,37 +396,21 @@ it, and both want the same flat weekend.
 
 ## 6. macOS cutover checklist
 
-The PM's checklist, copied without additions from `PM_HANDOFF.md` ("The
-plan" item 2, cutover order, and item 3, owner to-dos on the Mac). The
-macOS port itself (S12) is described in README "macOS host". If the PM
-issues a revised checklist, it replaces this section.
-
-**Cutover order**
-
-- [ ] **(a) Mac:** clone, venv, suite green, S12 merged, launchd installed,
-      dry run on a closed market (worker idles, heartbeat updates, watchdog
-      restarts it once, second start refused).
-- [ ] **(b) Windows, after a 16:15 ET shutdown:** close SPCX/SWKS by hand if
-      still open and run `python orders.py sync` (agreed exception, agenda
-      10.1 note); delete ALL TradingBot schtasks (`schtasks /Query /FO LIST
-      | findstr TradingBot`); confirm `bot.run` gone.
-- [ ] **(c) Copy** `journal.db`, `bot_config.json`, `data/` from the laptop
-      to the Mac — NOT `.env`, NOT `positions.json`. The journal is the
-      ledger; never start a fresh one.
-- [ ] **(d) Create a NEW $5,000 Alpaca paper account** (do not reset/delete
-      the old one); its keys go only into the Mac's `.env` (mode 600); rotate
-      Anthropic/Finnhub/Discord keys too. `capital_cap_usd` 5000 is already
-      in config and becomes effective once broker equity > $2k.
-- [ ] **(e) First Mac session watched end to end:** timer fired ~09:25 ET,
-      calendar guard, SPY regime line, cycles, heartbeat, 16:15 shutdown on
-      time, full-length review memo at 16:30.
-
-**Owner to-dos on the Mac**
-
-- [ ] System timezone America/New_York.
-- [ ] Python 3.11+, git, Ollama (Apple silicon) or set `analyst_mode`
-      `"claude"`.
-- [ ] Prevent sleep (`sudo pmset -a sleep 0 disksleep 0`, lid open or proper
-      clamshell on a laptop).
-- [ ] Full Disk/Folder access for the Claude desktop app.
-- [ ] Never start the worker by hand on weekends; never start it twice.
+Mac cutover, 2026-10-07 (Nepal times)
+- By 17:00: Order 1, 1b and S12 merged and the suite passing (done, cf0a59e). Mac on
+  America/New_York; pmset sleep 0 disksleep 0 powernap 0; on the charger, lid open.
+- Laptop: delete every TradingBot schtask; no bot.run; the worker is NOT started.
+  Copy bot_config.json and data/ to the Mac.
+- New $5,000 Alpaca paper account; rotate the Anthropic, Finnhub, Discord and intern keys;
+  fresh Mac .env, chmod 600. The old account keeps its keys until its positions are synced.
+- 17:15-18:15 (07:30-08:30 ET), dry run on the empty test journal: start by hand,
+  heartbeat fresh, second start refused, kill -> watchdog.py run once relaunches
+  exactly once, clean stop, bot.run gone. install.sh is NOT run yet.
+- 19:20 (09:35 ET): close SPCX/SWKS on the OLD account in the dashboard; on the laptop run
+  `python orders.py sync` and confirm both SELL rows; copy the laptop journal.db to the
+  Mac and back it up as journal.db.cutover-bak; run jobs/macos/install.sh; then run
+  `launchctl kickstart gui/$UID/com.tradingbot.start_worker` once; regenerate the old
+  account's keys.
+- Watch the session through the 16:15 ET shutdown and the 16:30 ET review memo.
+- From the next day: launchd only. Never start the worker by hand, never on weekends,
+  never twice.
