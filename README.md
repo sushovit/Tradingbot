@@ -233,6 +233,62 @@ Its own output lands in `logs/start_worker.log`; the worker's own log is
 `run_worker.py` refuses to start beside a live owner PID regardless, so a
 double-start is guarded in two places.
 
+## macOS host
+
+The desk also runs on a Mac (S12). Windows behaviour is unchanged; the
+process helpers branch on `sys.platform`:
+
+| | Windows | macOS |
+|---|---|---|
+| Is the owner PID alive? (`run_worker.pid_alive`) | `tasklist` | `os.kill(pid, 0)`; a zombie reads as dead |
+| Kill a worker (`run_worker.kill_pid`, watchdog sweep) | `taskkill /F /T` | `SIGTERM` to the worker's process group, `KILL_WAIT_SECS` grace, then `SIGKILL` |
+| Find worker processes (`watchdog.find_worker_pids`) | `wmic` | `pgrep -f`, python processes only |
+| Keep awake (`session_clock.keep_awake`) | `SetThreadExecutionState` | `caffeinate -i -w <worker pid>` |
+| Start Ollama (`local_analyst.ensure_ollama`) | `ollama app.exe` | `open -a /Applications/Ollama.app`, else `/opt/homebrew/bin/ollama serve` |
+| Interpreter for relaunches | `sys.executable` | `sys.executable` |
+
+The worker is always launched as its own process-group leader
+(`run_worker.spawn_worker`, `start_new_session=True`), so a group kill takes
+the worker and its children and nothing else. `kill_pid` refuses outright
+when the target's group is the caller's own.
+
+**Install.** Python 3.12+ (pandas_ta 0.4.x needs it), then:
+
+```bash
+python3.12 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env && chmod 600 .env      # fill in the keys
+python -m pytest tests -q                   # must be green first
+```
+
+**Schedule.** launchd jobs live in `jobs/macos/` (labels `com.tradingbot.*`),
+all in **US Eastern** local time. Every job sets `PYTHONUTF8=1` and
+`TZ=America/New_York`, runs in the repo with `venv/bin/python`, and appends
+to `logs/<job>.log`.
+
+| Job | When (ET) | Runs |
+|---|---|---|
+| `start_worker` | Mon–Fri 09:25 | `start_if_open.sh`: starts the worker only on a trading day; fails open if the calendar can't be read |
+| `watchdog` | Mon–Fri every 15 min, 09:00–17:00 | `watchdog.py` |
+| `floor` | Mon–Fri 16:16 | `floor.py --to-file --discord` |
+| `review` | Mon–Fri 16:30 | `review_bot.py` |
+| `outcomes` | Mon–Fri 16:45 | `outcomes.py` |
+| `intern` | Mon–Fri 08:00 | `intern_desk.py --trade` |
+| `snapshot` | daily 18:00 | `snapshot.py`, then `drop.py --discord` |
+
+launchd calendar times are the Mac's local time, so the Mac itself must be
+on New York time. `install.sh` refuses to run otherwise:
+
+```bash
+sudo systemsetup -settimezone America/New_York
+jobs/macos/install.sh      # lint, bootstrap into gui/$UID, print a summary
+jobs/macos/uninstall.sh    # boot out every com.tradingbot.* job
+```
+
+Neither script starts the worker or runs a job (`RunAtLoad` is false).
+Check a job with `launchctl print gui/$(id -u)/com.tradingbot.watchdog`.
+The cutover itself is HOSTING.md §6.
+
 ## Tests
 
 ```powershell

@@ -14,6 +14,7 @@ On any failure this returns {"error": ...} — NEVER a fake approval.
 """
 
 import os
+import sys
 import json
 import time
 import logging
@@ -61,6 +62,20 @@ def is_up(timeout: float = 2.0) -> bool:
         return False
 
 
+DARWIN_OLLAMA_PATHS = ("/Applications/Ollama.app", "/opt/homebrew/bin/ollama")
+
+
+def _darwin_ollama_launch():
+    """The command that starts Ollama on macOS, or None if it isn't installed.
+    The app (which runs the server itself) is preferred over the bare CLI."""
+    app, cli = DARWIN_OLLAMA_PATHS
+    if os.path.exists(app):
+        return ["open", "-a", app]
+    if os.path.exists(cli):
+        return [cli, "serve"]
+    return None
+
+
 def ensure_ollama(warm: bool = True, wait_secs: int = 60) -> dict:
     """Make sure Ollama is up and the model is resident BEFORE the session's
     first gatekeeper call.
@@ -79,12 +94,24 @@ def ensure_ollama(warm: bool = True, wait_secs: int = 60) -> dict:
         # Try to start the service ourselves rather than losing the hour.
         try:
             import subprocess
+            launch = (_darwin_ollama_launch() if sys.platform == "darwin"
+                      else None)
             exe = os.path.join(os.environ.get("LOCALAPPDATA", ""),
                                "Programs", "Ollama", "ollama app.exe")
-            if os.path.exists(exe):
-                subprocess.Popen([exe],
-                                 creationflags=getattr(subprocess,
-                                                       "CREATE_NO_WINDOW", 0))
+            if sys.platform == "darwin" and launch is None:
+                result["detail"] = ("ollama not found at "
+                                    f"{' or '.join(DARWIN_OLLAMA_PATHS)}")
+            elif launch is not None or os.path.exists(exe):
+                if launch is not None:
+                    # Its own session: Ollama is a service, not a child the
+                    # worker's process-group kill should take down.
+                    subprocess.Popen(launch, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+                else:
+                    subprocess.Popen([exe],
+                                     creationflags=getattr(subprocess,
+                                                           "CREATE_NO_WINDOW", 0))
                 result["started"] = True
                 deadline = time.time() + wait_secs
                 while time.time() < deadline:

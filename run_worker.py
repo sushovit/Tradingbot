@@ -31,6 +31,7 @@ LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 STATUS_FILE = "bot_status.log"
 LOCK_FILE = "bot.run"
 KILL_WAIT_SECS = 15
+IS_WINDOWS = sys.platform == "win32"
 
 
 # ----------------------------------------------------------- logging
@@ -123,12 +124,45 @@ def write_lock(pid: int = None, lock_file: str = LOCK_FILE):
 def pid_alive(pid: int) -> bool:
     if not pid:
         return False
+    if not IS_WINDOWS:
+        return _posix_pid_alive(pid)
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                              capture_output=True, text=True, timeout=20).stdout
         return str(pid) in out
     except Exception:
         return False
+
+
+def _posix_pid_alive(pid: int) -> bool:
+    """os.kill(pid, 0): a signal-free existence check. PermissionError means
+    the PID exists under another user - still alive."""
+    try:
+        # An exited CHILD of ours is a zombie until reaped, and a zombie
+        # still answers kill(pid, 0). Reap it so it reads as dead.
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return False
+    except OSError:
+        pass                         # not our child: nothing to reap
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    # Someone else's zombie (its parent has not reaped it) also answers
+    # kill(pid, 0), but it is dead: nothing is running.
+    try:
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                              capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+        if stat.startswith("Z"):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def write_startup_status(pid: int = None,
@@ -190,6 +224,8 @@ def kill_pid(pid: int, wait_secs: int = KILL_WAIT_SECS) -> bool:
     """Kill a PID (and its children) and CONFIRM it died."""
     if not pid:
         return True
+    if not IS_WINDOWS:
+        return _posix_kill(pid, wait_secs)
     try:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                        capture_output=True, timeout=30)
@@ -200,6 +236,66 @@ def kill_pid(pid: int, wait_secs: int = KILL_WAIT_SECS) -> bool:
             return True
         time.sleep(1)
     return not pid_alive(pid)
+
+
+def _posix_kill(pid: int, wait_secs: int = KILL_WAIT_SECS) -> bool:
+    """SIGTERM the worker's process group, wait, then SIGKILL; confirm.
+
+    The group is what replaces taskkill /T: the worker is launched with
+    start_new_session=True, so it leads its own group and its children
+    (caffeinate, a local-mode subprocess) go with it. Two guards, because a
+    wrong group kill takes down whatever launched it (HOSTING.md 1.3):
+      - the target's group is the CALLER's own group -> refuse outright;
+      - the target is not a group leader (started some other way) -> signal
+        that PID alone rather than a group that belongs to something else."""
+    import signal
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return True
+    except OSError as e:
+        print(f"cannot read process group of PID {pid}: {e}")
+        return not pid_alive(pid)
+    if pgid == os.getpgrp():
+        print(f"REFUSING to kill PID {pid}: its process group {pgid} is this "
+              f"process's own group - the kill would take the caller with it.")
+        return False
+    if pgid == pid:
+        def send(sig):
+            os.killpg(pgid, sig)
+    else:
+        print(f"PID {pid} is not a process-group leader (group {pgid}); "
+              f"signalling the PID only.")
+
+        def send(sig):
+            os.kill(pid, sig)
+
+    for sig, wait in ((signal.SIGTERM, wait_secs), (signal.SIGKILL, 5)):
+        try:
+            send(sig)
+        except ProcessLookupError:
+            return True
+        except OSError as e:
+            print(f"{sig.name} failed for PID {pid}: {e}")
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if not pid_alive(pid):
+                return True
+            time.sleep(0.1)
+    return not pid_alive(pid)
+
+
+def spawn_worker(args, **popen_kwargs):
+    """Launch run_worker.py as its own process-group leader.
+
+    Every launch path goes through here (watchdog relaunch, the macOS start
+    script) so that _posix_kill can always target the worker's group without
+    touching its launcher's. On Windows the group flag does not apply and
+    the caller's creationflags are passed through unchanged."""
+    if not IS_WINDOWS:
+        popen_kwargs["start_new_session"] = True
+    return subprocess.Popen([sys.executable, "run_worker.py", *args],
+                            **popen_kwargs)
 
 
 # ----------------------------------------------------------- entry point

@@ -1622,6 +1622,7 @@ with tab3:
 with tab4:
     import glob as _glob
     import subprocess as _subprocess
+    import sys
     import intern_desk
 
     st.header("🎓 Intern Desk")
@@ -1650,7 +1651,7 @@ with tab4:
 
     # The single allowed convenience: analysis-only run (never --trade).
     if st.button("🧠 Run analysis now (no trading)", disabled=run_active):
-        _subprocess.Popen([r"tradingbot\Scripts\python.exe", "intern_desk.py"],
+        _subprocess.Popen([sys.executable, "intern_desk.py"],
                           cwd=os.getcwd(),
                           creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0))
         st.toast("Intern analysis started — progress appears above.", icon="🧠")

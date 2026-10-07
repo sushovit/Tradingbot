@@ -9,6 +9,7 @@ moved on. A suspend and a hang need opposite remedies, so they must be
 told apart.
 """
 
+import os
 import sys
 
 import pytest
@@ -83,6 +84,8 @@ def test_keep_awake_succeeds_on_windows():
     session_clock.keep_awake(False)
 
 
+@pytest.mark.skipif(sys.platform == "darwin",
+                    reason="macOS uses caffeinate, not ctypes")
 def test_keep_awake_survives_a_broken_ctypes(monkeypatch):
     import builtins
     real_import = builtins.__import__
@@ -93,3 +96,46 @@ def test_keep_awake_survives_a_broken_ctypes(monkeypatch):
         return real_import(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", boom)
     assert session_clock.keep_awake(True) is False      # never raises
+
+
+# ------------------------------------------------------- macOS: caffeinate
+
+DARWIN_ONLY = pytest.mark.skipif(sys.platform != "darwin",
+                                 reason="macOS caffeinate")
+
+
+@DARWIN_ONLY
+def test_caffeinate_is_tied_to_this_process_and_idempotent():
+    try:
+        assert session_clock.keep_awake(True) is True
+        proc = session_clock._caffeinate_proc
+        assert proc is not None and proc.poll() is None
+        # -w <our pid>: caffeinate exits on its own if the worker dies.
+        assert proc.args == ["caffeinate", "-i", "-w", str(os.getpid())]
+        assert session_clock.keep_awake(True) is True
+        assert session_clock._caffeinate_proc is proc      # no second one
+    finally:
+        session_clock.keep_awake(False)
+    assert proc.poll() is not None                          # stopped
+    assert session_clock._caffeinate_proc is None
+
+
+@DARWIN_ONLY
+def test_caffeinate_exits_when_the_watched_process_dies():
+    """No orphan: a caffeinate watching a dead PID goes away by itself."""
+    import subprocess
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
+    caf = subprocess.Popen(["caffeinate", "-i", "-w", str(child.pid)])
+    child.wait()
+    assert caf.wait(timeout=10) is not None
+
+
+@DARWIN_ONLY
+def test_caffeinate_missing_is_not_fatal(monkeypatch):
+    import subprocess
+
+    def missing(*a, **k):
+        raise FileNotFoundError("caffeinate")
+    monkeypatch.setattr(subprocess, "Popen", missing)
+    monkeypatch.setattr(session_clock, "_caffeinate_proc", None)
+    assert session_clock.keep_awake(True) is False

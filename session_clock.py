@@ -7,6 +7,8 @@ close). It releases its lock on the way out, so nothing is left "running
 behind" and the watchdog has nothing to resurrect.
 """
 
+import os
+import sys
 from datetime import datetime, time as dtime
 
 import pytz
@@ -80,8 +82,11 @@ def keep_awake(enable: bool = True) -> bool:
     instant it resumed, five hours "late" purely because wall-clock time
     had moved on without it. Preventing the sleep is the actual fix.
 
-    Returns True if the request was accepted (Windows only; a no-op
-    elsewhere)."""
+    Returns True if the request was accepted. Windows: the execution-state
+    API. macOS: `caffeinate -i -w <this pid>` (see _caffeinate). Elsewhere
+    a no-op returning False."""
+    if sys.platform == "darwin":
+        return _caffeinate(enable)
     try:
         import ctypes
         ES_CONTINUOUS = 0x80000000
@@ -90,6 +95,41 @@ def keep_awake(enable: bool = True) -> bool:
         return bool(ctypes.windll.kernel32.SetThreadExecutionState(flags))
     except Exception:
         return False          # non-Windows or blocked: not fatal
+
+
+_caffeinate_proc = None
+
+
+def _caffeinate(enable: bool) -> bool:
+    """macOS sleep suppression for as long as THIS process lives.
+
+    `-i` holds off idle sleep; `-w <pid>` makes caffeinate exit on its own
+    when the worker exits, so a crashed or killed worker cannot leave an
+    orphan holding the Mac awake. Idempotent: a second enable while one is
+    running reuses it. Disable terminates it."""
+    global _caffeinate_proc
+    import subprocess
+    running = (_caffeinate_proc is not None
+               and _caffeinate_proc.poll() is None)
+    if not enable:
+        if running:
+            try:
+                _caffeinate_proc.terminate()
+                _caffeinate_proc.wait(timeout=5)
+            except Exception:
+                pass
+        _caffeinate_proc = None
+        return True
+    if running:
+        return True
+    try:
+        _caffeinate_proc = subprocess.Popen(
+            ["caffeinate", "-i", "-w", str(os.getpid())],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        _caffeinate_proc = None
+        return False          # caffeinate missing: not fatal
 
 
 def suspend_gap(previous_wallclock: float, now_wallclock: float,

@@ -391,3 +391,42 @@ Whether to move at all, when, or which provider. 10.15 scoped this as Phase
 2 and the PM's read is unchanged: the move is justified by the network
 evidence alone, but it should follow the $5,000 reset rather than precede
 it, and both want the same flat weekend.
+
+---
+
+## 6. macOS cutover checklist
+
+The PM's checklist, copied without additions from `PM_HANDOFF.md` ("The
+plan" item 2, cutover order, and item 3, owner to-dos on the Mac). The
+macOS port itself (S12) is described in README "macOS host". If the PM
+issues a revised checklist, it replaces this section.
+
+**Cutover order**
+
+- [ ] **(a) Mac:** clone, venv, suite green, S12 merged, launchd installed,
+      dry run on a closed market (worker idles, heartbeat updates, watchdog
+      restarts it once, second start refused).
+- [ ] **(b) Windows, after a 16:15 ET shutdown:** close SPCX/SWKS by hand if
+      still open and run `python orders.py sync` (agreed exception, agenda
+      10.1 note); delete ALL TradingBot schtasks (`schtasks /Query /FO LIST
+      | findstr TradingBot`); confirm `bot.run` gone.
+- [ ] **(c) Copy** `journal.db`, `bot_config.json`, `data/` from the laptop
+      to the Mac — NOT `.env`, NOT `positions.json`. The journal is the
+      ledger; never start a fresh one.
+- [ ] **(d) Create a NEW $5,000 Alpaca paper account** (do not reset/delete
+      the old one); its keys go only into the Mac's `.env` (mode 600); rotate
+      Anthropic/Finnhub/Discord keys too. `capital_cap_usd` 5000 is already
+      in config and becomes effective once broker equity > $2k.
+- [ ] **(e) First Mac session watched end to end:** timer fired ~09:25 ET,
+      calendar guard, SPY regime line, cycles, heartbeat, 16:15 shutdown on
+      time, full-length review memo at 16:30.
+
+**Owner to-dos on the Mac**
+
+- [ ] System timezone America/New_York.
+- [ ] Python 3.11+, git, Ollama (Apple silicon) or set `analyst_mode`
+      `"claude"`.
+- [ ] Prevent sleep (`sudo pmset -a sleep 0 disksleep 0`, lid open or proper
+      clamshell on a laptop).
+- [ ] Full Disk/Folder access for the Claude desktop app.
+- [ ] Never start the worker by hand on weekends; never start it twice.

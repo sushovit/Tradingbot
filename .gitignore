@@ -34,3 +34,6 @@ drop/
 data/
 training_candidate.jsonl
 logs/
+
+# Virtual environment (macOS host)
+venv/
