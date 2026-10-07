@@ -26,8 +26,10 @@ the heartbeat survives — but the degradation is JOURNALED so the reviewer
 sees that write integrity was compromised rather than silently trusting it.
 """
 
+import itertools
 import logging
 import os
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -37,9 +39,19 @@ REPLACE_BACKOFF = 0.05          # 50ms, 100ms, 150ms
 TMP_SWEEP_AGE = 600             # orphaned temp files older than 10 min
 
 
+# time_ns() alone is not unique: on macOS it has microsecond resolution and
+# repeats on back-to-back calls, so two writes to one path in the same
+# microsecond would share a temp file. The counter makes every name in this
+# process distinct; the lock covers the shadow-analyst thread.
+_tmp_counter = itertools.count()
+_tmp_lock = threading.Lock()
+
+
 def _tmp_name(path: str) -> str:
-    """Unique per process and instant: nothing else can grab or reuse it."""
-    return f"{path}.{os.getpid()}.{time.time_ns()}.tmp"
+    """Unique per process and call: nothing else can grab or reuse it."""
+    with _tmp_lock:
+        n = next(_tmp_counter)
+    return f"{path}.{os.getpid()}.{time.time_ns()}.{n}.tmp"
 
 
 def _write_tmp(tmp: str, text: str, encoding: str):
