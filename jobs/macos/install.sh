@@ -47,7 +47,15 @@ for src in "$HERE"/com.tradingbot.*.plist; do
     labels+=("$label")
 done
 
+# The owner's two buttons (S12b), as Desktop shortcuts. Symlinks: each
+# .command resolves its own real path, so it still finds the repo.
+for button in "Start TradingBot.command" "TradingBot Status.command"; do
+    chmod +x "$HERE/$button"
+    ln -sfn "$HERE/$button" "$HOME/Desktop/$button"
+done
+
 echo
+echo "Desktop: 'Start TradingBot' (only for a missed auto-start) and 'TradingBot Status'."
 echo "Installed (repo: $REPO):"
 for label in "${labels[@]}"; do
     echo "--- $label"
