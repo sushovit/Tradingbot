@@ -21,6 +21,21 @@ BOARDROOM_AGENDA.md (item 10 = ratified policy), HOSTING.md.
 
 ## Where things stand (as of the last read, 2026-09-30)
 
+- **Owner decision 2026-10-07: same account.** The desk is on the **Mac from
+  2026-10-07**, taking over the OLD Alpaca paper account as it stands. No
+  positions are closed; ON, SPCX and SWKS carry over as managed bot
+  positions, each protected by a live bracket (stop + target) at the broker.
+  The laptop's journal.db, positions.json and state files are copied to the
+  Mac before the dry run; the laptop's .env is renamed .env.disabled and its
+  schtasks deleted. The new $5,000 account comes at a weekend, on a separate
+  checklist (TBD). Open positions (broker read 2026-10-07):
+
+  | Ticker | Qty @ entry | Stop | Target |
+  |---|---|---|---|
+  | ON | 5 @ 84.75 | 82.97 | 93.03 |
+  | SPCX | 1 @ 154.25 | 144.44 | 183.06 |
+  | SWKS | 1 @ 89.86 | 74.94 | 127.54 |
+
 - Desk still on the **Windows laptop**, old Alpaca paper account (~$1,973).
   The Mac cutover (planned 09-26/27) had not happened. Mac install is in
   progress as of 10-06.

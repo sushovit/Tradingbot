@@ -292,7 +292,8 @@ The cutover itself is HOSTING.md §6.
 ### Starting the desk
 
 **It starts itself.** On every trading day launchd runs
-`com.tradingbot.start_worker` at 09:25 ET (19:10 Nepal). There is nothing
+`com.tradingbot.start_worker` at 09:25 ET (19:10 Nepal until 1 Nov,
+20:10 after). There is nothing
 to do.
 
 `install.sh` also puts two buttons on the Desktop:

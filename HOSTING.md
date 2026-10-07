@@ -406,11 +406,12 @@ Mac cutover, 2026-10-07 (Nepal times)
 - 17:15-18:15 (07:30-08:30 ET), dry run on the empty test journal: start by hand,
   heartbeat fresh, second start refused, kill -> watchdog.py run once relaunches
   exactly once, clean stop, bot.run gone. install.sh is NOT run yet.
-- 19:20 (09:35 ET): close SPCX/SWKS on the OLD account in the dashboard; on the laptop run
-  `python orders.py sync` and confirm both SELL rows; copy the laptop journal.db to the
-  Mac and back it up as journal.db.cutover-bak; run jobs/macos/install.sh; then run
-  `launchctl kickstart gui/$UID/com.tradingbot.start_worker` once; regenerate the old
-  account's keys.
+- Owner decision 2026-10-07: same account. Copy journal.db, positions.json,
+  intern_positions.json, bot_config.json, data/, configs/, reports/, drop/, logs/ from
+  the laptop before the dry run; laptop .env renamed .env.disabled; schtasks deleted.
+  Dry run 07:30-08:30 ET on the real state (worker waits pre-market). install.sh at
+  ~08:35 ET; the 09:25 ET launchd start is the first automatic session. No positions
+  closed. New $5,000 account at a weekend: separate checklist, TBD.
 - Watch the session through the 16:15 ET shutdown and the 16:30 ET review memo.
 - From the next day: launchd only. Never start the worker by hand, never on weekends,
   never twice.
