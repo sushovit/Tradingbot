@@ -70,11 +70,15 @@ def test_fact_c_matches_what_the_journal_actually_holds():
     import sqlite3
     conn = sqlite3.connect(review_bot.journal.DB_FILE)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT ticker, action, qty, broker_order_id FROM trades "
-        "WHERE ticker IN ('NOK','ORCL') AND timestamp LIKE '2026-08-13%'"
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT ticker, action, qty, broker_order_id FROM trades "
+            "WHERE ticker IN ('NOK','ORCL') AND timestamp LIKE '2026-08-13%'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []                   # fresh clone: journal.db has no schema
+    finally:
+        conn.close()
     if not rows:
         return                      # fresh/temp DB — nothing to contradict
     for ticker in ("NOK", "ORCL"):
@@ -88,7 +92,23 @@ def test_fact_c_matches_what_the_journal_actually_holds():
 
 # ------------------------------------------------------------ (d) shadow
 
-def test_fact_d_records_zero_approvals_and_the_known_error_rate():
+def _seed_shadow(journal, approved, rejected, errored):
+    """Fixture rows, so fact (d) is tested against a journal the test owns.
+    The module-level PROMPT is rendered from whatever ./journal.db the host
+    has at import — on a fresh clone that is an empty file and the computed
+    figure is absent, which says nothing about the code."""
+    for _ in range(approved):
+        journal.log_decision("T", "s", {}, {"approved": True},
+                             source="local_shadow")
+    for _ in range(rejected):
+        journal.log_decision("T", "s", {}, {"approved": False},
+                             source="local_shadow")
+    for _ in range(errored):
+        journal.log_decision("T", "s", {}, {"approved": False, "error": "x"},
+                             source="local_shadow")
+
+
+def test_fact_d_records_zero_approvals_and_the_known_error_rate(temp_journal):
     """S2 (2026-09-20) replaced W2's dated snapshot with a COMPUTED figure.
     A hardcoded number drifts and then gets argued about — the desk believed
     the baseline was ~38% while the journal held 10.4% over 316 decisions."""
@@ -96,21 +116,26 @@ def test_fact_d_records_zero_approvals_and_the_known_error_rate():
     # approved its first two signals (TSLA 75, LLY 85), so the live figure
     # is no longer zero. That the prompt tracked it without an edit is the
     # point of S2(b) - a hardcoded 0 would have been wrong for two days.
-    assert re.search(r"approved \d+ of \d+", PROMPT)
-    assert "error rate" in PROMPT
-    assert "ADVISORY and non-blocking" in PROMPT
+    _seed_shadow(temp_journal, approved=2, rejected=7, errored=1)
+    prompt = review_bot.review_system_prompt()
+    assert re.search(r"approved \d+ of \d+", prompt)
+    assert "error rate" in prompt
+    assert "ADVISORY and non-blocking" in prompt
     # The figure is real, not a placeholder left unrendered.
+    assert "{shadow_fact}" not in prompt
     assert "{shadow_fact}" not in PROMPT
 
 
-def test_fact_d_tracks_the_journal_rather_than_a_frozen_date():
+def test_fact_d_tracks_the_journal_rather_than_a_frozen_date(temp_journal):
     """The count drifts every session. W2 dated it; S2 computes it, which is
     strictly better — the prompt can no longer assert a stale number."""
-    import review_bot
-    live = review_bot.journal.shadow_error_rate()
-    if live["total"]:
-        assert f"approved {live['approved']} of {live['total']}" in PROMPT
-        assert f"{live['rate_pct']}% error rate" in PROMPT
+    _seed_shadow(temp_journal, approved=2, rejected=7, errored=1)
+    prompt = review_bot.review_system_prompt()
+    assert "approved 2 of 10" in prompt
+    assert "10.0% error rate" in prompt
+    temp_journal.log_decision("T", "s", {}, {"approved": True},
+                              source="local_shadow")
+    assert "approved 3 of 11" in review_bot.review_system_prompt()
     assert "as of 2026-09-05" not in PROMPT      # the frozen date is gone
 
 

@@ -26,6 +26,7 @@ from claude_integration import (
 
 # --- Alpaca paper broker, journal, risk rules, strategies, analyst router ---
 import journal
+import prompts
 import risk
 import sectors
 import analyst
@@ -329,6 +330,7 @@ def reconcile_positions(broker, positions):
                 "trailing_stop_price": 0.0,
                 "profit_target_price": None,
                 "decision_id": None,
+                "prompt_version": None,
                 "entry_trade_id": None,
                 "setup": "reconciled",
                 "sector": sectors.sector_for(symbol),
@@ -1045,6 +1047,7 @@ def _worker_loop():
                 continue
 
             decision_id = None
+            prompt_version = None    # rules-only entry: no gatekeeper prompt
             conviction = None        # no gatekeeper -> no conviction scaling
             if use_claude_filter:
                 try:
@@ -1065,6 +1068,9 @@ def _worker_loop():
                     verdict, decision_id = analyst.get_verdict(
                         analyst_mode, ticker, signal.setup_name,
                         decision_context, gk_kwargs)
+                    # The version analyst.get_verdict stamps on the verdict's
+                    # journaled context; it scopes the probation slot count.
+                    prompt_version = prompts.GATEKEEPER_PROMPT_VERSION
 
                     conviction = verdict.get('conviction_score', 0)
                     approved = verdict.get('approved', False)
@@ -1131,16 +1137,19 @@ def _worker_loop():
                                f"{signal.setup_name}: {e}")
                 live_n = 0            # unknown -> treated as probation
             is_probation = risk.on_probation(signal.setup_name, live_n, config)
-            open_for_setup = sum(
-                1 for s in positions.values()
-                if s.get("in_position") and s.get("setup") == signal.setup_name)
+            # Only positions inside this probation's prompt-version window
+            # hold the slot (risk.probation_open_tickers).
+            prob_open = risk.probation_open_tickers(
+                signal.setup_name, positions, config)
+            open_for_setup = len(prob_open)
             ok_prob, prob_reason = risk.check_setup_probation(
                 signal.setup_name, open_for_setup, live_n, config)
             if not ok_prob:
                 journal_pass_once(ticker, signal.setup_name, prob_reason,
                                   f"{signal.setup_name} on probation "
                                   f"({live_n}/{risk.probation_limit(config)}), "
-                                  f"{open_for_setup} already open")
+                                  f"{open_for_setup} already open: "
+                                  f"{', '.join(prob_open)}")
                 status_updates.append(f"{ticker}: Pass ({prob_reason})")
                 continue
             entry_risk_pct = risk.setup_risk_pct(signal.setup_name, live_n,
@@ -1270,6 +1279,7 @@ def _worker_loop():
                 "target_order_id": target_order_id,
                 "entry_order_id": str(order.id),
                 "decision_id": decision_id,
+                "prompt_version": prompt_version,
                 "entry_trade_id": trade_id,
                 "setup": signal.setup_name,
                 # Boardroom #2 item 7: no class is excluded, but every class

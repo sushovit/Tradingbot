@@ -275,7 +275,24 @@ def test_a_complete_memo_is_written_verbatim(tmp_path, monkeypatch,
 
 # ============================================ backfill
 
-def test_a_backfill_reads_that_session_not_today():
+def _drop_fixture(tmp_path, monkeypatch):
+    """drop/ is gitignored runtime output that only the live host has; a
+    fresh clone has none, so the tests bring their own and chdir to it."""
+    drop = tmp_path / "drop"
+    drop.mkdir()
+    for name, stamp in (("session_ET2026-09-22_0931.md", "2026-09-22 09:31"),
+                        ("session_ET2026-09-22_1501.md", "2026-09-22 15:01"),
+                        ("session_ET2026-09-23_1502.md", "2026-09-23 15:02")):
+        (drop / name).write_text(
+            f"# Session drop\n{stamp} ET  |  later Nepal  |  US market\n",
+            encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_a_backfill_reads_that_session_not_today(tmp_path, monkeypatch,
+                                                temp_journal):
+    _drop_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(review_bot, "journal", temp_journal)
     bundle = review_bot.collect_bundle(date="2026-09-22")
     assert bundle["date"] == "2026-09-22"
     assert bundle.get("drop_date") == "2026-09-22"
@@ -295,8 +312,9 @@ def test_a_normal_run_carries_no_backfill_note():
     assert "backfill" not in review_bot.collect_bundle()
 
 
-def test_the_drop_is_selected_by_date_not_by_latest():
+def test_the_drop_is_selected_by_date_not_by_latest(tmp_path, monkeypatch):
     """drop/latest.md is a moving pointer; a backfill must name its file."""
+    _drop_fixture(tmp_path, monkeypatch)
     assert review_bot.newest_drop_for("2026-09-22").endswith(
         "session_ET2026-09-22_1501.md")
     assert review_bot.newest_drop_for("1999-01-01") is None

@@ -14,6 +14,8 @@ review_bot fixes (2026-09-22). No network, no trading behaviour.
     and mean_reversion_reclaim being back on probation from v5 (S7).
 """
 
+import pytest
+
 import review_bot
 
 
@@ -280,7 +282,11 @@ def test_the_shadow_figure_is_computed_not_hardcoded():
 
 
 def test_the_figure_matches_the_journal_right_now():
-    live = review_bot.journal.shadow_error_rate()
+    import sqlite3
+    try:
+        live = review_bot.journal.shadow_error_rate()
+    except sqlite3.OperationalError:
+        pytest.skip("no live journal on this host (fresh clone)")
     if live["total"]:
         assert f"approved {live['approved']} of {live['total']}" in PROMPT
         assert f"{live['rate_pct']}% error rate" in PROMPT

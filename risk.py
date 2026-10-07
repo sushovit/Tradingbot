@@ -283,6 +283,57 @@ def probation_min_prompt_version(setup_name: str, config: dict = None):
         return None
 
 
+def probation_open_tickers(setup_name: str, positions: dict,
+                           config: dict = None, resolver=None) -> list:
+    """Tickers of the open positions that occupy this setup's probation slot.
+
+    Without a count_from_prompt_version for the setup, every in_position
+    record for it counts. With one, only positions whose gatekeeper verdict
+    came from that version or later: a v4 reclaim is not part of the v5
+    probation and must not hold its slot (2026-09-23: SPCX and SWKS, both
+    v4, blocked DDOG/LRCX/NET under v5).
+
+    The version is the record's own prompt_version; failing that, the
+    record's decision_id resolved through the journal (`resolver`, default
+    journal.decision_prompt_version). A record with neither is
+    pre-versioning and is NOT counted - the same rule live_entry_count
+    applies to the trade count. If the journal lookup itself fails, the
+    position IS counted: an unknown version must not open a slot."""
+    min_version = probation_min_prompt_version(setup_name, config)
+    held = sorted(t for t, s in (positions or {}).items()
+                  if s.get("in_position") and s.get("setup") == setup_name)
+    if min_version is None:
+        return held
+    if resolver is None:
+        import journal
+        resolver = journal.decision_prompt_version
+    counted = []
+    for ticker in held:
+        record = positions[ticker]
+        version = record.get("prompt_version")
+        if version is None and record.get("decision_id") is not None:
+            try:
+                version = resolver(record["decision_id"])
+            except Exception:
+                counted.append(ticker)
+                continue
+        if version is None:
+            continue
+        try:
+            if int(version) >= min_version:
+                counted.append(ticker)
+        except (TypeError, ValueError):
+            counted.append(ticker)
+    return counted
+
+
+def probation_open_count(setup_name: str, positions: dict,
+                         config: dict = None, resolver=None) -> int:
+    """How many open positions occupy this setup's probation slot. The one
+    definition the worker gate, the floor and the report all use."""
+    return len(probation_open_tickers(setup_name, positions, config, resolver))
+
+
 def on_probation(setup_name: str, live_trades: int,
                  config: dict = None) -> bool:
     """Is this setup still serving probation?"""
