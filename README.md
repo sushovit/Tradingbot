@@ -289,6 +289,28 @@ Neither script starts the worker or runs a job (`RunAtLoad` is false).
 Check a job with `launchctl print gui/$(id -u)/com.tradingbot.watchdog`.
 The cutover itself is HOSTING.md §6.
 
+### Starting the desk
+
+**It starts itself.** On every trading day launchd runs
+`com.tradingbot.start_worker` at 09:25 ET (19:10 Nepal). There is nothing
+to do.
+
+`install.sh` also puts two buttons on the Desktop:
+
+- **TradingBot Status**: read-only. Shows the worker PID (or "not
+  running"), heartbeat age, whether today is a trading day, open positions,
+  and the last lines of `logs/worker.log`. Use it any time.
+- **Start TradingBot**: **only for a missed auto-start** on a trading day,
+  for example when the Mac was asleep or off at 09:25 ET. It asks launchd to run
+  the same scheduled start now, then waits up to 120 s and prints
+  `Desk running, PID <n>`, or the end of `logs/start_worker.log` if the
+  desk did not come up. It refuses, and changes nothing, on a weekend, on
+  a market holiday, when a worker is already running, or when the launchd
+  job is not installed.
+
+**Never on weekends. Never twice.** Never start the worker any other way
+(`python run_worker.py` by hand bypasses the schedule).
+
 ## Tests
 
 ```powershell
