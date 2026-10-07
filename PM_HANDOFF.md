@@ -83,7 +83,7 @@ BOARDROOM_AGENDA.md (item 10 = ratified policy), HOSTING.md.
    SPY regime line, cycles, heartbeat, 16:15 shutdown on time, full-length
    review memo at 16:30.
 3. **Owner to-dos on the Mac:** system timezone America/New_York; Python
-   3.11+, git, Ollama (Apple silicon) or set analyst_mode "claude";
+   3.12+ (pandas_ta 0.4.x), git, Ollama (Apple silicon) or set analyst_mode "claude";
    prevent sleep (`sudo pmset -a sleep 0 disksleep 0`, lid open or proper
    clamshell on a laptop); Full Disk/Folder access for the Claude desktop
    app; never start the worker by hand on weekends; never start it twice.
