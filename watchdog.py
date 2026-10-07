@@ -27,7 +27,10 @@ load_dotenv()
 LOCK_FILE = "bot.run"
 STATUS_FILE = "bot_status.log"
 WORKER_SCRIPT = "run_worker.py"
-PYTHON = os.path.join("tradingbot", "Scripts", "python.exe")
+# The interpreter running the watchdog is the venv's: the jobs launch it
+# with the venv python on both hosts, so no per-OS path is hardcoded.
+PYTHON = sys.executable
+IS_WINDOWS = sys.platform == "win32"
 STALE_SECS = 300                 # 5 minutes
 # A worker needs ~90s to reach its first cycle (universe scan, Ollama
 # and Anthropic pre-flights, SPY regime). Below this age a live owner
@@ -97,6 +100,8 @@ def find_worker_pids() -> list:
     """PIDs of running run_worker.py processes. Used as a FALLBACK when the
     lock records no PID (legacy lock) and as a survivor check after the
     targeted kill."""
+    if not IS_WINDOWS:
+        return _posix_worker_pids()
     pids = []
     try:
         out = subprocess.run(
@@ -110,6 +115,36 @@ def find_worker_pids() -> list:
                     pids.append(int(parts[-1]))
     except Exception:
         pass
+    return pids
+
+
+# Matches "run_worker.py" as a path component of the command line, not as a
+# substring: `pytest tests/test_run_worker.py` must never be a kill target.
+_PGREP_PATTERN = r"(^|[ /])run_worker\.py( |$)"
+
+
+def _posix_worker_pids() -> list:
+    """pgrep -f (macOS has no /proc), then keep only python processes - the
+    same filter wmic's name='python.exe' applies on Windows - so an editor
+    or a pager with run_worker.py open is never mistaken for a worker.
+    Excludes this process."""
+    try:
+        out = subprocess.run(["pgrep", "-f", _PGREP_PATTERN],
+                             capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return []
+    pids = []
+    for token in out.split():
+        if not token.isdigit() or int(token) == os.getpid():
+            continue
+        try:
+            comm = subprocess.run(["ps", "-p", token, "-o", "comm="],
+                                  capture_output=True, text=True,
+                                  timeout=10).stdout
+        except Exception:
+            continue
+        if "python" in os.path.basename(comm.strip()).lower():
+            pids.append(int(token))
     return pids
 
 
@@ -128,6 +163,10 @@ def kill_stale_workers() -> int:
     for pid in find_worker_pids():
         if pid == owner:
             continue
+        if not IS_WINDOWS:
+            if run_worker.kill_pid(pid):
+                killed += 1
+            continue
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                            capture_output=True, timeout=30)
@@ -140,11 +179,13 @@ def kill_stale_workers() -> int:
 def relaunch_worker() -> bool:
     """Start run_worker.py detached. It creates its own lock file."""
     try:
+        import run_worker
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         # --force-takeover is safe here: main() has already CONFIRMED no
         # worker survives, so the heartbeat guard would be a false block.
-        subprocess.Popen([PYTHON, WORKER_SCRIPT, "--force-takeover"],
-                         cwd=os.getcwd(), creationflags=creation)
+        # spawn_worker makes it its own process-group leader off Windows.
+        run_worker.spawn_worker(["--force-takeover"], cwd=os.getcwd(),
+                                creationflags=creation)
         return True
     except Exception as e:
         print(f"relaunch failed: {e}")

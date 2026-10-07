@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.tradingbot.snapshot</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>'__REPO__/jobs/macos/run_job.sh' snapshot.py; '__REPO__/jobs/macos/run_job.sh' drop.py --discord</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__REPO__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PYTHONUTF8</key>
+		<string>1</string>
+		<key>TZ</key>
+		<string>America/New_York</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>__REPO__/logs/snapshot.log</string>
+	<key>StandardErrorPath</key>
+	<string>__REPO__/logs/snapshot.log</string>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Hour</key>
+			<integer>18</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+</dict>
+</plist>

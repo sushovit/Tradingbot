@@ -121,7 +121,10 @@ def test_adx_uses_the_detectors_window_not_the_full_series():
     bars than over 750. The study must bucket on the number the DETECTOR
     saw."""
     import pandas_ta as ta
-    df = backtest.load_daily("NVDA", years=3)
+    try:
+        df = backtest.load_daily("NVDA", years=3)
+    except Exception:               # no keys / no network on this host
+        df = None
     if df is None or len(df) < 300:
         pytest.skip("NVDA daily cache unavailable")
     full = ta.adx(df["high"], df["low"], df["close"], length=14)

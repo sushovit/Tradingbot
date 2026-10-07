@@ -1,9 +1,11 @@
-anthropic
-alpaca-py
-streamlit
+anthropic>=1.11,<2
+alpaca-py>=0.44,<0.45
+streamlit>=1.65,<2
 yfinance
-pandas
-pandas_ta
+pandas>=3.0,<4
+# Exact pin: PyPI now lists only 0.4.x betas of pandas_ta, which
+# require Python >= 3.12 (the venv runs 3.12).
+pandas_ta==0.4.71b0
 pytz
 python-dotenv
 finnhub-python
