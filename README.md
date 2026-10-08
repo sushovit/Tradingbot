@@ -270,11 +270,11 @@ to `logs/<job>.log`.
 |---|---|---|
 | `start_worker` | Mon–Fri 09:25 | `start_if_open.sh`: starts the worker only on a trading day; fails open if the calendar can't be read |
 | `watchdog` | Mon–Fri every 15 min, 09:00–17:00 | `watchdog.py` |
-| `floor` | Mon–Fri 16:16 | `floor.py --to-file --discord` |
+| `floor` | Mon–Fri hourly 10:30–15:30, and 16:16 | `floor.py --to-file --discord` |
 | `review` | Mon–Fri 16:30 | `review_bot.py` |
 | `outcomes` | Mon–Fri 16:45 | `outcomes.py` |
 | `intern` | Mon–Fri 08:00 | `intern_desk.py --trade` |
-| `snapshot` | daily 18:00 | `snapshot.py`, then `drop.py --discord` |
+| `snapshot` | Mon–Fri 10:00 and 15:00; daily 18:00 | `snapshot.py`, then `drop.py --discord` |
 
 launchd calendar times are the Mac's local time, so the Mac itself must be
 on New York time. `install.sh` refuses to run otherwise:

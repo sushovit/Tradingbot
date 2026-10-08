@@ -32,8 +32,10 @@ def load(name):
 
 
 def weekday_times(plist):
-    return sorted((s.get("Weekday"), s["Hour"], s["Minute"])
-                  for s in plist["StartCalendarInterval"])
+    # A daily slot has no Weekday; sort it after the weekday slots.
+    return sorted(((s.get("Weekday"), s["Hour"], s["Minute"])
+                   for s in plist["StartCalendarInterval"]),
+                  key=lambda t: (t[0] is None, t[0] or 0, t[1], t[2]))
 
 
 def test_one_plist_per_job_and_nothing_else():
@@ -71,11 +73,18 @@ def test_run_job_uses_the_venv_python():
 def test_schedules_match_the_work_order():
     weekdays = range(1, 6)
     assert weekday_times(load("start_worker")) == [(d, 9, 25) for d in weekdays]
-    assert weekday_times(load("floor")) == [(d, 16, 16) for d in weekdays]
+    # Hourly floor posts through the session, as the laptop ran them
+    # (20:15-01:15 Nepal), plus the post-close report.
+    floor = [(10, 30), (11, 30), (12, 30), (13, 30), (14, 30), (15, 30), (16, 16)]
+    assert weekday_times(load("floor")) == [(d, h, m) for d in weekdays
+                                            for h, m in floor]
     assert weekday_times(load("review")) == [(d, 16, 30) for d in weekdays]
     assert weekday_times(load("outcomes")) == [(d, 16, 45) for d in weekdays]
     assert weekday_times(load("intern")) == [(d, 8, 0) for d in weekdays]
-    assert weekday_times(load("snapshot")) == [(None, 18, 0)]     # daily
+    # Intraday snapshots at 10:00 and 15:00 (the laptop's 19:45 / 00:45
+    # Nepal), Mon-Fri, plus the daily 18:00.
+    assert weekday_times(load("snapshot")) == (
+        [(d, h, 0) for d in weekdays for h in (10, 15)] + [(None, 18, 0)])
 
 
 def test_the_watchdog_runs_every_quarter_hour_from_nine_to_five():
