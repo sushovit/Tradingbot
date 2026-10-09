@@ -21,6 +21,19 @@ BOARDROOM_AGENDA.md (item 10 = ratified policy), HOSTING.md.
 
 ## Where things stand (as of the last read, 2026-09-30)
 
+- **2026-10-09 12:47 ET: the desk runs on the NEW $5,000 Alpaca paper
+  account.** The owner switched the Mac's main keys in .env; the intern keys
+  are unchanged. Equity $5,000, effective capital $5,000 (capital_cap_usd
+  now binds), 0 positions at the switch. The worker was stopped cleanly and
+  restarted once via launchd (one PID, Cycle #1 at 12:49 ET).
+- **The OLD paper account is retired, flat.** SPCX and PLTR were closed at
+  11:28 ET the same day for the S16 deploy (agenda item 12) and synced to
+  the journal; 0 positions and 0 open orders remained. The journal (one
+  ledger across both accounts) is unchanged and continues.
+- **Daily exits: profit lock [[1.0, 0.0]]** (S16, breakeven at +1R on a
+  completed 5-minute close) replaced 10.6's static stop the same day.
+  Probation: all three setups 0/20 (PLTR BUY row 37 excluded).
+
 - **Owner decision 2026-10-07: same account.** The desk is on the **Mac from
   2026-10-07**, taking over the OLD Alpaca paper account as it stands. No
   positions are closed; ON, SPCX and SWKS carry over as managed bot
