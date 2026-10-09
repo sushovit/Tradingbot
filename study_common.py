@@ -200,6 +200,67 @@ def simulate_exit(df, entry_i, entry, stop, target, mode="static",
     return None, None, "open"
 
 
+def simulate_lock(df, entry_i, entry, stop, target, steps=()):
+    """simulate_exit's fill rules with a STEPPED profit lock (S15).
+
+    `steps` is [(trigger_R, stop_R), ...]: once a bar CLOSES at or above
+    entry + trigger_R*R, the stop is raised to entry + stop_R*R from the NEXT
+    bar. A stop is never lowered. Empty steps = the static stop.
+
+    Returns (exit_price, exit_i, reason, mfe_r), where mfe_r is the highest
+    bar HIGH reached up to the exit, in R - the "did it ever get there"
+    measure, which a close-based trigger can miss."""
+    risk = entry - stop
+    live_stop = stop
+    mfe_r = 0.0
+    for i in range(entry_i, len(df)):
+        bar = df.iloc[i]
+        o, h, l, c = (float(bar["open"]), float(bar["high"]),
+                      float(bar["low"]), float(bar["close"]))
+        if i > entry_i and o <= live_stop:
+            return o, i, "gap_stop", mfe_r
+        if i > entry_i and o >= target:
+            return o, i, "gap_target", max(mfe_r, (o - entry) / risk)
+        if risk > 0:
+            mfe_r = max(mfe_r, (h - entry) / risk)
+        if l <= live_stop:
+            return live_stop, i, "stop", mfe_r
+        if h >= target:
+            return target, i, "target", mfe_r
+        if risk <= 0:
+            continue
+        close_r = (c - entry) / risk
+        for trigger_r, stop_r in steps:
+            candidate = entry + stop_r * risk
+            if close_r >= trigger_r and candidate > live_stop and candidate < c:
+                live_stop = candidate
+    return None, None, "open", mfe_r
+
+
+def lock_trades_from(df, symbol, strat_name, signals, steps, target_r=3.0):
+    """trades_from's one-position-per-symbol replay, with simulate_lock."""
+    trades, busy_until = [], -1
+    for sig in signals:
+        i = sig["entry_i"]
+        if i <= busy_until:
+            continue
+        entry, stop = sig["entry"], sig["stop"]
+        target = entry + (entry - stop) * target_r
+        exit_price, exit_i, reason, mfe_r = simulate_lock(
+            df, i, entry, stop, target, steps)
+        if exit_price is None:
+            break
+        busy_until = exit_i
+        trades.append({
+            "symbol": symbol, "strategy": strat_name,
+            "entry": entry, "stop": stop, "exit": float(exit_price),
+            "r": (exit_price - entry) / (entry - stop),
+            "exit_reason": reason, "mfe_r": mfe_r,
+            "bars_held": exit_i - i,
+        })
+    return trades
+
+
 def trades_from(df, symbol, strat_name, signals, target_r=2.0, mode="static",
                 atr_mult=2.5):
     """One position per symbol at a time, like the live book."""
