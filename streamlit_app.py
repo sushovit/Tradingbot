@@ -1149,7 +1149,8 @@ def _worker_loop():
                 live_n = journal.live_entry_count(
                     signal.setup_name,
                     risk.probation_min_prompt_version(signal.setup_name,
-                                                      config))
+                                                      config),
+                    exclude_trade_ids=risk.probation_exclude_trade_ids(config))
             except Exception as e:
                 logger.warning(f"probation count unavailable for "
                                f"{signal.setup_name}: {e}")

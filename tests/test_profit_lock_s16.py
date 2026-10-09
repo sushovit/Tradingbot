@@ -85,9 +85,9 @@ def run(state, df, current_price, profile=PROFILE, now=NOW):
 
 R = 154.25 - 144.445
 STEP1_TRIGGER = 154.25 + 1.5 * R          # 168.9575
-STEP1_STOP = round(154.25 + 0.5 * R, 2)   # 159.15
+STEP1_STOP = 159.16                       # 159.1525 rounded UP to the cent
 STEP2_TRIGGER = 154.25 + 2.5 * R          # 178.7625
-STEP2_STOP = round(154.25 + 1.5 * R, 2)   # 168.96
+STEP2_STOP = 168.96                       # 168.9575 rounded up
 
 
 # ================================================== config parsing
@@ -106,12 +106,37 @@ def test_malformed_or_unplaceable_steps_are_dropped(raw):
     assert pm.profit_lock_steps({"daily_profit_lock": raw}) == ()
 
 
-def test_the_shipped_config_uses_the_placeholder_steps():
+def test_the_shipped_config_is_breakeven_at_one_r():
+    """CEO rule 2026-10-09: f did not beat b on expectancy for both setups,
+    so b ships - stop to breakeven at +1R."""
     cfg = json.load(open("bot_config.json", encoding="utf-8"))
     for name in ("Aggressive", "Moderate"):
         profile = cfg["risk_profiles"][name]
         assert profile["daily_trailing"] == "profit_lock"
-        assert pm.profit_lock_steps(profile) == ((1.5, 0.5), (2.5, 1.5))
+        assert pm.profit_lock_steps(profile) == ((1.0, 0.0),)
+
+
+def test_breakeven_step_moves_the_stop_to_entry():
+    state = spcx()
+    profile = dict(PROFILE, daily_profit_lock=[[1.0, 0.0]])
+    changed, broker, _, _, positions, _ = run(state, bars(164.2), 164.3,
+                                              profile)
+    assert changed and broker.replaced == [("stop-0", 154.25)]
+    assert positions["SPCX"]["trailing_stop_price"] == 154.25
+
+
+def test_r_uses_the_broker_corrected_entry_price():
+    """PLTR: positions.json held 201.235, the broker fill was 202.815 and
+    sync corrects entry_price to it. R must be 202.815 - 195.75 = 7.065, so
+    +1R is 209.88 - not 206.72 off the stale entry."""
+    profile = dict(PROFILE, daily_profit_lock=[[1.0, 0.0]])
+    state = spcx(entry_price=202.815, initial_stop=195.75,
+                 trailing_stop_price=195.75, original_stop=195.75)
+    changed, broker, _, _, _, _ = run(state, bars(207.0), 207.0, profile)
+    assert changed is False and broker.replaced == []    # +1R off the stale
+    changed, broker, _, _, _, _ = run(state, bars(209.9), 210.0, profile)
+    # Breakeven never rounds below entry: 202.815 -> 202.82, not 202.81.
+    assert changed and broker.replaced == [("stop-0", 202.82)]
 
 
 def test_trailing_type_resolves_profit_lock_for_daily_only():
@@ -140,7 +165,7 @@ def test_step_one_raises_to_plus_half_r():
     assert positions["SPCX"]["profit_lock_step"] == 1
     t, q, px, why = journal[0]
     assert (t, q, px) == ("SPCX", 1, STEP1_STOP)
-    assert "step 1" in why and "144.445 -> 159.15" in why
+    assert "step 1" in why and "144.445 -> 159.16" in why
     # Journal the raise, THEN write_positions (the order's sequence).
     assert order[-2:] == ["journal", "persist"]
     assert persisted[-1]["SPCX"]["trailing_stop_price"] == STEP1_STOP
@@ -291,3 +316,70 @@ def test_the_review_prompt_states_the_new_rule():
     assert "daily_profit_lock" in prompt
     assert "max(ATR trail, entry price)" in prompt     # intraday unchanged
     assert "static stop" not in prompt.replace("10.6's static stop", "")
+
+
+# ================================================== probation exclusion
+
+import floor  # noqa: E402
+import risk  # noqa: E402
+
+
+def reclaim_buy(journal, version=5, ticker="PLTR"):
+    decision_id = journal.log_decision(ticker, "mean_reversion_reclaim",
+                                       {"prompt_version": version},
+                                       {"approved": True})
+    return journal.log_trade(ticker, "BUY", 2, 202.815,
+                             reason="mean_reversion_reclaim",
+                             decision_id=decision_id)
+
+
+def test_exclude_trade_ids_parse():
+    assert risk.probation_exclude_trade_ids(
+        {"setup_probation": {"exclude_trade_ids": [37, "38", "x", None]}}) \
+        == (37, 38)
+    assert risk.probation_exclude_trade_ids({}) == ()
+
+
+def test_the_shipped_config_excludes_row_37():
+    cfg = json.load(open("bot_config.json", encoding="utf-8"))
+    assert risk.probation_exclude_trade_ids(cfg) == (37,)
+
+
+def test_an_excluded_buy_leaves_the_probation_count(temp_journal):
+    kept = reclaim_buy(temp_journal, ticker="LRCX")
+    dropped = reclaim_buy(temp_journal)
+    count = lambda ex: temp_journal.live_entry_count(
+        "mean_reversion_reclaim", 5, exclude_trade_ids=ex)
+    assert count(()) == 2
+    assert count((dropped,)) == 1
+    assert count((dropped, kept)) == 0
+    # The unscoped count honours it too.
+    assert temp_journal.live_entry_count(
+        "mean_reversion_reclaim", exclude_trade_ids=(dropped,)) == 1
+    cfg = {"setup_probation": {"count_from_prompt_version":
+                               {"mean_reversion_reclaim": 5},
+                               "exclude_trade_ids": [dropped]}}
+    assert temp_journal.setup_live_counts(
+        ["mean_reversion_reclaim"], cfg)["mean_reversion_reclaim"] == 1
+
+
+def test_gate_floor_and_report_all_pass_the_exclusion():
+    for path in ("streamlit_app.py", "floor.py", "report.py"):
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        idx = src.index("live_entry_count(")
+        assert "probation_exclude_trade_ids(" in src[idx:idx + 400], path
+
+
+def test_the_floor_line_reads_zero_with_row_37_excluded(tmp_path, monkeypatch,
+                                                         temp_journal):
+    import shutil
+    pltr_id = reclaim_buy(temp_journal)
+    cfg = json.load(open("bot_config.json", encoding="utf-8"))
+    cfg["setup_probation"]["exclude_trade_ids"] = [pltr_id]
+    (tmp_path / "bot_config.json").write_text(json.dumps(cfg))
+    (tmp_path / "positions.json").write_text("{}")
+    monkeypatch.chdir(tmp_path)
+    line = next(l for l in floor.probation_section()
+                if "mean_reversion_reclaim" in l)
+    assert "0/20 probation" in line

@@ -113,7 +113,7 @@
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.0,
             "daily_trailing": "profit_lock",
-            "daily_profit_lock": [[1.5, 0.5], [2.5, 1.5]],
+            "daily_profit_lock": [[1.0, 0.0]],
             "use_volume_filter": true
         },
         "Moderate": {
@@ -126,7 +126,7 @@
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.5,
             "daily_trailing": "profit_lock",
-            "daily_profit_lock": [[1.5, 0.5], [2.5, 1.5]],
+            "daily_profit_lock": [[1.0, 0.0]],
             "use_volume_filter": true
         }
     },
@@ -155,6 +155,7 @@
         ],
         "count_from_prompt_version": {
             "mean_reversion_reclaim": 5
-        }
+        },
+        "exclude_trade_ids": [37]
     }
 }

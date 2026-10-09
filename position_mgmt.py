@@ -321,7 +321,10 @@ def profit_lock_target(state: dict, close: float, steps):
     if not reached:
         return None, 0
     step, price = reached[-1]
-    return round(price, 2), step
+    # Round UP to the cent: a lock must never sit below its step level.
+    # round() would put a breakeven stop on a 202.815 entry at 202.81, half
+    # a cent under entry (float 202.815 is 202.81499...).
+    return math.ceil(price * 100 - 1e-6) / 100, step
 
 
 def maybe_lock_profit(broker, positions: dict, ticker: str, state: dict,
