@@ -700,18 +700,27 @@ def entry_tier(ticker: str, decision_id=None) -> str:
         return str(row["tier"]).upper() if row and row["tier"] else "A"
 
 
-def live_entry_count(setup_name: str, min_prompt_version: int = None) -> int:
+def live_entry_count(setup_name: str, min_prompt_version: int = None,
+                     exclude_trade_ids=()) -> int:
     """How many LIVE entries this setup has taken. Drives probation sizing.
 
     Counts bot BUY fills whose reason is the setup name — the worker journals
     entries as reason=signal.setup_name. CEO order-sheet rows read
     "CEO <setup>" and are deliberately NOT counted: probation measures the
-    automated setup, not discretionary use of the same idea."""
+    automated setup, not discretionary use of the same idea.
+
+    `exclude_trade_ids` (setup_probation.exclude_trade_ids) drops specific
+    BUY rows from the count - an entry the desk closed by hand rather than
+    let its rules finish, e.g. PLTR row 37 at the S16 deploy (2026-10-09)."""
+    excluded = tuple(int(i) for i in (exclude_trade_ids or ()))
+    skip = (f" AND t.id NOT IN ({','.join('?' * len(excluded))})"
+            if excluded else "")
     with _lock, _connect() as conn:
         if min_prompt_version is None:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' AND reason=?",
-                (setup_name,)).fetchone()
+                "SELECT COUNT(*) AS n FROM trades t WHERE t.action='BUY' "
+                "AND t.reason=?" + skip,
+                (setup_name, *excluded)).fetchone()
         else:
             # Only entries whose GATEKEEPER VERDICT came from that prompt
             # version or later. A BUY with no linked decision is pre-v5 by
@@ -722,8 +731,9 @@ def live_entry_count(setup_name: str, min_prompt_version: int = None) -> int:
                 "SELECT COUNT(*) AS n FROM trades t "
                 "JOIN decisions d ON d.id = t.decision_id "
                 "WHERE t.action='BUY' AND t.reason=? AND CAST(COALESCE("
-                "json_extract(d.context, '$.prompt_version'), 0) AS INTEGER) >= ?",
-                (setup_name, int(min_prompt_version))).fetchone()
+                "json_extract(d.context, '$.prompt_version'), 0) AS INTEGER) >= ?"
+                + skip,
+                (setup_name, int(min_prompt_version), *excluded)).fetchone()
         return int(row["n"] or 0)
 
 
@@ -748,7 +758,9 @@ def setup_live_counts(setup_names, config: dict = None) -> dict:
     import risk as _risk
     return {name: live_entry_count(
         name, _risk.probation_min_prompt_version(name, config)
-        if config is not None else None) for name in setup_names}
+        if config is not None else None,
+        exclude_trade_ids=_risk.probation_exclude_trade_ids(config))
+        for name in setup_names}
 
 
 def size_zero_report(month: str = None) -> list:

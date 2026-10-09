@@ -284,7 +284,8 @@ def probation_section() -> list:
         lines = ["", "## Setup probation"]
         for name in setups:
             n = _journal.live_entry_count(
-                name, _risk.probation_min_prompt_version(name, cfg))
+                name, _risk.probation_min_prompt_version(name, cfg),
+                exclude_trade_ids=_risk.probation_exclude_trade_ids(cfg))
             mark = "⏳" if _risk.on_probation(name, n, cfg) else "✅"
             open_n = _risk.probation_open_count(name, _positions, cfg)
             slots = _risk.probation_max_concurrent(cfg)

@@ -83,9 +83,11 @@ def run(state, price=TWO_R, profile=PROFILE, spread=0.01):
 
 # ============================================ the config
 
-def test_both_profiles_disable_daily_trailing():
+def test_both_profiles_use_the_daily_profit_lock():
+    """S16 (CEO 2026-10-09) reversed 10.6: daily positions no longer keep a
+    static stop; they step it up on the profit lock."""
     for name in ("Aggressive", "Moderate"):
-        assert CONFIG["risk_profiles"][name]["daily_trailing"] == "none"
+        assert CONFIG["risk_profiles"][name]["daily_trailing"] == "profit_lock"
 
 
 def test_intraday_trailing_is_untouched_in_config():

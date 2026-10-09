@@ -283,6 +283,19 @@ def probation_min_prompt_version(setup_name: str, config: dict = None):
         return None
 
 
+def probation_exclude_trade_ids(config: dict = None) -> tuple:
+    """`setup_probation.exclude_trade_ids`: BUY row ids left out of every
+    probation count. Malformed entries are ignored."""
+    cfg = ((config or {}).get("setup_probation") or {})
+    out = []
+    for value in cfg.get("exclude_trade_ids") or []:
+        try:
+            out.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return tuple(out)
+
+
 def probation_open_tickers(setup_name: str, positions: dict,
                            config: dict = None, resolver=None) -> list:
     """Tickers of the open positions that occupy this setup's probation slot.

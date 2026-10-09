@@ -300,7 +300,8 @@ def build_report() -> str:
             slots = _risk.probation_max_concurrent(_cfg)
             for name in setups:
                 n = journal.live_entry_count(
-                    name, _risk.probation_min_prompt_version(name, _cfg))
+                    name, _risk.probation_min_prompt_version(name, _cfg),
+                    exclude_trade_ids=_risk.probation_exclude_trade_ids(_cfg))
                 state = ("PROBATION" if _risk.on_probation(name, n, _cfg)
                          else "graduated")
                 open_n = _risk.probation_open_count(name, _positions, _cfg)

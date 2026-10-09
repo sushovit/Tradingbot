@@ -60,6 +60,9 @@ def is_bot_managed(state: dict) -> bool:
     return (state or {}).get("source") == "bot"
 
 
+PROFIT_LOCK = "profit_lock"
+
+
 def trailing_type_for(state: dict, risk_profile: dict) -> str:
     """Which trailing rule applies to THIS position.
 
@@ -188,7 +191,11 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
     # 4R plan into a 1R scalp. Nothing downstream reads `reached_1r` except
     # ratchet_floor, which this branch skips, so returning here costs no
     # bookkeeping.
-    if trailing_type_for(state, risk_profile) == "none":
+    #
+    # "profit_lock" (S16) is handled by maybe_lock_profit, on 5-minute closes;
+    # this ATR ratchet must never act on it. Without this guard
+    # compute_trailing_stop would read the unknown type as the PERCENT rule.
+    if trailing_type_for(state, risk_profile) in ("none", PROFIT_LOCK):
         return False
 
     r = r_multiple(state, current_price)
@@ -229,3 +236,159 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
     except BrokerError as e:
         logger.warning(f"{ticker}: could not replace stop: {e}")
         return False
+
+
+# --- Profit lock for daily positions (S16, CEO 2026-10-09) -----------------
+# Reverses 10.6 (static stops for daily setups). Live evidence: 0 of 16
+# exits at target; every profitable exit came from a raised stop; since
+# 10.6 only full-stop losses while SPCX sat at +0.9R with its stop below
+# entry. The lock raises a daily position's stop in fixed R steps, decided
+# on the last COMPLETED 5-minute close: [[trigger_R, stop_R], ...] means
+# "once a completed bar closes at entry + trigger_R*R, the stop goes to
+# entry + stop_R*R". Steps only ever raise the stop.
+
+def profit_lock_steps(risk_profile: dict) -> tuple:
+    """`daily_profit_lock` as sorted ((trigger_R, stop_R), ...).
+
+    Malformed entries are dropped, as is any step whose stop would sit at or
+    above its own trigger (it could never be placed below the market)."""
+    raw = (risk_profile or {}).get("daily_profit_lock") or []
+    steps = []
+    for item in raw if isinstance(raw, (list, tuple)) else []:
+        try:
+            trigger_r, stop_r = float(item[0]), float(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isnan(trigger_r) or math.isnan(stop_r) or stop_r >= trigger_r:
+            continue
+        steps.append((trigger_r, stop_r))
+    return tuple(sorted(steps))
+
+
+def original_stop(state: dict):
+    """The stop the position was opened with - the R denominator. Stored as
+    `original_stop`; falls back to `initial_stop`, which never moves."""
+    for key in ("original_stop", "initial_stop"):
+        try:
+            value = float(state.get(key))
+        except (TypeError, ValueError):
+            continue
+        if not math.isnan(value):
+            return value
+    return None
+
+
+def last_completed_close(df, now_utc, interval_minutes: int = 5):
+    """Close of the newest bar that has FINISHED by now_utc, or None.
+
+    Alpaca stamps a bar with its START time, so the newest row is usually
+    still forming; deciding on it would lock on a price the bar may not
+    keep."""
+    if df is None or getattr(df, "empty", True) or "close" not in df:
+        return None
+    import pandas as pd
+    now = pd.Timestamp(now_utc)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    span = pd.Timedelta(minutes=interval_minutes)
+    for ts, close in zip(reversed(df.index), reversed(df["close"].tolist())):
+        start = pd.Timestamp(ts)
+        if start.tzinfo is None:
+            start = start.tz_localize("UTC")
+        if start + span <= now:
+            try:
+                value = float(close)
+            except (TypeError, ValueError):
+                return None
+            return None if math.isnan(value) else value
+    return None
+
+
+def profit_lock_target(state: dict, close: float, steps):
+    """(stop_price, step_number) for the highest step `close` has reached,
+    or (None, 0). Step numbers count from 1."""
+    try:
+        entry = float(state.get("entry_price"))
+    except (TypeError, ValueError):
+        return None, 0
+    base = original_stop(state)
+    if base is None or close is None or entry <= base:
+        return None, 0
+    risk = entry - base
+    reached = [(n, entry + stop_r * risk)
+               for n, (trigger_r, stop_r) in enumerate(steps, start=1)
+               if close >= entry + trigger_r * risk]
+    if not reached:
+        return None, 0
+    step, price = reached[-1]
+    # Round UP to the cent: a lock must never sit below its step level.
+    # round() would put a breakeven stop on a 202.815 entry at 202.81, half
+    # a cent under entry (float 202.815 is 202.81499...).
+    return math.ceil(price * 100 - 1e-6) / 100, step
+
+
+def maybe_lock_profit(broker, positions: dict, ticker: str, state: dict,
+                      df_5min, risk_profile: dict, current_price: float,
+                      now_utc, interval_minutes: int = 5,
+                      persist=None, journal_raise=None) -> bool:
+    """Raise a BOT daily position's stop to its profit-lock step. Returns
+    True if the broker stop was replaced.
+
+    Never lowers a stop, never places one at or above the market, and is
+    idempotent across restarts: the raised level is persisted, so the same
+    step computes the same price and is a no-op the second time."""
+    if not is_bot_managed(state):
+        return False
+    if trailing_type_for(state, risk_profile) != PROFIT_LOCK:
+        return False
+    if state.get("original_stop") is None and original_stop(state) is not None:
+        positions.setdefault(ticker, state)["original_stop"] = original_stop(state)
+        state["original_stop"] = original_stop(state)
+        if persist is not None:
+            try:
+                persist(positions)
+            except Exception as e:
+                logger.error(f"{ticker}: could not persist original_stop: {e}")
+    steps = profit_lock_steps(risk_profile)
+    if not steps:
+        return False
+    close = last_completed_close(df_5min, now_utc, interval_minutes)
+    new_stop, step = profit_lock_target(state, close, steps)
+    if new_stop is None:
+        return False
+    try:
+        old_stop = float(state.get("trailing_stop_price") or 0)
+    except (TypeError, ValueError):
+        old_stop = 0.0
+    if new_stop <= old_stop:
+        return False                      # never lower; already at this step
+    if current_price is None or new_stop >= current_price:
+        return False                      # cannot place a stop above market
+    if not state.get("stop_order_id"):
+        return False
+    try:
+        new_order = broker.replace_stop(state["stop_order_id"], new_stop)
+    except BrokerError as e:
+        logger.warning(f"{ticker}: profit lock could not replace stop: {e}")
+        return False
+    positions[ticker]["stop_order_id"] = str(new_order.id)
+    positions[ticker]["trailing_stop_price"] = new_stop
+    positions[ticker]["profit_lock_step"] = step
+    trigger_r, stop_r = steps[step - 1]
+    detail = (f"profit_lock step {step} (close {close:.2f} >= +{trigger_r:g}R"
+              f" -> stop +{stop_r:g}R): stop {old_stop:g} -> {new_stop:g}")
+    logger.info(f"{ticker}: {detail}")
+    if journal_raise is not None:
+        try:
+            journal_raise(ticker, state.get("shares_held") or 0, new_stop,
+                          detail)
+        except Exception as e:
+            logger.error(f"{ticker}: could not journal profit lock: {e}")
+    # W8: the broker has already moved, so the file must agree NOW, not at
+    # the end of the cycle.
+    if persist is not None:
+        try:
+            persist(positions)
+        except Exception as e:
+            logger.error(f"{ticker}: could not persist profit-lock stop: {e}")
+    return True
