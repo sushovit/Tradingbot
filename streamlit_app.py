@@ -857,8 +857,25 @@ def _worker_loop():
                     # daily frame is now a reason to SKIP the ratchet, never a
                     # reason to trail on the wrong timeframe. The stop already
                     # at the broker stands untouched.
-                    trail_df = df
-                    if state.get("timeframe") == "daily":
+                    # S16 profit lock: a daily position on "profit_lock"
+                    # steps its stop on the last COMPLETED 5-minute close
+                    # (this cycle's `df`), so it needs no daily frame and
+                    # never runs the ATR ratchet below.
+                    if position_mgmt.trailing_type_for(state, risk_profile) \
+                            == position_mgmt.PROFIT_LOCK:
+                        position_mgmt.maybe_lock_profit(
+                            broker, positions, ticker, state, df,
+                            risk_profile, current_price,
+                            now_utc=datetime.now(pytz.utc),
+                            interval_minutes=interval_mins,
+                            persist=write_positions,
+                            journal_raise=lambda t, q, px, why: journal.log_trade(
+                                t, "TIGHTEN_STOP", q, px, reason=why,
+                                decision_id=state.get("decision_id")))
+                        trail_df = None
+                    else:
+                        trail_df = df
+                    if trail_df is not None and state.get("timeframe") == "daily":
                         daily_df_for_trail = daily_bars.get(ticker)
                         if daily_df_for_trail is None or daily_df_for_trail.empty:
                             logger.warning(f"{ticker}: daily bars unavailable — "
@@ -871,10 +888,11 @@ def _worker_loop():
                                              f"rather than run on 5-minute bars")
                             continue
                         trail_df = daily_df_for_trail
-                    position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
-                                                     state, trail_df, risk_profile,
-                                                     current_price,
-                                                     persist=write_positions)
+                    if trail_df is not None:
+                        position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
+                                                         state, trail_df, risk_profile,
+                                                         current_price,
+                                                         persist=write_positions)
 
                     entry_price = state.get("entry_price", current_price)
                     pnl_percent = ((current_price / entry_price) - 1) * 100 if entry_price else 0.0

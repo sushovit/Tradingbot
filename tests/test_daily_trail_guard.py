@@ -150,7 +150,9 @@ def test_the_worker_skips_rather_than_falling_back():
     not reassign trail_df to the intraday one."""
     with open("streamlit_app.py", encoding="utf-8") as f:
         body = f.read()
-    idx = body.index('if state.get("timeframe") == "daily":')
+    # S16: the guard now also requires trail_df (None on the profit-lock
+    # path, which uses 5-minute closes and never needs the daily frame).
+    idx = body.index('if trail_df is not None and state.get("timeframe") == "daily":')
     block = body[idx:idx + 1200]
     assert "daily_df_for_trail is None or daily_df_for_trail.empty" in block
     assert "ratchet skipped" in block
