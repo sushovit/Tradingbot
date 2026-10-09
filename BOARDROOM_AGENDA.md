@@ -597,3 +597,102 @@ deliberate design decision the desk has never made — `spy_filter_exempt`
 currently means "ignore the regime", and this would need "require chop",
 which no config key expresses today. base_breakout should be re-measured
 after another year of bars before it is discussed at all.
+---
+
+## 12. Profit lock for daily setups (S15 study, 2026-10-09)
+
+**CEO decision 2026-10-09:** agenda 10.6 (static stops for daily setups) is reversed; daily positions get a profit lock (S16). This item is the evidence.
+
+### Study (S15)
+
+**Question.** Which profit lock should replace the static stop (10.6) for daily setups? Same entries per setup, same fill rules, 3y daily, 3R target.
+
+| Setup | Variant | Trades | Win % | Avg R | Expectancy | PF | MaxDD (R) | Hit +1.5R, closed at a loss |
+|---|---|---|---|---|---|---|---|---|
+| momentum_continuation | a static | 373 | 33.2% | 0.324 | +0.324 | 1.45 | 15.73 | 11.5% |
+| momentum_continuation | b BE at +1R | 382 | 27.0% | 0.267 | +0.267 | 1.46 | 22.55 | 5.5% |
+| momentum_continuation | c BE at +1.5R | 379 | 28.2% | 0.241 | +0.241 | 1.37 | 20.08 | 6.3% |
+| momentum_continuation | d +2R -> +1R | 377 | 36.9% | 0.292 | +0.292 | 1.43 | 15.73 | 8.0% |
+| momentum_continuation | e +1.5R->+0.5R, +2.5R->+1.5R | 382 | 39.0% | 0.214 | +0.214 | 1.33 | 15.51 | 5.5% |
+| mean_reversion_reclaim | a static | 1022 | 33.8% | 0.354 | +0.354 | 1.49 | 23.48 | 15.0% |
+| mean_reversion_reclaim | b BE at +1R | 1095 | 27.5% | 0.312 | +0.312 | 1.55 | 20.77 | 4.7% |
+| mean_reversion_reclaim | c BE at +1.5R | 1064 | 30.3% | 0.335 | +0.335 | 1.52 | 19.11 | 8.4% |
+| mean_reversion_reclaim | d +2R -> +1R | 1069 | 37.7% | 0.342 | +0.342 | 1.5 | 19.7 | 11.0% |
+| mean_reversion_reclaim | e +1.5R->+0.5R, +2.5R->+1.5R | 1093 | 42.0% | 0.321 | +0.321 | 1.51 | 24.21 | 6.9% |
+
+**Exit mix:**
+
+| Setup | Variant | target | stop at a loss | stop at >= 0R (locked) |
+|---|---|---|---|---|
+| momentum_continuation | a static | 124 | 249 | 0 |
+| momentum_continuation | b BE at +1R | 103 | 215 | 64 |
+| momentum_continuation | c BE at +1.5R | 107 | 235 | 37 |
+| momentum_continuation | d +2R -> +1R | 107 | 247 | 23 |
+| momentum_continuation | e +1.5R->+0.5R, +2.5R->+1.5R | 93 | 242 | 47 |
+| mean_reversion_reclaim | a static | 345 | 677 | 0 |
+| mean_reversion_reclaim | b BE at +1R | 301 | 587 | 207 |
+| mean_reversion_reclaim | c BE at +1.5R | 322 | 634 | 108 |
+| mean_reversion_reclaim | d +2R -> +1R | 310 | 680 | 79 |
+| mean_reversion_reclaim | e +1.5R->+0.5R, +2.5R->+1.5R | 288 | 664 | 141 |
+
+**Method.** `study_common.simulate_lock`: the step is decided on a bar's CLOSE and applies from the NEXT bar; a stop never moves down; a bar spanning stop and target hits the stop first; gaps fill at the open. One position per symbol at a time. The live rule will trigger on the last completed 5-minute close, which reacts sooner than a daily close, so these rows are a conservative read of how often each lock engages. Reproduce with `python study_profit_lock.py`.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Live record (journal, 2026-10-09)
+
+The CEO decision cites 19 exits. The journal holds **16 SELL rows = 14
+position closes** (NOK and ORCL 2026-08-13 are the confirmed double fills,
+two rows each); no other table records exits. The 16 rows as journaled:
+
+| Date | Ticker | Setup | Entry | Exit | P&L $ | R | How it closed |
+|---|---|---|---|---|---|---|---|
+| 07-07 | SPCX | CEO event_flow | 164.21 | 157.82 | -6.39 | n/a | Stop Loss (synced) |
+| 07-10 | MRVL | CEO mean_reversion_reclaim | 239.19 | 235.91 | -3.28 | n/a | Stop Loss (synced) |
+| 07-13 | FCX | CEO mean_reversion_reclaim | 60.65 | 59.75 | -1.80 | n/a | Stop Loss (synced) |
+| 07-15 | DELL | CEO momentum_continuation | 460.99 | 433.29 | -27.70 | n/a | Stop Loss (synced) |
+| 08-10 | UBER | mean_reversion_reclaim | 77.135 | 77.40 | +0.53 | +0.05 | Stop Loss |
+| 08-11 | PLTR | CEO momentum_continuation | 176.15 | 172.875 | -6.55 | n/a | Stop Loss (synced) |
+| 08-13 | ORCL | mean_reversion_reclaim | 157.81 | 156.16 | -1.72 | -0.17 | Stop Loss |
+| 08-13 | ORCL | mean_reversion_reclaim | 157.81 | 156.16 | -1.72 | -0.17 | Stop Loss (double fill) |
+| 08-13 | NOK | mean_reversion_reclaim | 10.76 | 10.74 | +0.14 | -0.04 | Stop Loss |
+| 08-13 | NOK | mean_reversion_reclaim | 10.76 | 10.74 | +0.14 | -0.04 | Stop Loss (double fill) |
+| 08-21 | BAC | CEO momentum_continuation | 61.78 | 61.78 | +1.54 | n/a | Stop Loss (resolved) |
+| 09-01 | BMNR | momentum_continuation | 21.71 | 23.49 | +7.90 | +0.53 | Stop Loss (resolved) |
+| 09-08 | SLB | mean_reversion_reclaim | 55.86 | 57.10 | +6.20 | +0.45 | Stop Loss (resolved) |
+| 09-09 | CRCL | mean_reversion_reclaim | 90.32 | 95.83 | +5.51 | +0.51 | Stop Loss (synced) |
+| 10-07 | ON | momentum_continuation | 84.75 | 82.812 | -9.69 | -1.09 | Stop Loss (synced) |
+| 10-09 | SWKS | mean_reversion_reclaim | 89.86 | 74.63 | -15.23 | -1.02 | Stop Loss |
+
+R is (exit - entry) / (entry - stop) from the BUY's gatekeeper context;
+"n/a" where the BUY was a CEO order sheet with no stop in a decision row.
+
+What the rows show:
+- **0 targets hit.** Every one of the 16 exits is a stop.
+- **Every profitable exit was a raised stop** (UBER, BMNR, SLB, CRCL, and
+  BAC at breakeven): the stop had been trailed above entry before it filled.
+- **Since 10.6 (2026-09-21): two exits, both full-stop losses** — ON -1.09R,
+  SWKS -1.02R. Open: SPCX (+0.9R, stop 144.445, $10 below entry) and PLTR.
+- **Ledger oddities, not acted on:** NOK shows +$0.14 P&L on an exit below
+  entry, and BAC +$1.54 on an exit equal to entry — those rows' P&L was
+  computed against a different (corrected) entry than the one now stored.
+
+### Reading
+
+- **No variant beats the static stop on expectancy** in the 3y backtest:
+  momentum +0.324R static vs +0.214R to +0.292R with a lock; reclaim +0.354R
+  vs +0.312R to +0.342R. The live record (0 of 16 at target) is the
+  opposite of the backtest's ~33% target rate; that gap is the open question,
+  not the lock.
+- **Locks cut the give-back.** Trades that reached +1.5R and still closed at
+  a loss: momentum 11.5% static -> 5.5% with (b) or (e); reclaim 15.0% ->
+  4.7% (b) / 6.9% (e).
+- **(d) +2R -> +1R is closest to static on expectancy** for both setups
+  (-0.03R momentum, -0.01R reclaim) while still locking 1R on the trades
+  that run, and keeps MaxDD at or below static.
+- **(e), the placeholder,** has the highest win rate (39% / 42%) and the
+  lowest give-back for momentum, at the largest expectancy cost for momentum
+  (-0.11R).
+
+The CEO sets the final step values; S16 ships them as config.
+
