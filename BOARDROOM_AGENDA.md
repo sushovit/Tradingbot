@@ -614,11 +614,13 @@ after another year of bars before it is discussed at all.
 | momentum_continuation | c BE at +1.5R | 379 | 28.2% | 0.241 | +0.241 | 1.37 | 20.08 | 6.3% |
 | momentum_continuation | d +2R -> +1R | 377 | 36.9% | 0.292 | +0.292 | 1.43 | 15.73 | 8.0% |
 | momentum_continuation | e +1.5R->+0.5R, +2.5R->+1.5R | 382 | 39.0% | 0.214 | +0.214 | 1.33 | 15.51 | 5.5% |
+| momentum_continuation | f BE at +1R, +2R->+1R | 384 | 30.5% | 0.249 | +0.249 | 1.43 | 20.07 | 4.4% |
 | mean_reversion_reclaim | a static | 1022 | 33.8% | 0.354 | +0.354 | 1.49 | 23.48 | 15.0% |
 | mean_reversion_reclaim | b BE at +1R | 1095 | 27.5% | 0.312 | +0.312 | 1.55 | 20.77 | 4.7% |
 | mean_reversion_reclaim | c BE at +1.5R | 1064 | 30.3% | 0.335 | +0.335 | 1.52 | 19.11 | 8.4% |
 | mean_reversion_reclaim | d +2R -> +1R | 1069 | 37.7% | 0.342 | +0.342 | 1.5 | 19.7 | 11.0% |
 | mean_reversion_reclaim | e +1.5R->+0.5R, +2.5R->+1.5R | 1093 | 42.0% | 0.321 | +0.321 | 1.51 | 24.21 | 6.9% |
+| mean_reversion_reclaim | f BE at +1R, +2R->+1R | 1119 | 32.3% | 0.312 | +0.312 | 1.56 | 18.28 | 3.8% |
 
 **Exit mix:**
 
@@ -629,11 +631,13 @@ after another year of bars before it is discussed at all.
 | momentum_continuation | c BE at +1.5R | 107 | 235 | 37 |
 | momentum_continuation | d +2R -> +1R | 107 | 247 | 23 |
 | momentum_continuation | e +1.5R->+0.5R, +2.5R->+1.5R | 93 | 242 | 47 |
+| momentum_continuation | f BE at +1R, +2R->+1R | 94 | 219 | 71 |
 | mean_reversion_reclaim | a static | 345 | 677 | 0 |
 | mean_reversion_reclaim | b BE at +1R | 301 | 587 | 207 |
 | mean_reversion_reclaim | c BE at +1.5R | 322 | 634 | 108 |
 | mean_reversion_reclaim | d +2R -> +1R | 310 | 680 | 79 |
 | mean_reversion_reclaim | e +1.5R->+0.5R, +2.5R->+1.5R | 288 | 664 | 141 |
+| mean_reversion_reclaim | f BE at +1R, +2R->+1R | 278 | 599 | 242 |
 
 **Method.** `study_common.simulate_lock`: the step is decided on a bar's CLOSE and applies from the NEXT bar; a stop never moves down; a bar spanning stop and target hits the stop first; gaps fill at the open. One position per symbol at a time. The live rule will trigger on the last completed 5-minute close, which reacts sooner than a daily close, so these rows are a conservative read of how often each lock engages. Reproduce with `python study_profit_lock.py`.
 
@@ -641,7 +645,7 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 
 ### Live record (journal, 2026-10-09)
 
-The CEO decision cites 19 exits. The journal holds **16 SELL rows = 14
+The CEO decision cites 19 exits. The journal holds **16 SELL rows / 14
 position closes** (NOK and ORCL 2026-08-13 are the confirmed double fills,
 two rows each); no other table records exits. The 16 rows as journaled:
 
@@ -695,4 +699,28 @@ What the rows show:
   (-0.11R).
 
 The CEO sets the final step values; S16 ships them as config.
+
+### Variant f and the decision (2026-10-09)
+
+Variant **f** (BE at +1R, then +2R -> +1R) was added on the CEO's fixed
+rule: ship f only if its expectancy >= b's on BOTH setups AND its give-back
+<= b's on both; otherwise ship b.
+
+| Setup | b expectancy | f expectancy | f >= b | b give-back | f give-back | f <= b |
+|---|---|---|---|---|---|---|
+| momentum_continuation | +0.2674 | +0.2492 | no | 5.50% | 4.43% | yes |
+| mean_reversion_reclaim | +0.31243 | +0.31219 | no | 4.66% | 3.75% | yes |
+
+f cuts give-back on both but loses expectancy on both, so the rule ships
+**b: `daily_profit_lock: [[1.0, 0.0]]`** (stop to breakeven once a
+completed 5-minute bar closes at +1R).
+
+**Deploy - mid-session, by owner override (2026-10-09).** The owner
+overrode the 16:15 ET deploy window and deployed S16 during the session.
+Sequence: worker stopped cleanly at 11:27 ET; SPCX (1 @ 163.41, +$9.16) and
+PLTR (2 @ 205.26, +$4.89) market-closed at 11:28 ET under the owner's
+authorized cutover exception (bracket legs cancelled first); `orders.py
+sync` journaled both (rows 39-40); profit lock merged; worker restarted
+once via launchd. The PLTR BUY (row 37) is excluded from the
+mean_reversion_reclaim probation count (`setup_probation.exclude_trade_ids`).
 

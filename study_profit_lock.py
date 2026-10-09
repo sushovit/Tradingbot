@@ -11,6 +11,7 @@ lowered):
   c  BE at +1.5R                - close >= +1.5R -> stop to entry
   d  +2R -> +1R                 - close >= +2R   -> stop to +1R
   e  +1.5R -> +0.5R, +2.5R -> +1.5R
+  f  BE at +1R, then +2R -> +1R
 
 Fill rules are study_common.simulate_exit's: a bar opening through a level
 fills at the open; a bar spanning both levels hits the STOP first. Target
@@ -31,6 +32,7 @@ VARIANTS = (
     ("c BE at +1.5R", ((1.5, 0.0),)),
     ("d +2R -> +1R", ((2.0, 1.0),)),
     ("e +1.5R->+0.5R, +2.5R->+1.5R", ((1.5, 0.5), (2.5, 1.5))),
+    ("f BE at +1R, +2R->+1R", ((1.0, 0.0), (2.0, 1.0))),
 )
 
 
