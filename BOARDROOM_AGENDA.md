@@ -840,3 +840,133 @@ which is suggestive and nothing more at that sample size.
 repository or this thread; they will be added to both simulators once
 specified. No configuration was changed.
 
+### A. Live max favourable excursion (S17 addition, 2026-10-10)
+
+Reproduce with `python study_live_mfe.py`.
+
+**Live trades: max favourable excursion before exit** (18 SELL rows; NOK and ORCL 08-13 are double fills, so 16 position closes; no position is open on the current account). 5-minute bars, regular hours.
+
+| Entry (ET) | Ticker | Setup | Entry | Stop | R in % | MFE % | MFE R | Time to MFE | Exit |
+|---|---|---|---|---|---|---|---|---|---|
+| 07-06 10:12 | SPCX | CEO event_flow | 164.21 | n/a | n/a | +0.11% | n/a | 0.2h | 157.82, 07-06 13:40 (est.) - Stop Loss (synced) |
+| 07-09 20:30 | MRVL | CEO mean_reversion_reclaim | 239.19 | n/a | n/a | +0.60% | n/a | 13.0h | 235.91, 07-10 09:35 (est.) - Stop Loss (synced) |
+| 07-09 20:30 | FCX | CEO mean_reversion_reclaim | 60.65 | n/a | n/a | +2.31% | n/a | 19.2h | 59.75, 07-13 14:25 (est.) - Stop Loss (synced) |
+| 07-14 16:35 | DELL | CEO momentum_continuation | 460.99 | n/a | n/a | -0.66% | n/a | 16.9h | 433.29, 07-15 10:20 (est.) - Stop Loss (synced) |
+| 08-10 10:26 | UBER | mean_reversion_reclaim | 77.135 | 71.26 | 7.62% | +1.04% | +0.14R | 2.1h | 77.4 +0.05R, 08-10 13:10 - Stop Loss |
+| 08-11 10:03 | PLTR | CEO momentum_continuation | 176.15 | n/a | n/a | +0.99% | n/a | 0.8h | 172.875, 08-11 12:25 (est.) - Stop Loss (synced) |
+| 08-13 10:33 | ORCL | mean_reversion_reclaim | 157.81 | 147.89 | 6.29% | +0.37% | +0.06R | 0.0h | 156.16 -0.17R, 08-13 11:04 - Stop Loss |
+| 08-13 10:33 | ORCL | mean_reversion_reclaim | 157.81 | 147.89 | 6.29% | +0.37% | +0.06R | 0.0h | 156.16 -0.17R, 08-13 11:04 - Stop Loss |
+| 08-13 10:33 | NOK | mean_reversion_reclaim | 10.76 | 10.21 | 5.11% | +1.39% | +0.27R | 0.4h | 10.74 -0.04R, 08-13 11:14 - Stop Loss |
+| 08-13 10:33 | NOK | mean_reversion_reclaim | 10.76 | 10.21 | 5.11% | +1.39% | +0.27R | 0.4h | 10.74 -0.04R, 08-13 11:15 - Stop Loss |
+| 07-15 22:42 | BAC | CEO momentum_continuation | 61.78 | n/a | n/a | +5.58% | n/a | 32.5d | 61.78, 08-21 12:55 (est.) - Stop Loss (resolved) |
+| 08-20 11:02 | BMNR | momentum_continuation | 21.71 | 18.375 | 15.36% | +23.95% | +1.56R | 7.1d | 23.49 +0.53R, 09-01 13:15 (est.) - Stop Loss (resolved) |
+| 08-28 10:01 | SLB | mean_reversion_reclaim | 55.86 | 53.12 | 4.91% | +8.23% | +1.68R | 3.0d | 57.1 +0.45R, 09-08 12:50 (est.) - Stop Loss (resolved) |
+| 08-21 10:33 | CRCL | mean_reversion_reclaim | 90.32 | 79.57 | 11.90% | +14.30% | +1.20R | 13.2d | 95.83 +0.51R, 09-09 09:45 (est.) - Stop Loss (synced) |
+| 10-05 09:33 | ON | momentum_continuation | 84.75 | 82.965 | 2.11% | +2.54% | +1.20R | 23.9h | 82.812 -1.09R, 10-07 10:40 (est.) - Stop Loss (synced) |
+| 09-11 09:40 | SWKS | mean_reversion_reclaim | 89.86 | 74.94 | 16.60% | +3.08% | +0.19R | 12.0d | 74.63 -1.02R, 10-09 09:41 - Stop Loss |
+| 10-09 09:32 | PLTR | mean_reversion_reclaim | 202.815 | 195.75 | 3.48% | +1.41% | +0.40R | 1.9h | 205.26 +0.35R, 10-09 11:28 - Exit (synced) |
+| 09-17 09:57 | SPCX | mean_reversion_reclaim | 154.25 | 144.445 | 6.36% | +14.35% | +2.26R | 19.0d | 163.41 +0.93R, 10-09 11:28 - Exit (synced) |
+
+_(est.) = exit time estimated from the bars (the SELL row was stamped at sync time). CEO order-sheet entries carry no stop on record, so R is n/a for them._
+
+**Backtest signals, last 6 months: MFE before the static bracket exit** (153 trades, 5-minute bars):
+
+| Setup | Trades | MFE % p25 | MFE % median | MFE % p75 | MFE R p25 | MFE R median | MFE R p75 | Median R in % |
+|---|---|---|---|---|---|---|---|---|
+| all | 153 | 1.79 | 4.83 | 12.21 | 0.39 | 1.43 | 3.04 | 3.79 |
+| momentum_continuation | 33 | 1.42 | 3.44 | 7.25 | 0.30 | 0.69 | 3.03 | 4.02 |
+| mean_reversion_reclaim | 120 | 1.85 | 5.61 | 12.62 | 0.51 | 1.70 | 3.05 | 3.71 |
+
+### B. Percent- and ATR-based variants on the 5-minute replay
+
+n) +1.5% (completed close) -> stop to entry, then trail at the highest price since entry - 1.5%; o) the same at 2%; p) +1% -> stop to -0.5R, +2% -> entry, then trail -2%; q) +1x daily ATR(14, as of the prior day) -> entry, then trail at the highest price - 1x ATR. All keep the 3R target; stops apply from the next bar and never move down. b and m re-run unchanged on the same replay. Reproduce with `python study_fade_exit.py`.
+
+**5-minute replay, 2026-04-10 to 2026-10-10.** 317 backtest signals and 12 journaled live entries (6 live BUYs skipped: no stop in their decision context, or not a daily setup); 52 symbols; Alpaca IEX 5-min bars, regular hours; target 3R.
+
+| Entries | Setup | Variant | Trades | Win % | Avg R | Expectancy | PF | MaxDD (R) | Hit +1.5R, closed at a loss | Hit +0.5R, closed at a loss | Was >= +1% up, closed at a loss |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| all | momentum_continuation | b BE at +1R | 34 | 23.5% | 0.155 | +0.155 | 1.27 | 7.2 | 5.9% | 23.5% | 47.1% |
+| all | mean_reversion_reclaim | b BE at +1R | 137 | 26.3% | 0.508 | +0.508 | 2.17 | 6.62 | 1.5% | 19.0% | 27.7% |
+| all | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 58 | 63.8% | 0.053 | +0.053 | 1.14 | 6.77 | 1.7% | 1.7% | 24.1% |
+| all | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 192 | 67.7% | 0.112 | +0.112 | 1.38 | 9.03 | 0.0% | 4.7% | 11.5% |
+| all | momentum_continuation | n +1.5% -> BE, trail high-1.5% | 57 | 73.7% | 0.179 | +0.179 | 1.72 | 2.94 | 1.8% | 3.5% | 12.3% |
+| all | mean_reversion_reclaim | n +1.5% -> BE, trail high-1.5% | 183 | 76.5% | 0.209 | +0.209 | 1.91 | 5.22 | 0.0% | 3.3% | 6.0% |
+| all | momentum_continuation | o +2% -> BE, trail high-2% | 54 | 66.7% | 0.075 | +0.075 | 1.24 | 3.46 | 3.7% | 9.3% | 20.4% |
+| all | mean_reversion_reclaim | o +2% -> BE, trail high-2% | 169 | 68.0% | 0.301 | +0.301 | 1.94 | 9.88 | 0.6% | 7.1% | 14.8% |
+| all | momentum_continuation | p +1% -> -0.5R, +2% -> BE, trail high-2% | 54 | 66.7% | 0.108 | +0.108 | 1.39 | 2.71 | 3.7% | 9.3% | 20.4% |
+| all | mean_reversion_reclaim | p +1% -> -0.5R, +2% -> BE, trail high-2% | 171 | 63.2% | 0.305 | +0.305 | 2.05 | 8.61 | 0.6% | 9.4% | 18.7% |
+| all | momentum_continuation | q +1xATR -> BE, trail high-1xATR | 38 | 42.1% | 0.099 | +0.099 | 1.18 | 8.17 | 5.3% | 21.1% | 44.7% |
+| all | mean_reversion_reclaim | q +1xATR -> BE, trail high-1xATR | 151 | 57.6% | 0.385 | +0.385 | 1.89 | 11.62 | 3.3% | 16.6% | 25.2% |
+| backtest | momentum_continuation | b BE at +1R | 33 | 24.2% | 0.172 | +0.172 | 1.29 | 7.2 | 6.1% | 21.2% | 45.5% |
+| backtest | mean_reversion_reclaim | b BE at +1R | 131 | 27.5% | 0.562 | +0.562 | 2.33 | 6.62 | 1.5% | 17.6% | 26.0% |
+| backtest | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 56 | 62.5% | 0.03 | +0.030 | 1.08 | 6.77 | 1.8% | 1.8% | 25.0% |
+| backtest | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 185 | 67.6% | 0.116 | +0.116 | 1.4 | 9.03 | 0.0% | 4.9% | 11.4% |
+| backtest | momentum_continuation | n +1.5% -> BE, trail high-1.5% | 55 | 72.7% | 0.173 | +0.173 | 1.67 | 2.94 | 1.8% | 3.6% | 12.7% |
+| backtest | mean_reversion_reclaim | n +1.5% -> BE, trail high-1.5% | 176 | 76.1% | 0.212 | +0.212 | 1.91 | 5.22 | 0.0% | 3.4% | 6.2% |
+| backtest | momentum_continuation | o +2% -> BE, trail high-2% | 52 | 67.3% | 0.082 | +0.082 | 1.26 | 3.25 | 3.8% | 7.7% | 19.2% |
+| backtest | mean_reversion_reclaim | o +2% -> BE, trail high-2% | 162 | 67.9% | 0.31 | +0.310 | 1.94 | 9.88 | 0.6% | 7.4% | 14.8% |
+| backtest | momentum_continuation | p +1% -> -0.5R, +2% -> BE, trail high-2% | 52 | 67.3% | 0.116 | +0.116 | 1.41 | 2.62 | 3.8% | 7.7% | 19.2% |
+| backtest | mean_reversion_reclaim | p +1% -> -0.5R, +2% -> BE, trail high-2% | 164 | 63.4% | 0.322 | +0.322 | 2.11 | 8.61 | 0.6% | 9.8% | 18.3% |
+| backtest | momentum_continuation | q +1xATR -> BE, trail high-1xATR | 37 | 43.2% | 0.129 | +0.129 | 1.25 | 7.17 | 5.4% | 18.9% | 43.2% |
+| backtest | mean_reversion_reclaim | q +1xATR -> BE, trail high-1xATR | 145 | 58.6% | 0.418 | +0.418 | 1.99 | 11.06 | 3.4% | 15.9% | 24.1% |
+| live | momentum_continuation | b BE at +1R | 1 | 0.0% | -0.403 | -0.403 | 0.0 | 0.4 | 0.0% | 100.0% | 100.0% |
+| live | mean_reversion_reclaim | b BE at +1R | 6 | 0.0% | -0.673 | -0.673 | 0.0 | 4.04 | 0.0% | 50.0% | 66.7% |
+| live | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 2 | 100.0% | 0.675 | +0.675 | inf | 0.0 | 0.0% | 0.0% | 0.0% |
+| live | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 7 | 71.4% | 0.012 | +0.012 | 1.04 | 1.0 | 0.0% | 0.0% | 14.3% |
+| live | momentum_continuation | n +1.5% -> BE, trail high-1.5% | 2 | 100.0% | 0.351 | +0.351 | inf | 0.0 | 0.0% | 0.0% | 0.0% |
+| live | mean_reversion_reclaim | n +1.5% -> BE, trail high-1.5% | 7 | 85.7% | 0.132 | +0.132 | 1.93 | 1.0 | 0.0% | 0.0% | 0.0% |
+| live | momentum_continuation | o +2% -> BE, trail high-2% | 2 | 50.0% | -0.105 | -0.105 | 0.48 | 0.4 | 0.0% | 50.0% | 50.0% |
+| live | mean_reversion_reclaim | o +2% -> BE, trail high-2% | 7 | 71.4% | 0.091 | +0.091 | 1.63 | 1.0 | 0.0% | 0.0% | 14.3% |
+| live | momentum_continuation | p +1% -> -0.5R, +2% -> BE, trail high-2% | 2 | 50.0% | -0.105 | -0.105 | 0.48 | 0.4 | 0.0% | 50.0% | 50.0% |
+| live | mean_reversion_reclaim | p +1% -> -0.5R, +2% -> BE, trail high-2% | 7 | 57.1% | -0.095 | -0.095 | 0.68 | 2.06 | 0.0% | 0.0% | 28.6% |
+| live | momentum_continuation | q +1xATR -> BE, trail high-1xATR | 1 | 0.0% | -1.0 | -1.000 | 0.0 | 1.0 | 0.0% | 100.0% | 100.0% |
+| live | mean_reversion_reclaim | q +1xATR -> BE, trail high-1xATR | 6 | 33.3% | -0.406 | -0.406 | 0.39 | 3.0 | 0.0% | 33.3% | 50.0% |
+
+**Exit mix (all entries):**
+
+| Setup | Variant | target | stop at a loss | stop at >= 0R (locked/trailed) | fade |
+|---|---|---|---|---|---|
+| momentum_continuation | b BE at +1R | 8 | 20 | 6 | 0 |
+| mean_reversion_reclaim | b BE at +1R | 36 | 63 | 38 | 0 |
+| momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 2 | 21 | 0 | 35 |
+| mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 1 | 53 | 0 | 138 |
+| momentum_continuation | n +1.5% -> BE, trail high-1.5% | 3 | 15 | 39 | 0 |
+| mean_reversion_reclaim | n +1.5% -> BE, trail high-1.5% | 3 | 43 | 137 | 0 |
+| momentum_continuation | o +2% -> BE, trail high-2% | 3 | 18 | 33 | 0 |
+| mean_reversion_reclaim | o +2% -> BE, trail high-2% | 9 | 54 | 106 | 0 |
+| momentum_continuation | p +1% -> -0.5R, +2% -> BE, trail high-2% | 3 | 18 | 33 | 0 |
+| mean_reversion_reclaim | p +1% -> -0.5R, +2% -> BE, trail high-2% | 9 | 63 | 99 | 0 |
+| momentum_continuation | q +1xATR -> BE, trail high-1xATR | 6 | 22 | 10 | 0 |
+| mean_reversion_reclaim | q +1xATR -> BE, trail high-1xATR | 20 | 64 | 67 | 0 |
+
+Trades still open at the window end (excluded above): b BE at +1R: 3; m b + fade exit (EMA20, after +0.5R): 1; n +1.5% -> BE, trail high-1.5%: 1; o +2% -> BE, trail high-2%: 1; p +1% -> -0.5R, +2% -> BE, trail high-2%: 1; q +1xATR -> BE, trail high-1xATR: 3.
+
+### Reading (A and B)
+
+**Live trades ran further than their exits show.** Five of the ten bot
+trades reached at least +1.2R before exiting: SPCX +2.26R (closed +0.93R),
+SLB +1.68R (+0.45R), BMNR +1.56R (+0.53R), ON +1.20R (**closed -1.09R**) and
+CRCL +1.20R (+0.51R). None reached its 3R target. ON is the case the live
+profit lock (b) exists for: it was +1.2R the day after entry, ran under
+10.6's static stop, and gave it all back - b would have moved its stop to
+breakeven. The August entries (UBER, ORCL, NOK) never got past +0.27R; SWKS
+peaked at +0.19R in twelve days and stopped out at -1.02R. The six CEO
+order-sheet trades peaked at +0.1% to +2.3%, except BAC (+5.6%).
+
+**Backtest MFE, 6 months:** median +1.43R (reclaim +1.70R, momentum
++0.69R), p25 +0.39R, p75 +3.04R. The median stop is 3.8% of price, so a
++1.5% trigger arrives at roughly +0.4R - percent-based locks engage far
+earlier, in R, than b does.
+
+**Percent and ATR variants (5-minute replay).** Nothing beats b on
+**reclaim** expectancy (+0.508R): n +0.209R, o +0.301R, p +0.305R,
+q +0.385R. On **momentum**, n is the only variant ahead of b (+0.179R vs
++0.155R) and does it with the lowest MaxDD of the table (2.94R vs 7.2R);
+o, p and q trail b. The percent trails cut the "was +1% up, closed at a
+loss" share sharply - n 12.3% / 6.0% against b's 47.1% / 27.7% - by
+exiting early, which is what costs them reclaim expectancy. Momentum has 34-57
+trades in this window; reclaim, the desk's main setup, 137-192.
+
+**g and j** (and h, named earlier) are not defined in the repository or in
+this thread; they will be added once specified. No configuration was
+changed.
