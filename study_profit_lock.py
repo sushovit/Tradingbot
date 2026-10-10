@@ -12,6 +12,8 @@ lowered):
   d  +2R -> +1R                 - close >= +2R   -> stop to +1R
   e  +1.5R -> +0.5R, +2.5R -> +1.5R
   f  BE at +1R, then +2R -> +1R
+  k  BE at +0.5R (then as b)                                    (S17)
+  l  +0.5R -> stop -0.5R, then +1R -> BE                         (S17)
 
 Fill rules are study_common.simulate_exit's: a bar opening through a level
 fills at the open; a bar spanning both levels hits the STOP first. Target
@@ -33,6 +35,8 @@ VARIANTS = (
     ("d +2R -> +1R", ((2.0, 1.0),)),
     ("e +1.5R->+0.5R, +2.5R->+1.5R", ((1.5, 0.5), (2.5, 1.5))),
     ("f BE at +1R, +2R->+1R", ((1.0, 0.0), (2.0, 1.0))),
+    ("k BE at +0.5R", ((0.5, 0.0), (1.0, 0.0))),
+    ("l +0.5R->-0.5R, +1R->BE", ((0.5, -0.5), (1.0, 0.0))),
 )
 
 
@@ -57,10 +61,12 @@ def run(years: int = sc.YEARS, setups=SETUPS):
     return results
 
 
-def gave_back_pct(trades):
+def gave_back_pct(trades, reached=1.5):
+    """% of trades whose bar HIGH reached `reached` R and still closed at a
+    loss."""
     if not trades:
         return "—"
-    n = sum(1 for t in trades if t["mfe_r"] >= 1.5 and t["r"] < 0)
+    n = sum(1 for t in trades if t["mfe_r"] >= reached and t["r"] < 0)
     return f"{100 * n / len(trades):.1f}%"
 
 
@@ -78,10 +84,11 @@ def render(results, years):
             stats = sc.aggregate(trades)
             rows.append([setup, label] + sc.fmt(stats)
                         + [stats["max_drawdown_r"] if stats["trades"] else "—",
-                           gave_back_pct(trades)])
+                           gave_back_pct(trades), gave_back_pct(trades, 0.5)])
     lines += sc.table(["Setup", "Variant", "Trades", "Win %", "Avg R",
                        "Expectancy", "PF", "MaxDD (R)",
-                       "Hit +1.5R, closed at a loss"], rows)
+                       "Hit +1.5R, closed at a loss",
+                       "Hit +0.5R, closed at a loss"], rows)
     lines += ["", "**Exit mix:**", ""]
     mix = []
     for setup, per_variant in results.items():

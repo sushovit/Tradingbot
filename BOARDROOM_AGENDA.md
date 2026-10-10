@@ -723,4 +723,120 @@ authorized cutover exception (bracket legs cancelled first); `orders.py
 sync` journaled both (rows 39-40); profit lock merged; worker restarted
 once via launchd. The PLTR BUY (row 37) is excluded from the
 mean_reversion_reclaim probation count (`setup_probation.exclude_trade_ids`).
+---
+
+## 13. Exit variants k, l and the fade exit m (S17 study, 2026-10-10)
+
+**Study only (S17, 2026-10-10). No configuration change.** The desk runs b (S16, `daily_profit_lock: [[1.0, 0.0]]`). New variants: **k** BE at +0.5R (then as b); **l** at +0.5R stop -> -0.5R, at +1R -> BE; **m** b plus a fade exit - once a trade has been >= +0.5R, exit at the first 5-minute close below the 5-minute EMA20. New column: % of trades that reached +0.5R and still closed at a loss.
+
+### Daily simulator - all variants, 3y (k and l added)
+
+**Question.** Which profit lock should replace the static stop (10.6) for daily setups? Same entries per setup, same fill rules, 3y daily, 3R target.
+
+| Setup | Variant | Trades | Win % | Avg R | Expectancy | PF | MaxDD (R) | Hit +1.5R, closed at a loss | Hit +0.5R, closed at a loss |
+|---|---|---|---|---|---|---|---|---|---|
+| momentum_continuation | a static | 373 | 33.2% | 0.324 | +0.324 | 1.45 | 15.73 | 11.5% | 37.8% |
+| momentum_continuation | b BE at +1R | 382 | 27.0% | 0.267 | +0.267 | 1.46 | 22.55 | 5.5% | 27.0% |
+| momentum_continuation | c BE at +1.5R | 379 | 28.2% | 0.241 | +0.241 | 1.37 | 20.08 | 6.3% | 32.5% |
+| momentum_continuation | d +2R -> +1R | 377 | 36.9% | 0.292 | +0.292 | 1.43 | 15.73 | 8.0% | 34.0% |
+| momentum_continuation | e +1.5R->+0.5R, +2.5R->+1.5R | 382 | 39.0% | 0.214 | +0.214 | 1.33 | 15.51 | 5.5% | 31.7% |
+| momentum_continuation | f BE at +1R, +2R->+1R | 384 | 30.5% | 0.249 | +0.249 | 1.43 | 20.07 | 4.4% | 25.8% |
+| momentum_continuation | k BE at +0.5R | 391 | 23.5% | 0.258 | +0.258 | 1.53 | 20.3 | 5.4% | 19.4% |
+| momentum_continuation | l +0.5R->-0.5R, +1R->BE | 386 | 25.6% | 0.262 | +0.262 | 1.48 | 22.14 | 5.4% | 29.5% |
+| mean_reversion_reclaim | a static | 1022 | 33.8% | 0.354 | +0.354 | 1.49 | 23.48 | 15.0% | 41.1% |
+| mean_reversion_reclaim | b BE at +1R | 1095 | 27.5% | 0.312 | +0.312 | 1.55 | 20.77 | 4.7% | 28.6% |
+| mean_reversion_reclaim | c BE at +1.5R | 1064 | 30.3% | 0.335 | +0.335 | 1.52 | 19.11 | 8.4% | 34.5% |
+| mean_reversion_reclaim | d +2R -> +1R | 1069 | 37.7% | 0.342 | +0.342 | 1.5 | 19.7 | 11.0% | 37.0% |
+| mean_reversion_reclaim | e +1.5R->+0.5R, +2.5R->+1.5R | 1093 | 42.0% | 0.321 | +0.321 | 1.51 | 24.21 | 6.9% | 32.5% |
+| mean_reversion_reclaim | f BE at +1R, +2R->+1R | 1119 | 32.3% | 0.312 | +0.312 | 1.56 | 18.28 | 3.8% | 27.3% |
+| mean_reversion_reclaim | k BE at +0.5R | 1148 | 23.3% | 0.282 | +0.282 | 1.62 | 14.07 | 3.6% | 20.6% |
+| mean_reversion_reclaim | l +0.5R->-0.5R, +1R->BE | 1117 | 26.1% | 0.309 | +0.309 | 1.59 | 16.63 | 4.5% | 30.4% |
+
+**Exit mix:**
+
+| Setup | Variant | target | stop at a loss | stop at >= 0R (locked) |
+|---|---|---|---|---|
+| momentum_continuation | a static | 124 | 249 | 0 |
+| momentum_continuation | b BE at +1R | 103 | 215 | 64 |
+| momentum_continuation | c BE at +1.5R | 107 | 235 | 37 |
+| momentum_continuation | d +2R -> +1R | 107 | 247 | 23 |
+| momentum_continuation | e +1.5R->+0.5R, +2.5R->+1.5R | 93 | 242 | 47 |
+| momentum_continuation | f BE at +1R, +2R->+1R | 94 | 219 | 71 |
+| momentum_continuation | k BE at +0.5R | 92 | 191 | 108 |
+| momentum_continuation | l +0.5R->-0.5R, +1R->BE | 99 | 227 | 60 |
+| mean_reversion_reclaim | a static | 345 | 677 | 0 |
+| mean_reversion_reclaim | b BE at +1R | 301 | 587 | 207 |
+| mean_reversion_reclaim | c BE at +1.5R | 322 | 634 | 108 |
+| mean_reversion_reclaim | d +2R -> +1R | 310 | 680 | 79 |
+| mean_reversion_reclaim | e +1.5R->+0.5R, +2.5R->+1.5R | 288 | 664 | 141 |
+| mean_reversion_reclaim | f BE at +1R, +2R->+1R | 278 | 599 | 242 |
+| mean_reversion_reclaim | k BE at +0.5R | 267 | 522 | 359 |
+| mean_reversion_reclaim | l +0.5R->-0.5R, +1R->BE | 292 | 619 | 206 |
+
+**Method.** `study_common.simulate_lock`: the step is decided on a bar's CLOSE and applies from the NEXT bar; a stop never moves down; a bar spanning stop and target hits the stop first; gaps fill at the open. One position per symbol at a time. The live rule will trigger on the last completed 5-minute close, which reacts sooner than a daily close, so these rows are a conservative read of how often each lock engages. Reproduce with `python study_profit_lock.py`.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### 5-minute replay - b vs m, last 6 months
+
+Reproduce with `python study_fade_exit.py` (bars cached as `data/m5_<SYM>.csv`). Entries, fills and the fade rule are documented in the script's header.
+
+**5-minute replay, 2026-04-10 to 2026-10-10.** 317 backtest signals and 12 journaled live entries (6 live BUYs skipped: no stop in their decision context, or not a daily setup); 52 symbols; Alpaca IEX 5-min bars, regular hours; target 3R.
+
+| Entries | Setup | Variant | Trades | Win % | Avg R | Expectancy | PF | MaxDD (R) | Hit +1.5R, closed at a loss | Hit +0.5R, closed at a loss |
+|---|---|---|---|---|---|---|---|---|---|---|
+| all | momentum_continuation | b BE at +1R | 34 | 23.5% | 0.155 | +0.155 | 1.27 | 7.2 | 5.9% | 23.5% |
+| all | mean_reversion_reclaim | b BE at +1R | 137 | 26.3% | 0.508 | +0.508 | 2.17 | 6.62 | 1.5% | 19.0% |
+| all | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 58 | 63.8% | 0.053 | +0.053 | 1.14 | 6.77 | 1.7% | 1.7% |
+| all | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 192 | 67.7% | 0.112 | +0.112 | 1.38 | 9.03 | 0.0% | 4.7% |
+| backtest | momentum_continuation | b BE at +1R | 33 | 24.2% | 0.172 | +0.172 | 1.29 | 7.2 | 6.1% | 21.2% |
+| backtest | mean_reversion_reclaim | b BE at +1R | 131 | 27.5% | 0.562 | +0.562 | 2.33 | 6.62 | 1.5% | 17.6% |
+| backtest | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 56 | 62.5% | 0.03 | +0.030 | 1.08 | 6.77 | 1.8% | 1.8% |
+| backtest | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 185 | 67.6% | 0.116 | +0.116 | 1.4 | 9.03 | 0.0% | 4.9% |
+| live | momentum_continuation | b BE at +1R | 1 | 0.0% | -0.403 | -0.403 | 0.0 | 0.4 | 0.0% | 100.0% |
+| live | mean_reversion_reclaim | b BE at +1R | 6 | 0.0% | -0.673 | -0.673 | 0.0 | 4.04 | 0.0% | 50.0% |
+| live | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 2 | 100.0% | 0.675 | +0.675 | inf | 0.0 | 0.0% | 0.0% |
+| live | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 7 | 71.4% | 0.012 | +0.012 | 1.04 | 1.0 | 0.0% | 0.0% |
+
+**Exit mix (all entries):**
+
+| Setup | Variant | target | stop | fade |
+|---|---|---|---|---|
+| momentum_continuation | b BE at +1R | 8 | 26 | 0 |
+| mean_reversion_reclaim | b BE at +1R | 36 | 101 | 0 |
+| momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 2 | 21 | 35 |
+| mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 1 | 53 | 138 |
+
+Trades still open at the window end (excluded above): b BE at +1R: 3; m b + fade exit (EMA20, after +0.5R): 1.
+
+### Reading
+
+**k and l (daily simulator, 3y).** Neither beats b on expectancy:
+momentum +0.258 (k) / +0.262 (l) vs +0.267 (b); reclaim +0.282 / +0.309
+vs +0.312. **k** (BE at +0.5R) is the strongest risk control on the
+daily data: the share of trades that reached +0.5R and still lost falls
+from 27.0% to 19.4% (momentum) and 28.6% to 20.6% (reclaim), with the
+best PF of any variant (1.53 / 1.62) and reclaim MaxDD 14.07R vs b's
+20.77R, but it pays for that with a 23% win rate and the lowest target
+count. **l** (stop to -0.5R at +0.5R) barely helps: its +0.5R-then-loss
+rate (29.5% / 30.4%) is *higher* than b's, because a stop at -0.5R is still
+a loss.
+
+**m, the fade exit (5-minute replay, 6 months).** m does what it says on
+the "gave it back" measure - trades that reached +0.5R and closed at a loss
+drop from 23.5% to 1.7% (momentum) and 19.0% to 4.7% (reclaim), and the win
+rate jumps to 64-68% - **but expectancy collapses**: momentum +0.155R ->
++0.053R, reclaim +0.508R -> +0.112R. The fade exit closes 173 of 250 trades
+before stop or target and leaves 3 targets where b reached 44; reclaim
+MaxDD is worse (9.03R vs 6.62R). On this replay it converts the setups'
+right tail into many small wins.
+
+**Live entries are too few to read.** 12 live entries had a usable stop
+(6 BUYs skipped: CEO order sheets with no decision stop, or not a daily
+setup); 7-9 trades per variant. m shows positive and b negative on them,
+which is suggestive and nothing more at that sample size.
+
+**g and h** were named in the order but are not defined anywhere in the
+repository or this thread; they will be added to both simulators once
+specified. No configuration was changed.
 
