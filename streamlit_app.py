@@ -62,6 +62,10 @@ TRADE_LOG_FILE = "live_trades.csv"
 CONFIG_FILE = "bot_config.json"
 PORTFOLIO_STATE_FILE = "portfolio_state.json"
 POSITIONS_STATE_FILE = "positions.json"
+# S18: the main cycle and the position monitor share one positions dict.
+# Every management step on a position, and every write of the file, holds
+# this lock (re-entrant: the steps call write_positions themselves).
+POSITIONS_LOCK = threading.RLock()
 CONFIGS_DIR = "configs"
 os.makedirs(CONFIGS_DIR, exist_ok=True)
 
@@ -93,8 +97,9 @@ def write_status(message: str, history: int = 3):
 def write_positions(positions_dict: dict):
     """Atomic — position state must survive a crash mid-write."""
     try:
-        safe_io.atomic_write_text(POSITIONS_STATE_FILE,
-                                  json.dumps(positions_dict, indent=4))
+        with POSITIONS_LOCK:
+            text = json.dumps(positions_dict, indent=4)
+            safe_io.atomic_write_text(POSITIONS_STATE_FILE, text)
     except Exception as e:
         logger.error(f"Error writing to positions file: {e}")
 
@@ -430,6 +435,71 @@ def confirm_fill(broker, order, fallback: float, tries: int = 10):
     return fallback, False
 
 
+def detect_and_handle_exit(broker, positions, ticker, state, broker_symbols,
+                           now_et):
+    """Step 1 of managing a position, shared by the main cycle and the S18
+    monitor: did a bracket leg fill, or is the position gone at the broker?
+    Returns a status string if the position was exited/cleared, else None.
+    Call with POSITIONS_LOCK held."""
+    fill_price, reason, exit_order_id = detect_filled_exit(broker, ticker, state)
+    if fill_price is None and broker_symbols is not None \
+            and ticker not in broker_symbols:
+        # Position gone but no tracked leg marked filled. NEVER journal a
+        # phantom at last price - resolve the real fill, or clear state and
+        # let sync() journal it.
+        fill_price, reason, exit_order_id = resolve_exit_fill(broker, ticker)
+        if fill_price is None:
+            logger.warning(f"{ticker}: position gone, fill unresolved — "
+                           "state cleared; sync() will journal the real fill.")
+            positions[ticker] = {"in_position": False}
+            write_positions(positions)
+            return f"{ticker}: Exited (fill pending sync)"
+    if fill_price is not None:
+        handle_position_exit(broker, positions, ticker, state, fill_price,
+                             reason, now_et, broker_order_id=exit_order_id)
+        return f"{ticker}: SOLD ({reason})"
+    return None
+
+
+def journal_stop_raise(state):
+    return lambda t, q, px, why: journal.log_trade(
+        t, "TIGHTEN_STOP", q, px, reason=why,
+        decision_id=state.get("decision_id"))
+
+
+def monitor_manage_position(broker, positions, ticker, df, broker_symbols,
+                            now_et, config=None):
+    """S18 position monitor: exit detection, then the profit lock (daily) or
+    the ATR trail (intraday), on fresh 5-minute bars. The daily ATR ratchet
+    for non-profit-lock daily positions needs daily bars and stays on the
+    main cycle. Call with POSITIONS_LOCK held."""
+    state = positions.get(ticker, {})
+    if not state.get("in_position") or df is None or df.empty:
+        return None
+    if config is None:
+        with open(CONFIG_FILE, "r") as f:
+            config = json.load(f)
+    profile_name = config["ticker_profiles"].get(ticker, "Moderate")
+    risk_profile = config["risk_profiles"][profile_name]
+    current_price = float(df["close"].dropna().iloc[-1])
+    status = detect_and_handle_exit(broker, positions, ticker, state,
+                                    broker_symbols, now_et)
+    if status:
+        return status
+    ttype = position_mgmt.trailing_type_for(state, risk_profile)
+    if ttype == position_mgmt.PROFIT_LOCK:
+        position_mgmt.maybe_lock_profit(
+            broker, positions, ticker, state, df, risk_profile, current_price,
+            now_utc=now_et.astimezone(pytz.utc),
+            interval_minutes=config.get("interval", 5),
+            persist=write_positions, journal_raise=journal_stop_raise(state))
+    elif state.get("timeframe") != "daily":
+        position_mgmt.maybe_ratchet_stop(broker, positions, ticker, state, df,
+                                         risk_profile, current_price,
+                                         persist=write_positions)
+    return None
+
+
 def live_bot_worker():
     """SUPERVISOR — the cycle loop must never die silently.
 
@@ -517,6 +587,27 @@ def _worker_loop():
         logger.warning(f"Universe refresh failed — falling back to configured tickers: {e}")
 
     logger.info("Live bot worker started against Alpaca PAPER account.")
+
+    # S18: the position monitor - exits and the profit lock every 60 s,
+    # independent of the full scan cycle. It stops with this loop (the
+    # event below) or when the lock file goes.
+    import position_monitor
+    monitor_stop = threading.Event()
+    position_monitor.start_monitor_thread(
+        broker=broker, positions=positions, lock=POSITIONS_LOCK,
+        manage=monitor_manage_position,
+        should_run=lambda: (not monitor_stop.is_set()
+                            and os.path.exists(LOCK_FILE)),
+        now_et_fn=lambda: datetime.now(EASTERN_TZ))
+    logger.info("Position monitor started (every "
+                f"{position_monitor.MONITOR_INTERVAL_SECS}s, 09:30-16:00 ET).")
+    try:
+        _cycle_loop(broker, positions)
+    finally:
+        monitor_stop.set()
+
+
+def _cycle_loop(broker, positions):
 
     # Ollama must be UP before the first gatekeeper call: 27 of 30 shadow
     # failures were connection-refused in the session's first hour, i.e. the
@@ -790,118 +881,110 @@ def _worker_loop():
             risk_profile = config['risk_profiles'][profile_name]
 
             # =================== MANAGE OPEN POSITION ===================
+            # S18: held under POSITIONS_LOCK, with the state re-read inside
+            # it - the position monitor may have exited it or raised its
+            # stop since this cycle started.
             if state.get("in_position"):
-                try:
-                    # 1) Did a bracket exit leg fill? (stops live AT THE BROKER)
-                    fill_price, reason, exit_order_id = detect_filled_exit(broker, ticker, state)
-                    if fill_price is None and broker_symbols is not None \
-                            and ticker not in broker_symbols:
-                        # Position gone but no tracked leg marked filled.
-                        # NEVER journal a phantom at last price — resolve the
-                        # real fill, or clear state and let sync() journal it.
-                        fill_price, reason, exit_order_id = resolve_exit_fill(broker, ticker)
-                        if fill_price is None:
-                            logger.warning(f"{ticker}: position gone, fill unresolved — "
-                                           "state cleared; sync() will journal the real fill.")
-                            positions[ticker] = {"in_position": False}
-                            status_updates.append(f"{ticker}: Exited (fill pending sync)")
-                            continue
-                    if fill_price is not None:
-                        handle_position_exit(broker, positions, ticker, state,
-                                             fill_price, reason, now_et,
-                                             broker_order_id=exit_order_id)
-                        status_updates.append(f"{ticker}: SOLD ({reason})")
+                with POSITIONS_LOCK:
+                    state = positions.get(ticker, {})
+                    if not state.get("in_position"):
+                        status_updates.append(f"{ticker}: Exited (by monitor)")
                         continue
+                    try:
+                        # 1) Did a bracket exit leg fill? (stops live AT THE BROKER)
+                        exit_status = detect_and_handle_exit(
+                            broker, positions, ticker, state, broker_symbols, now_et)
+                        if exit_status:
+                            status_updates.append(exit_status)
+                            continue
 
-                    # 2) Hard exit date (event_flow positions from order sheets)
-                    hard_exit = state.get("hard_exit_date")
-                    if hard_exit:
-                        exit_date = datetime.strptime(hard_exit, "%Y-%m-%d").date()
-                        past_date = now_et.date() > exit_date
-                        at_close = (now_et.date() == exit_date
-                                    and now_et.time() >= dttime(15, 55))
-                        if past_date or at_close:
+                        # 2) Hard exit date (event_flow positions from order sheets)
+                        hard_exit = state.get("hard_exit_date")
+                        if hard_exit:
+                            exit_date = datetime.strptime(hard_exit, "%Y-%m-%d").date()
+                            past_date = now_et.date() > exit_date
+                            at_close = (now_et.date() == exit_date
+                                        and now_et.time() >= dttime(15, 55))
+                            if past_date or at_close:
+                                close_order = broker.close_position(ticker)
+                                exit_px, _ = confirm_fill(broker, close_order,
+                                                          current_price)
+                                handle_position_exit(broker, positions, ticker, state,
+                                                     exit_px, "Hard Exit Date", now_et,
+                                                     broker_order_id=str(getattr(close_order, "id", "")) or None)
+                                status_updates.append(f"{ticker}: CLOSED (hard exit date)")
+                                continue
+
+                        # 3) Manual override
+                        manual_sell_command_file = f"sell_{ticker}.command"
+                        if os.path.exists(manual_sell_command_file):
+                            os.remove(manual_sell_command_file)
                             close_order = broker.close_position(ticker)
                             exit_px, _ = confirm_fill(broker, close_order,
                                                       current_price)
                             handle_position_exit(broker, positions, ticker, state,
-                                                 exit_px, "Hard Exit Date", now_et,
+                                                 exit_px, "Manual Override", now_et,
                                                  broker_order_id=str(getattr(close_order, "id", "")) or None)
-                            status_updates.append(f"{ticker}: CLOSED (hard exit date)")
+                            status_updates.append(f"{ticker}: SOLD (manual)")
                             continue
 
-                    # 3) Manual override
-                    manual_sell_command_file = f"sell_{ticker}.command"
-                    if os.path.exists(manual_sell_command_file):
-                        os.remove(manual_sell_command_file)
-                        close_order = broker.close_position(ticker)
-                        exit_px, _ = confirm_fill(broker, close_order,
-                                                  current_price)
-                        handle_position_exit(broker, positions, ticker, state,
-                                             exit_px, "Manual Override", now_et,
-                                             broker_order_id=str(getattr(close_order, "id", "")) or None)
-                        status_updates.append(f"{ticker}: SOLD (manual)")
-                        continue
+                        # 4) Trailing stop: BOT positions only, and only past
+                        # +1R (the structural stop stands until then). Daily
+                        # setups trail on DAILY bars — trailing a daily
+                        # structure with 5-min ATR is what killed NOK.
+                        #
+                        # W7 (2026-09-08 incident): when get_daily_bars fails but
+                        # get_bars succeeds — a DNS drop did exactly this at
+                        # 14:42 ET — this block used to FALL BACK to the 5-minute
+                        # frame for a daily position. CRCL and SLB were ratcheted
+                        # with 5-min ATR to inside 1% of price: a daily structure
+                        # on an intraday stop, which is the NOK failure. A missing
+                        # daily frame is now a reason to SKIP the ratchet, never a
+                        # reason to trail on the wrong timeframe. The stop already
+                        # at the broker stands untouched.
+                        # S16 profit lock: a daily position on "profit_lock"
+                        # steps its stop on the last COMPLETED 5-minute close
+                        # (this cycle's `df`), so it needs no daily frame and
+                        # never runs the ATR ratchet below.
+                        if position_mgmt.trailing_type_for(state, risk_profile) \
+                                == position_mgmt.PROFIT_LOCK:
+                            position_mgmt.maybe_lock_profit(
+                                broker, positions, ticker, state, df,
+                                risk_profile, current_price,
+                                now_utc=datetime.now(pytz.utc),
+                                interval_minutes=interval_mins,
+                                persist=write_positions,
+                                journal_raise=journal_stop_raise(state))
+                            trail_df = None
+                        else:
+                            trail_df = df
+                        if trail_df is not None and state.get("timeframe") == "daily":
+                            daily_df_for_trail = daily_bars.get(ticker)
+                            if daily_df_for_trail is None or daily_df_for_trail.empty:
+                                logger.warning(f"{ticker}: daily bars unavailable — "
+                                               f"ratchet skipped")
+                                status_updates.append(
+                                    f"{ticker}: In Pos (ratchet skipped — no daily bars)")
+                                journal_ops_once("daily_bars_unavailable",
+                                                 f"{ticker}: daily frame missing this "
+                                                 f"cycle — trailing ratchet skipped "
+                                                 f"rather than run on 5-minute bars")
+                                continue
+                            trail_df = daily_df_for_trail
+                        if trail_df is not None:
+                            position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
+                                                             state, trail_df, risk_profile,
+                                                             current_price,
+                                                             persist=write_positions)
 
-                    # 4) Trailing stop: BOT positions only, and only past
-                    # +1R (the structural stop stands until then). Daily
-                    # setups trail on DAILY bars — trailing a daily
-                    # structure with 5-min ATR is what killed NOK.
-                    #
-                    # W7 (2026-09-08 incident): when get_daily_bars fails but
-                    # get_bars succeeds — a DNS drop did exactly this at
-                    # 14:42 ET — this block used to FALL BACK to the 5-minute
-                    # frame for a daily position. CRCL and SLB were ratcheted
-                    # with 5-min ATR to inside 1% of price: a daily structure
-                    # on an intraday stop, which is the NOK failure. A missing
-                    # daily frame is now a reason to SKIP the ratchet, never a
-                    # reason to trail on the wrong timeframe. The stop already
-                    # at the broker stands untouched.
-                    # S16 profit lock: a daily position on "profit_lock"
-                    # steps its stop on the last COMPLETED 5-minute close
-                    # (this cycle's `df`), so it needs no daily frame and
-                    # never runs the ATR ratchet below.
-                    if position_mgmt.trailing_type_for(state, risk_profile) \
-                            == position_mgmt.PROFIT_LOCK:
-                        position_mgmt.maybe_lock_profit(
-                            broker, positions, ticker, state, df,
-                            risk_profile, current_price,
-                            now_utc=datetime.now(pytz.utc),
-                            interval_minutes=interval_mins,
-                            persist=write_positions,
-                            journal_raise=lambda t, q, px, why: journal.log_trade(
-                                t, "TIGHTEN_STOP", q, px, reason=why,
-                                decision_id=state.get("decision_id")))
-                        trail_df = None
-                    else:
-                        trail_df = df
-                    if trail_df is not None and state.get("timeframe") == "daily":
-                        daily_df_for_trail = daily_bars.get(ticker)
-                        if daily_df_for_trail is None or daily_df_for_trail.empty:
-                            logger.warning(f"{ticker}: daily bars unavailable — "
-                                           f"ratchet skipped")
-                            status_updates.append(
-                                f"{ticker}: In Pos (ratchet skipped — no daily bars)")
-                            journal_ops_once("daily_bars_unavailable",
-                                             f"{ticker}: daily frame missing this "
-                                             f"cycle — trailing ratchet skipped "
-                                             f"rather than run on 5-minute bars")
-                            continue
-                        trail_df = daily_df_for_trail
-                    if trail_df is not None:
-                        position_mgmt.maybe_ratchet_stop(broker, positions, ticker,
-                                                         state, trail_df, risk_profile,
-                                                         current_price,
-                                                         persist=write_positions)
-
-                    entry_price = state.get("entry_price", current_price)
-                    pnl_percent = ((current_price / entry_price) - 1) * 100 if entry_price else 0.0
-                    owner = state.get("source", "unknown")
-                    status_updates.append(f"{ticker}: In Pos [{owner}] ({pnl_percent:+.2f}%)")
-                except BrokerError as e:
-                    logger.error(f"{ticker}: broker error managing position: {e}")
-                    status_updates.append(f"{ticker}: In Pos (broker retry)")
-                continue
+                        entry_price = state.get("entry_price", current_price)
+                        pnl_percent = ((current_price / entry_price) - 1) * 100 if entry_price else 0.0
+                        owner = state.get("source", "unknown")
+                        status_updates.append(f"{ticker}: In Pos [{owner}] ({pnl_percent:+.2f}%)")
+                    except BrokerError as e:
+                        logger.error(f"{ticker}: broker error managing position: {e}")
+                        status_updates.append(f"{ticker}: In Pos (broker retry)")
+                    continue
 
             # =================== SCAN FOR NEW ENTRY ===================
             is_primary_trading_hours = not use_time_filter or (
@@ -1282,7 +1365,7 @@ def _worker_loop():
                                          broker_order_id=str(order.id),
                                          risk_pct_actual=risk_pct_actual,
                                          size_mult=size_mult)
-            positions[ticker] = {
+            new_position = {
                 "in_position": True,
                 "source": "bot",   # ownership: the bot manages ONLY its own entries
                 "entry_price": fill_price,
@@ -1315,7 +1398,9 @@ def _worker_loop():
                     signal.extras.get("max_hold_sessions"))
                 if signal.extras.get("max_hold_sessions") else None,
             }
-            write_positions(positions)   # W8: persist the entry immediately
+            with POSITIONS_LOCK:
+                positions[ticker] = new_position
+                write_positions(positions)   # W8: persist the entry immediately
             # Capital persisted on BUY (display cache; broker stays authoritative).
             try:
                 post_buy_equity = broker.get_equity()

@@ -310,6 +310,9 @@ def build_report() -> str:
     except Exception as e:
         lines.append(f"_Unavailable: {e}_")
 
+    # --- S18: owner closes, counted apart from the rule's own exits ---
+    lines += owner_close_section(broker)
+
     # --- size_zero: how often we could not AFFORD a qualifying signal ---
     # Reported monthly per setup, because a setup blocked by the capital cap
     # looks identical to a setup that never fires unless this is separated.
@@ -439,3 +442,68 @@ if __name__ == "__main__":
     report = build_report()
     print(report)
     sys.exit(0 if "Cannot connect" not in report else 1)
+
+
+def owner_close_section(broker, now_et=None) -> list:
+    """Positions the owner closed by hand (`orders.py close`), with what the
+    rule would have done by the next session close: the position's stop,
+    target and profit lock replayed on 5-minute bars from the close."""
+    import owner_close
+    import pandas as pd
+    lines = [chr(10) + "## Owner closes"]
+    try:
+        rows = journal.owner_closes()
+    except Exception as e:
+        return lines + [f"_Unavailable: {e}_"]
+    if not rows:
+        return lines + ["_None._"]
+    now_et = now_et or pd.Timestamp.now(tz="America/New_York")
+    table, actual_total, rule_total, compared = [], 0.0, 0.0, 0
+    actual_compared = 0.0
+    for r in rows:
+        actual = float(r.get("pnl_usd") or 0.0)
+        actual_total += actual
+        filled = pd.Timestamp(r["filled_at"]).tz_localize("America/New_York")
+        rule_px, rule_how = None, "unavailable"
+        try:
+            days = max(3, (now_et - filled).days + 3)
+            bars = broker.get_bars([r["ticker"]], timeframe_minutes=5,
+                                   lookback_days=min(days, 60)).get(r["ticker"])
+            if bars is not None and not bars.empty:
+                idx = pd.DatetimeIndex(bars.index)
+                bars = bars.set_axis(idx.tz_convert("America/New_York")
+                                     if idx.tz is not None
+                                     else idx.tz_localize("America/New_York"))
+                rule_px, rule_how = owner_close.rule_outcome(
+                    bars, filled, r["entry_price"], r["stop"], r["target"],
+                    r["original_stop"], r["profit_lock"])
+        except Exception as e:
+            rule_how = f"unavailable ({type(e).__name__})"
+        if rule_px is not None and r.get("entry_price"):
+            rule_pnl = (rule_px - float(r["entry_price"])) * float(r["qty"])
+            rule_total += rule_pnl
+            actual_compared += actual
+            compared += 1
+            rule_cell = f"${rule_pnl:+.2f} ({rule_how} @ {rule_px:.2f})"
+            diff_cell = f"${actual - rule_pnl:+.2f}"
+        else:
+            rule_cell, diff_cell = rule_how, "—"
+        table.append(f"| {r['filled_at'][:16]} | {r['ticker']} | {r['qty']:g} "
+                     f"| {r['fill_price']:.2f} | ${actual:+.2f} | {rule_cell} "
+                     f"| {diff_cell} |")
+    lines.append(f"**{len(rows)} owner close(s), total P&L ${actual_total:+.2f}.**"
+                 + (f" The rule, kept to the next session close, would have made "
+                    f"${rule_total:+.2f} on the {compared} that can be compared "
+                    f"- owner vs rule ${actual_compared - rule_total:+.2f}."
+                    if compared else ""))
+    lines.append("")
+    lines.append("| Closed (ET) | Ticker | Qty | Fill | Owner P&L "
+                 "| Rule by next session close | Owner vs rule |")
+    lines.append("|---|---|---|---|---|---|---|")
+    lines += table
+    lines.append("_Counted apart from the rule's exits. 'Rule' = the "
+                 "position's stop, target and profit lock replayed on "
+                 "5-minute bars from the close to the next 16:00 ET close; "
+                 "'pending' until that close has happened._")
+    return lines
+

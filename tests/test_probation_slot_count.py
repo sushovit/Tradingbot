@@ -240,7 +240,8 @@ def test_the_pass_reason_names_the_counted_positions():
 
 def test_the_entry_record_stores_the_prompt_version():
     src = _worker_src()
-    record = src[src.index("positions[ticker] = {\n                \"in_position\": True,"):]
+    # S18: the record is built as new_position, then assigned under the lock.
+    record = src[src.index("new_position = {\n                \"in_position\": True,"):]
     record = record[:record.index("write_positions(positions)")]
     assert '"prompt_version": prompt_version,' in record
     # Set from the verdict, null on the rules-only path.

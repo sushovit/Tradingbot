@@ -299,15 +299,24 @@ def test_intraday_still_ratchets_with_atr_and_the_floor():
 # ================================================== wiring and prompt
 
 def test_the_worker_routes_daily_profit_lock_through_maybe_lock_profit():
+    """Both callers - the main cycle and the S18 monitor - route a daily
+    profit_lock position through maybe_lock_profit, persist immediately and
+    journal each raise as TIGHTEN_STOP via journal_stop_raise."""
     with open("streamlit_app.py", encoding="utf-8") as f:
         src = f.read()
-    idx = src.index("position_mgmt.maybe_lock_profit(")
-    block = src[idx - 400:idx + 900]
-    assert "== position_mgmt.PROFIT_LOCK" in block
-    assert "persist=write_positions" in block
-    assert '"TIGHTEN_STOP"' in block
-    assert "interval_minutes=interval_mins" in block
-    assert "trail_df = None" in block      # no ATR ratchet on this path
+    helper = src[src.index("def journal_stop_raise("):][:300]
+    assert '"TIGHTEN_STOP"' in helper
+    starts = [i for i in range(len(src))
+              if src.startswith("position_mgmt.maybe_lock_profit(", i)]
+    assert len(starts) == 2
+    for idx in starts:
+        block = src[idx - 400:idx + 700]
+        assert "== position_mgmt.PROFIT_LOCK" in block
+        assert "persist=write_positions" in block
+        assert "journal_raise=journal_stop_raise(state)" in block
+    main = src[starts[-1] - 400:starts[-1] + 700]
+    assert "interval_minutes=interval_mins" in main
+    assert "trail_df = None" in main       # no ATR ratchet on this path
 
 
 def test_the_review_prompt_states_the_new_rule():

@@ -155,6 +155,23 @@ setup overnight. Journaled BUYs record the **actual average fill**, not the
 sheet's reference price; `sync` corrects any that were journaled before the
 fill confirmed.
 
+### Owner close (S18)
+
+```bash
+venv/bin/python orders.py close <TICKER>
+```
+
+Closes an open **bot** position by hand: cancels its bracket legs, market-sells
+the full broker quantity, waits for the fill, and journals the SELL as
+`Owner close` at the real fill price and time. It refuses a ticker that is not
+an open bot position or not held at the broker. The report counts owner closes
+separately and compares each with what the rule (stop, target, profit lock)
+would have done by the next session close.
+
+The worker also runs a **position monitor** every 60 s from 09:30 to 16:00 ET.
+It only manages open positions (exit detection, profit lock, intraday trail);
+scanning and entries stay on the main cycle.
+
 ### Exit reconciliation
 
 ```powershell

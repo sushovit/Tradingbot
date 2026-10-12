@@ -752,12 +752,36 @@ def main():
                           help="With --dry-run: validate offline against this "
                                "equity instead of contacting the broker")
     sub.add_parser("sync", help="Reconcile broker SELL fills into the journal")
+    p_close = sub.add_parser(
+        "close", help="Owner close: cancel the legs, market-sell the full "
+                      "qty of an open BOT position, journal 'Owner close'")
+    p_close.add_argument("ticker")
     args = parser.parse_args()
     if args.command == "ingest":
         sys.exit(ingest(args.sheet, dry_run=args.dry_run,
                         equity_override=args.equity))
     if args.command == "sync":
         sys.exit(sync())
+    if args.command == "close":
+        sys.exit(owner_close_cli(args.ticker))
+
+
+def owner_close_cli(ticker: str, broker=None) -> int:
+    """S18. Exit 0 on a journaled close, 1 if refused or unconfirmed."""
+    import owner_close
+    from broker import Broker, BrokerError
+    try:
+        if broker is None:
+            broker = Broker()
+        journal.init_db()
+        owner_close.close_bot_position(ticker, broker)
+        return 0
+    except owner_close.OwnerCloseRefused as e:
+        print(f"NOT CLOSED: {e}")
+        return 1
+    except BrokerError as e:
+        print(f"NOT CLOSED: broker error: {e}")
+        return 1
 
 
 if __name__ == "__main__":

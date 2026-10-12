@@ -112,6 +112,24 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS ix_gatekeeper_cache_key
             ON gatekeeper_cache (date, ticker, setup_name, bar_key)
         """)
+        # S18: what the RULE held at the moment the owner closed a position
+        # by hand, so the report can price "what the rule would have done".
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS owner_closes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER,
+                broker_order_id TEXT UNIQUE,
+                ticker TEXT NOT NULL,
+                qty REAL NOT NULL,
+                entry_price REAL,
+                fill_price REAL NOT NULL,
+                filled_at TEXT NOT NULL,
+                stop REAL,
+                target REAL,
+                original_stop REAL,
+                profit_lock TEXT
+            )
+        """)
         # Migration: older DBs may lack the source/agreement columns.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(decisions)")}
         if "source" not in cols:
@@ -997,6 +1015,56 @@ def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
                          sector=sector or entry_sector(ticker, decision_id))
     link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
     return trade_id, pnl_usd, pnl_pct
+
+
+OWNER_CLOSE_REASON = "Owner close"
+
+
+def finalize_owner_close(broker_order_id: str, filled_at_et: str) -> int:
+    """Make the SELL row for an owner close say so, at the real fill time.
+
+    The running worker may journal the same fill first (it sees the
+    position gone and resolves the fill); record_exit's order-id key keeps
+    that to one row, and this rewrites its reason and timestamp. Returns the
+    trade id, or None if no row carries the order id."""
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT id FROM trades WHERE broker_order_id=? "
+                           "AND action='SELL'", (broker_order_id,)).fetchone()
+        if row is None:
+            return None
+        conn.execute("UPDATE trades SET reason=?, timestamp=? WHERE id=?",
+                     (OWNER_CLOSE_REASON, filled_at_et, row["id"]))
+        conn.commit()
+        return int(row["id"])
+
+
+def record_owner_close_context(trade_id, broker_order_id, ticker, qty,
+                               entry_price, fill_price, filled_at_et, stop,
+                               target, original_stop, profit_lock) -> None:
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO owner_closes (trade_id, broker_order_id, "
+            "ticker, qty, entry_price, fill_price, filled_at, stop, target, "
+            "original_stop, profit_lock) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (trade_id, broker_order_id, ticker, qty, entry_price, fill_price,
+             filled_at_et, stop, target, original_stop,
+             json.dumps(profit_lock or [])))
+        conn.commit()
+
+
+def owner_closes(month: str = None) -> list:
+    """Owner closes joined to their SELL rows (P&L), oldest first."""
+    sql = ("SELECT o.*, t.pnl_usd, t.pnl_pct FROM owner_closes o "
+           "LEFT JOIN trades t ON t.id = o.trade_id")
+    args = ()
+    if month:
+        sql += " WHERE o.filled_at LIKE ?"
+        args = (f"{month}%",)
+    with _lock, _connect() as conn:
+        rows = [dict(r) for r in conn.execute(sql + " ORDER BY o.id", args)]
+    for r in rows:
+        r["profit_lock"] = json.loads(r.get("profit_lock") or "[]")
+    return rows
 
 
 def find_buy_without_order_id(ticker: str, qty: float):
