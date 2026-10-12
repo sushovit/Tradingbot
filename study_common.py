@@ -200,7 +200,7 @@ def simulate_exit(df, entry_i, entry, stop, target, mode="static",
     return None, None, "open"
 
 
-def simulate_lock(df, entry_i, entry, stop, target, steps=()):
+def simulate_lock(df, entry_i, entry, stop, target, steps=(), trail_r=None):
     """simulate_exit's fill rules with a STEPPED profit lock (S15).
 
     `steps` is [(trigger_R, stop_R), ...]: once a bar CLOSES at or above
@@ -210,9 +210,15 @@ def simulate_lock(df, entry_i, entry, stop, target, steps=()):
     Returns (exit_price, exit_i, reason, mfe_r), where mfe_r is the highest
     bar HIGH reached up to the exit, in R - the "did it ever get there"
     measure, which a close-based trigger can miss."""
+    # S17 j: `trail_r` - once every step has triggered, also trail at the
+    # highest daily CLOSE since entry minus trail_r*R. `target` None = no
+    # fixed target (the trade runs until the stop takes it).
     risk = entry - stop
     live_stop = stop
     mfe_r = 0.0
+    highest_close = entry
+    target = float("inf") if target is None else target
+    trailing = False
     for i in range(entry_i, len(df)):
         bar = df.iloc[i]
         o, h, l, c = (float(bar["open"]), float(bar["high"]),
@@ -230,25 +236,37 @@ def simulate_lock(df, entry_i, entry, stop, target, steps=()):
         if risk <= 0:
             continue
         close_r = (c - entry) / risk
+        highest_close = max(highest_close, c)
         for trigger_r, stop_r in steps:
             candidate = entry + stop_r * risk
             if close_r >= trigger_r and candidate > live_stop and candidate < c:
                 live_stop = candidate
+        if trail_r is not None and steps and close_r >= steps[-1][0]:
+            trailing = True
+        if trail_r is not None and trailing:
+            candidate = highest_close - trail_r * risk
+            if candidate > live_stop and candidate < c:
+                live_stop = candidate
     return None, None, "open", mfe_r
 
 
-def lock_trades_from(df, symbol, strat_name, signals, steps, target_r=3.0):
-    """trades_from's one-position-per-symbol replay, with simulate_lock."""
+def lock_trades_from(df, symbol, strat_name, signals, steps, target_r=3.0,
+                     trail_r=None):
+    """trades_from's one-position-per-symbol replay, with simulate_lock.
+    target_r None = no fixed target. Trades still open at the data's end are
+    counted in lock_trades_from.still_open and left out."""
     trades, busy_until = [], -1
     for sig in signals:
         i = sig["entry_i"]
         if i <= busy_until:
             continue
         entry, stop = sig["entry"], sig["stop"]
-        target = entry + (entry - stop) * target_r
+        target = None if target_r is None else entry + (entry - stop) * target_r
         exit_price, exit_i, reason, mfe_r = simulate_lock(
-            df, i, entry, stop, target, steps)
+            df, i, entry, stop, target, steps, trail_r)
         if exit_price is None:
+            lock_trades_from.still_open = getattr(
+                lock_trades_from, "still_open", 0) + 1
             break
         busy_until = exit_i
         trades.append({

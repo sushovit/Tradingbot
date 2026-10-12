@@ -14,6 +14,8 @@ lowered):
   f  BE at +1R, then +2R -> +1R
   k  BE at +0.5R (then as b)                                    (S17)
   l  +0.5R -> stop -0.5R, then +1R -> BE                         (S17)
+  j  BE at +1R, then trail at the highest DAILY close - 0.5R;
+     no fixed target                                              (S17)
 
 Fill rules are study_common.simulate_exit's: a bar opening through a level
 fills at the open; a bar spanning both levels hits the STOP first. Target
@@ -37,7 +39,10 @@ VARIANTS = (
     ("f BE at +1R, +2R->+1R", ((1.0, 0.0), (2.0, 1.0))),
     ("k BE at +0.5R", ((0.5, 0.0), (1.0, 0.0))),
     ("l +0.5R->-0.5R, +1R->BE", ((0.5, -0.5), (1.0, 0.0))),
+    ("j BE at +1R, trail high close-0.5R, no target", ((1.0, 0.0),)),
 )
+# Per-variant overrides: label -> (target_r, trail_r). Default (3R, none).
+OVERRIDES = {"j BE at +1R, trail high close-0.5R, no target": (None, 0.5)}
 
 
 def run(years: int = sc.YEARS, setups=SETUPS):
@@ -52,13 +57,20 @@ def run(years: int = sc.YEARS, setups=SETUPS):
                                                profile, config)
             if sigs:
                 signals[symbol] = sigs
-        results[setup] = {
-            label: [t for symbol, sigs in signals.items()
-                    for t in sc.lock_trades_from(bars[symbol], symbol, setup,
-                                                 sigs, steps,
-                                                 target_r=TARGET_R)]
-            for label, steps in VARIANTS}
+        results[setup] = {}
+        for label, steps in VARIANTS:
+            target_r, trail_r = OVERRIDES.get(label, (TARGET_R, None))
+            sc.lock_trades_from.still_open = 0
+            results[setup][label] = [
+                t for symbol, sigs in signals.items()
+                for t in sc.lock_trades_from(bars[symbol], symbol, setup, sigs,
+                                             steps, target_r=target_r,
+                                             trail_r=trail_r)]
+            STILL_OPEN[(setup, label)] = sc.lock_trades_from.still_open
     return results
+
+
+STILL_OPEN = {}
 
 
 def gave_back_pct(trades, reached=1.5):

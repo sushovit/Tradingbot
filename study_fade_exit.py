@@ -22,7 +22,9 @@ VARIANTS (all keep the 3R target):
   m   b, plus the fade exit: once the trade has been >= +0.5R (any bar HIGH),
       exit at the first completed close below the 5-minute EMA20 - filled at
       the NEXT bar's open, the first price a live worker could act on.
-  g, h  pending definition (see VARIANTS).
+  j   BE at +1R, then trail at the highest 5-minute CLOSE since entry minus
+      0.5R; no fixed target (S17).
+  g, h  pending definition.
 """
 
 import argparse
@@ -114,7 +116,25 @@ def _variants():
             [(1.0, lambda entry, risk: entry - 0.5 * risk), (2.0, entry_)], 2.0),
             False),
         "q +1xATR -> BE, trail high-1xATR": (atr_policy(1.0), False),
+        J_LABEL: (close_trail_policy(1.0, 0.5), False),
     }
+
+
+J_LABEL = "j BE at +1R, trail high close-0.5R, no target"
+NO_TARGET = {J_LABEL}
+
+
+def close_trail_policy(be_r, trail_r):
+    """j: once a completed close reaches +be_r R, stop -> entry; from then on
+    also trail at the highest CLOSE since entry minus trail_r R."""
+    def policy(entry, risk, c, hh, atr, mem):
+        mem["hc"] = max(mem.get("hc", entry), c)
+        if (c - entry) / risk >= be_r:
+            mem["armed"] = True
+        if mem.get("armed"):
+            return max(entry, mem["hc"] - trail_r * risk)
+        return None
+    return policy
 
 
 def steps_policy(steps):
@@ -273,7 +293,7 @@ def start_position(df, e):
     return pos if pos < len(df) else None
 
 
-def replay(entries, m5, policy, fade, atr_of=None):
+def replay(entries, m5, policy, fade, atr_of=None, target_r=TARGET_R):
     """One position per (source, symbol) at a time, like the live book."""
     trades = []
     busy = {}
@@ -288,7 +308,8 @@ def replay(entries, m5, policy, fade, atr_of=None):
         key = (e["source"], e["symbol"])
         if key in busy and df.index[pos] <= busy[key]:
             continue
-        target = e["entry"] + (e["entry"] - e["stop"]) * TARGET_R
+        target = (float("inf") if target_r is None
+                  else e["entry"] + (e["entry"] - e["stop"]) * target_r)
         atr = atr_of(e) if atr_of else None
         exit_price, exit_ts, reason, mfe_r, mfe_pct = simulate_5m(
             df, pos, e["entry"], e["stop"], target, policy, fade, atr)
@@ -346,7 +367,8 @@ def run():
     VARIANTS.update(_variants())
     results, still_open = {}, {}
     for label, (policy, fade) in VARIANTS.items():
-        results[label] = replay(entries + live, m5, policy, fade, atr_of)
+        results[label] = replay(entries + live, m5, policy, fade, atr_of,
+                                target_r=None if label in NO_TARGET else TARGET_R)
         still_open[label] = replay.still_open
     run.still_open = still_open
     return results, len(entries), len(live), skipped, symbols

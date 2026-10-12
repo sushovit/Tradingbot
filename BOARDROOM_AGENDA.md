@@ -970,3 +970,46 @@ trades in this window; reclaim, the desk's main setup, 137-192.
 **g and j** (and h, named earlier) are not defined in the repository or in
 this thread; they will be added once specified. No configuration was
 changed.
+
+### j - BE at +1R, then trail at the highest close - 0.5R, no fixed target (S17 addition)
+
+**Daily simulator** (3y, same entries as a-l):
+
+| Setup | Variant | Trades | Win % | Avg R | Expectancy | PF | MaxDD (R) | Hit +1.5R, closed at a loss | Hit +0.5R, closed at a loss |
+|---|---|---|---|---|---|---|---|---|---|
+| momentum_continuation | a static | 373 | 33.2% | 0.324 | +0.324 | 1.45 | 15.73 | 11.5% | 37.8% |
+| momentum_continuation | b BE at +1R | 382 | 27.0% | 0.267 | +0.267 | 1.46 | 22.55 | 5.5% | 27.0% |
+| momentum_continuation | j BE at +1R, trail high close-0.5R, no target | 375 | 46.1% | 0.197 | +0.197 | 1.35 | 18.64 | 4.5% | 26.1% |
+| mean_reversion_reclaim | a static | 1022 | 33.8% | 0.354 | +0.354 | 1.49 | 23.48 | 15.0% | 41.1% |
+| mean_reversion_reclaim | b BE at +1R | 1095 | 27.5% | 0.312 | +0.312 | 1.55 | 20.77 | 4.7% | 28.6% |
+| mean_reversion_reclaim | j BE at +1R, trail high close-0.5R, no target | 1145 | 50.0% | 0.26 | +0.260 | 1.47 | 16.72 | 1.8% | 25.0% |
+
+**5-minute replay** (same window and entries as B):
+
+| Entries | Setup | Variant | Trades | Win % | Avg R | Expectancy | PF | MaxDD (R) | Hit +1.5R, closed at a loss | Hit +0.5R, closed at a loss | Was >= +1% up, closed at a loss |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| all | momentum_continuation | b BE at +1R | 34 | 23.5% | 0.155 | +0.155 | 1.27 | 7.2 | 5.9% | 23.5% | 47.1% |
+| all | mean_reversion_reclaim | b BE at +1R | 137 | 26.3% | 0.508 | +0.508 | 2.17 | 6.62 | 1.5% | 19.0% | 27.7% |
+| all | momentum_continuation | m b + fade exit (EMA20, after +0.5R) | 58 | 63.8% | 0.053 | +0.053 | 1.14 | 6.77 | 1.7% | 1.7% | 24.1% |
+| all | mean_reversion_reclaim | m b + fade exit (EMA20, after +0.5R) | 192 | 67.7% | 0.112 | +0.112 | 1.38 | 9.03 | 0.0% | 4.7% | 11.5% |
+| all | momentum_continuation | j BE at +1R, trail high close-0.5R, no target | 38 | 42.1% | -0.091 | -0.091 | 0.84 | 10.25 | 5.3% | 23.7% | 47.4% |
+| all | mean_reversion_reclaim | j BE at +1R, trail high close-0.5R, no target | 149 | 57.7% | 0.333 | +0.333 | 1.76 | 6.4 | 0.0% | 15.4% | 24.2% |
+
+Trades still open at the window end (excluded above): b BE at +1R: 3; m b + fade exit (EMA20, after +0.5R): 1; n +1.5% -> BE, trail high-1.5%: 1; o +2% -> BE, trail high-2%: 1; p +1% -> -0.5R, +2% -> BE, trail high-2%: 1; q +1xATR -> BE, trail high-1xATR: 3; j BE at +1R, trail high close-0.5R, no target: 1.
+
+**Note - the daily simulator trails on DAILY closes.** j's trail (and every
+step in the daily table) is decided on a day's close and applied from the
+next day. A live trail recomputed every minute on 1-minute closes follows
+price much more tightly than modelled: it raises the stop sooner and exits
+sooner, so live j would lock more of each move but cut runners shorter than
+these rows show. The 5-minute replay is the nearer model of a live trail.
+
+**Reading.** j does not beat b on expectancy in either model: daily momentum
++0.197R vs +0.267R and reclaim +0.260R vs +0.312R; 5-minute momentum
+-0.091R vs +0.155R and reclaim +0.333R vs +0.508R. It does lift the win rate
+(about 46-58%) and cuts the reclaim give-back (+1.5R then a loss: 1.8% daily,
+0.0% on the 5-minute replay). With no target, j's winners are trail exits;
+the desk's 3R target is what b's expectancy rests on. Without a fixed target
+some trades are still open at the end of the data and are excluded (13
+reclaim and 1 momentum on the daily run; 1 on the 5-minute replay).
+
