@@ -1,0 +1,12 @@
+# Streamlit settings for the dashboard (`streamlit run streamlit_app.py`).
+#
+# The repo has its own watchdog.py (the desk's restart watchdog). Streamlit's
+# default file watcher imports the third-party `watchdog` package, and when
+# the dashboard is launched from this folder Python finds OUR watchdog.py
+# instead - every browser connection then fails with
+#   ImportError: cannot import name 'events' from 'watchdog'
+# and the page never loads. The watcher only auto-reloads the page when code
+# is edited, so it is switched off. The trading worker is unaffected: it runs
+# via run_worker.py, not streamlit run.
+[server]
+fileWatcherType = "none"
