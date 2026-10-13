@@ -1,0 +1,203 @@
+"""
+trade_alerts.py — S19. One Discord embed per fill. Reporting only.
+
+  BUY  (green): qty, fill, time (ET + Nepal), target, stop (% from entry),
+       setup, conviction, $ at risk.
+  SELL (green win / red loss): qty, fill, time, P&L $ and %, R, exit reason,
+       holding time, % of the way from entry to target.
+
+post() never blocks the trading loop: the webhook call runs on a daemon
+thread and every failure is caught and logged. Alerts are on unless
+bot_config.json sets "discord": {"trade_alerts": false}.
+"""
+
+import json
+import logging
+import os
+import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
+
+ET = ZoneInfo("America/New_York")
+NEPAL = ZoneInfo("Asia/Kathmandu")
+GREEN, RED = 0x2ECC71, 0xE74C3C
+CONFIG_FILE = "bot_config.json"
+
+
+# ============================================================ config
+
+def enabled(key: str = "trade_alerts", config: dict = None) -> bool:
+    if config is None:
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            config = {}
+    return bool(((config or {}).get("discord") or {}).get(key, True))
+
+
+# ============================================================ formatting
+
+def two_zone(ts: datetime) -> str:
+    ts = ts if ts.tzinfo else ts.replace(tzinfo=ET)
+    return (f"{ts.astimezone(ET):%Y-%m-%d %H:%M} ET / "
+            f"{ts.astimezone(NEPAL):%H:%M} Nepal")
+
+
+def _price(x: float) -> str:
+    """A fill as it happened: 2 decimals at least, up to 4 (202.815 stays
+    202.815 - :.2f would round the float down to 202.81)."""
+    text = f"{x:,.4f}".rstrip("0")
+    whole, _, frac = text.partition(".")
+    return f"${whole}.{frac.ljust(2, '0')}"
+
+
+def _money(x: float) -> str:
+    return f"{'-' if x < 0 else '+'}${abs(x):,.2f}"
+
+
+def holding_time(start: datetime, end: datetime) -> str:
+    secs = max(0, (end - start).total_seconds())
+    days, rem = divmod(int(secs), 86400)
+    hours, rem = divmod(rem, 3600)
+    return f"{days}d {hours}h" if days else f"{hours}h {rem // 60}m"
+
+
+def buy_embed(ticker, qty, fill, ts, target=None, stop=None, setup=None,
+              conviction=None) -> dict:
+    fields = [("Qty", f"{qty:g}"), ("Fill", _price(fill)),
+              ("Time", two_zone(ts))]
+    if target is not None:
+        fields.append(("Target", f"${target:,.2f} "
+                                 f"({(target / fill - 1) * 100:+.1f}%)"))
+    if stop is not None:
+        fields.append(("Stop", f"${stop:,.2f} ({(stop / fill - 1) * 100:+.1f}%)"))
+    fields.append(("Setup", setup or "—"))
+    fields.append(("Conviction", f"{conviction:g}" if conviction is not None
+                   else "rules-only"))
+    if stop is not None and stop < fill:
+        fields.append(("$ at risk", f"${(fill - stop) * qty:,.2f}"))
+    return {"title": f"🟢 BUY {ticker}", "color": GREEN, "fields": fields}
+
+
+def sell_embed(ticker, qty, fill, ts, entry, reason, entry_ts=None,
+               original_stop=None, target=None) -> dict:
+    pnl = (fill - entry) * qty
+    pct = (fill / entry - 1) * 100 if entry else 0.0
+    win = pnl > 0
+    fields = [("Qty", f"{qty:g}"), ("Fill", _price(fill)),
+              ("Time", two_zone(ts)),
+              ("P&L", f"{_money(pnl)} ({pct:+.2f}%)")]
+    if original_stop is not None and entry > original_stop:
+        fields.append(("R", f"{(fill - entry) / (entry - original_stop):+.2f}R"))
+    fields.append(("Exit", reason))
+    if entry_ts is not None:
+        fields.append(("Held", holding_time(entry_ts, ts)))
+    if target is not None and target > entry:
+        fields.append(("Toward target",
+                       f"{(fill - entry) / (target - entry) * 100:.0f}% of the way"))
+    icon = "✅" if win else "🔴"
+    return {"title": f"{icon} SELL {ticker} — {reason}",
+            "color": GREEN if win else RED, "fields": fields}
+
+
+def describe_exit(sell_trade_id: int, state: dict = None) -> dict:
+    """A SELL embed from the journal: the SELL row, its BUY (same
+    decision_id), and the BUY's gatekeeper context for stop and target.
+    `state` (the position record) wins where it knows better: the original
+    stop and the live target."""
+    import journal
+    state = state or {}
+    with journal._lock, journal._connect() as conn:
+        sell = conn.execute("SELECT * FROM trades WHERE id=?",
+                            (sell_trade_id,)).fetchone()
+        buy = conn.execute(
+            "SELECT * FROM trades WHERE action='BUY' AND decision_id=? "
+            "AND id < ? ORDER BY id DESC LIMIT 1",
+            (sell["decision_id"], sell_trade_id)).fetchone() \
+            if sell["decision_id"] is not None else None
+        ctx = {}
+        if sell["decision_id"] is not None:
+            row = conn.execute("SELECT context FROM decisions WHERE id=?",
+                               (sell["decision_id"],)).fetchone()
+            if row and row["context"]:
+                try:
+                    ctx = json.loads(row["context"])
+                except ValueError:
+                    ctx = {}
+    entry = state.get("entry_price") or (buy["price"] if buy else sell["price"])
+    entry_ts = (datetime.fromisoformat(buy["timestamp"]).replace(tzinfo=ET)
+                if buy else None)
+    original = (state.get("original_stop") or state.get("initial_stop")
+                or ctx.get("stop"))
+    target = state.get("profit_target_price") or ctx.get("target")
+    ts = datetime.fromisoformat(sell["timestamp"]).replace(tzinfo=ET)
+    return sell_embed(sell["ticker"], float(sell["qty"]), float(sell["price"]),
+                      ts, float(entry), sell["reason"], entry_ts,
+                      float(original) if original is not None else None,
+                      float(target) if target is not None else None)
+
+
+# ============================================================ sending
+
+def _send(embed: dict, content: str = None, url: str = None):
+    url = (url or os.getenv("DISCORD_WEBHOOK_URL", "")).strip()
+    if not url:
+        return None
+    from discord_webhook import DiscordEmbed, DiscordWebhook
+    wh = DiscordWebhook(url=url, content=content)
+    e = DiscordEmbed(title=embed["title"], color=embed["color"])
+    for name, value in embed["fields"]:
+        e.add_embed_field(name=name, value=str(value))
+    e.set_timestamp()
+    wh.add_embed(e)
+    return wh.execute()
+
+
+def post(embed: dict, config: dict = None, sender=None, wait: bool = False):
+    """Fire-and-forget. Returns the thread (tests join it); never raises."""
+    try:
+        if not enabled("trade_alerts", config):
+            return None
+    except Exception:
+        return None
+    send = sender or _send
+
+    def run():
+        try:
+            send(embed)
+        except Exception as e:
+            logger.warning(f"trade alert failed ({embed.get('title')}): {e}")
+
+    try:
+        t = threading.Thread(target=run, name="trade-alert", daemon=True)
+        t.start()
+        if wait:
+            t.join(timeout=30)
+        return t
+    except Exception as e:
+        logger.warning(f"trade alert could not start: {e}")
+        return None
+
+
+def alert_buy(wait=False, **kwargs):
+    """Call site helper for an entry fill. Never raises."""
+    try:
+        return post(buy_embed(**kwargs), wait=wait)
+    except Exception as e:
+        logger.warning(f"buy alert skipped: {e}")
+        return None
+
+
+def alert_exit(sell_trade_id, state=None, wait=False):
+    """Call site helper for a journaled exit. Never raises. `wait` for a
+    short-lived command, whose daemon thread would die with the process."""
+    try:
+        if sell_trade_id is None:
+            return None
+        return post(describe_exit(sell_trade_id, state), wait=wait)
+    except Exception as e:
+        logger.warning(f"exit alert skipped (trade {sell_trade_id}): {e}")
+        return None

@@ -153,7 +153,43 @@ def main() -> int:
     print(f"Wrote {latest_path} - upload this file.")
     if to_discord:
         post_discord(session_path, latest_path, content)
+        post_day_trades()
     return 0
+
+
+def post_day_trades(day=None, broker=None):
+    """S19: the "Day trades" table (and, on Fridays, the weekly summary) as
+    phone-width code blocks. Reporting only; any failure is printed, never
+    raised - the drop file is already written."""
+    try:
+        import sqlite3
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        import journal
+        import trade_alerts
+        import trade_table
+        if not trade_alerts.enabled("daily_table"):
+            print("(daily trade table disabled in config)")
+            return []
+        if broker is None:
+            try:
+                from broker import Broker
+                broker = Broker()
+            except Exception as e:
+                print(f"(day table: broker unavailable - {e}; open positions "
+                      f"and equity omitted)")
+        day = day or datetime.now(ZoneInfo("America/New_York")).date()
+        conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
+        try:
+            messages = trade_table.build_messages(conn, day, broker)
+        finally:
+            conn.close()
+        statuses = trade_table.post_messages(messages)
+        print(f"Day trades posted: {len(messages)} message(s), HTTP {statuses}")
+        return statuses
+    except Exception as e:
+        print(f"(day trades table failed: {e})")
+        return []
 
 
 if __name__ == "__main__":

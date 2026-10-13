@@ -27,6 +27,7 @@ from claude_integration import (
 # --- Alpaca paper broker, journal, risk rules, strategies, analyst router ---
 import journal
 import prompts
+import trade_alerts
 import risk
 import sectors
 import analyst
@@ -379,7 +380,7 @@ def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
 
     append_trade_log(now_et.strftime('%Y-%m-%d %H:%M:%S'), ticker, "SELL",
                      f"${fill_price:.2f}", qty, pnl_usd, f"{pnl_pct:.2f}%", reason)
-    send_discord_notification(ticker, "SELL", fill_price, reason, pnl_pct)
+    trade_alerts.alert_exit(trade_id, state)        # S19: background, never blocks
     logger.info(f"EXIT {ticker} @ ${fill_price:.2f} ({reason}). PnL: ${pnl_usd:.2f}")
 
 
@@ -1329,8 +1330,10 @@ def _worker_loop():
 
             append_trade_log(now_et.strftime('%Y-%m-%d %H:%M:%S'), ticker, "BUY",
                              f"${fill_price:.2f}", qty, 0.0, "0.00%", signal.setup_name)
-            send_discord_notification(ticker, "BUY", fill_price,
-                                      f"{signal.setup_name}: {signal.reasoning}")
+            trade_alerts.alert_buy(                     # S19: background
+                ticker=ticker, qty=qty, fill=fill_price, ts=now_et,
+                target=signal.target, stop=signal.stop,
+                setup=signal.setup_name, conviction=conviction)
             logger.info(f"BOUGHT {qty} {ticker} @ ${fill_price:.2f} "
                         f"(bracket: stop {signal.stop:.2f} / target {signal.target:.2f})")
             status_updates.append(f"{ticker}: BOUGHT ({signal.setup_name})")

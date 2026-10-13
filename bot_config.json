@@ -1,4 +1,8 @@
 {
+    "discord": {
+        "trade_alerts": true,
+        "daily_table": true
+    },
     "interval": 5,
     "capital_cap_usd": 5000,
     "max_position_pct": 0.25,
