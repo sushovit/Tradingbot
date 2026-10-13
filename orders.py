@@ -415,6 +415,11 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         "setup": order.get("setup", "discretionary"),
         "hard_exit_date": order.get("hard_exit_date"),
     }
+    import trade_alerts                              # S19: CEO entries too
+    trade_alerts.alert_buy(wait=True, ticker=ticker, qty=qty, fill=fill_price,
+                           ts=datetime.now(trade_alerts.ET), target=target,
+                           stop=stop,
+                           setup=f"CEO {order.get('setup', 'discretionary')}")
     return (f"BUY {ticker} [tier {tier}]: bracket submitted — {qty} sh @ "
             f"~${fill_price:.2f}, stop ${stop:.2f}, target ${target:.2f}.")
 
@@ -719,6 +724,9 @@ def sync(broker=None, desk: str = "main") -> int:
                                      reason=reason, decision_id=decision_id,
                                      broker_order_id=oid)
         journal.link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
+        if not is_intern:
+            import trade_alerts                      # S19
+            trade_alerts.alert_exit(trade_id, positions.get(ticker), wait=True)
         if positions.get(ticker, {}).get("in_position"):
             positions[ticker] = {"in_position": False}
         synced += 1

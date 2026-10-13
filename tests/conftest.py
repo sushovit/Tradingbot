@@ -76,6 +76,25 @@ def _isolate_journal_and_data(tmp_path_factory, monkeypatch,
         monkeypatch.setattr(backtest, "DATA_DIR", _session_data_dir)
 
 
+class _NoDiscordResponse:
+    status_code = 204
+
+
+@pytest.fixture(autouse=True)
+def _no_discord(monkeypatch):
+    """No test may post to the real Discord channel. .env supplies a live
+    DISCORD_WEBHOOK_URL, and S19 alerts fire from the order-sheet and sync
+    paths the tests exercise - so blank the URL and stub every webhook send.
+    Tests that check posting patch their own sender on top of this."""
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "")
+    try:
+        import discord_webhook
+        monkeypatch.setattr(discord_webhook.DiscordWebhook, "execute",
+                            lambda self, *a, **k: _NoDiscordResponse())
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def temp_journal(tmp_path, monkeypatch):
     """Point the journal at a throwaway SQLite file."""
