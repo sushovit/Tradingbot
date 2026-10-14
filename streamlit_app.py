@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 import finnhub
 import json
 import math
-from discord_webhook import DiscordEmbed
 
 # --- Import from Claude integration file ---
 from claude_integration import (
@@ -117,25 +116,18 @@ def append_trade_log(timestamp, ticker, action, price, shares, pnl_usd, pnl_pct,
 
 
 def send_discord_notification(ticker, action, price, reason, pnl_pct=None):
-    if not DISCORD_WEBHOOK_URL:
-        return
-    webhook = net.webhook(DISCORD_WEBHOOK_URL)
-    color = "00ff00" if action.upper() == "BUY" else "ff0000"
-    title = f"🚀 BUY Signal: {ticker}" if action.upper() == "BUY" else f"🛑 SELL Signal: {ticker}"
-    
-    embed = DiscordEmbed(title=title, color=color)
-    embed.set_timestamp()
-    embed.add_embed_field(name="Price", value=f"${price:,.2f}")
-    embed.add_embed_field(name="Reason", value=reason)
+    """Operational alert (loop crash, Anthropic down, gatekeeper erroring).
+    S19b: posted by alerts.post_async - this used to block the trading loop
+    (and the crash supervisor) on Discord for up to the webhook timeout."""
+    import alerts
+    title = (f"🚀 BUY Signal: {ticker}" if action.upper() == "BUY"
+             else f"🛑 SELL Signal: {ticker}")
+    fields = [("Price", f"${price:,.2f}"), ("Reason", reason)]
     if pnl_pct is not None:
-        embed.add_embed_field(name="PnL (%)", value=f"{pnl_pct:.2f}%")
-        
-    webhook.add_embed(embed)
-    try:
-        webhook.execute()
-        logger.info("Discord notification sent.")
-    except Exception as e:
-        logger.error(f"Failed to send Discord notification: {e}")
+        fields.append(("PnL (%)", f"{pnl_pct:.2f}%"))
+    alerts.post_async({"title": title,
+                       "color": 0x00FF00 if action.upper() == "BUY" else 0xFF0000,
+                       "fields": fields})
 
 # -----------------------------------------------------------------------------
 # --- LIVE TRADING BOT WORKER (Alpaca paper trading) ---
@@ -511,13 +503,19 @@ def _worker_loop():
     write_positions(positions)
 
     # Refresh the candidate universe once per session start (graceful on failure).
+    startup_checks, startup_config, universe_n = [], {}, None
     try:
         with open(CONFIG_FILE, "r") as f:
             startup_config = json.load(f)
         candidates = universe.refresh(broker, startup_config)
+        universe_n = len(candidates)
         logger.info(f"Universe refreshed: {len(candidates)} candidates.")
+        startup_checks.append(("Universe scan", bool(candidates),
+                               f"{len(candidates)} candidates"))
     except Exception as e:
         logger.warning(f"Universe refresh failed — falling back to configured tickers: {e}")
+        startup_checks.append(("Universe scan", False,
+                               f"failed, configured tickers only: {str(e)[:80]}"))
 
     logger.info("Live bot worker started against Alpaca PAPER account.")
 
@@ -529,6 +527,8 @@ def _worker_loop():
         state = local_analyst.ensure_ollama()
         logger.info(f"Shadow analyst pre-flight: {state['detail']} "
                     f"(started={state['started']}, warmed={state['warmed']})")
+        startup_checks.append(("Shadow analyst", bool(state["up"]),
+                               state["detail"]))
         if not state["up"]:
             journal.log_integrity_event(
                 "shadow_analyst_down",
@@ -536,6 +536,7 @@ def _worker_loop():
                 f"({state['detail']}) — shadow verdicts will be errors")
     except Exception as e:
         logger.warning(f"Ollama pre-flight failed: {e}")
+        startup_checks.append(("Shadow analyst", False, str(e)[:80]))
 
     # Anthropic must be reachable before the first gatekeeper call. 2026-09-08:
     # credits ran out at 09:36 ET and four signals (FCX, XOM, SMCI, BE) got
@@ -545,6 +546,10 @@ def _worker_loop():
     try:
         import claude_integration as _ci
         preflight = _ci.credit_preflight()
+        startup_checks.append((
+            "Gatekeeper (Anthropic)", bool(preflight["ok"]),
+            "credits available" if preflight["ok"]
+            else f"{preflight['reason']}: {str(preflight['detail'])[:80]}"))
         if preflight["ok"]:
             logger.info("Anthropic pre-flight: credits available")
         else:
@@ -568,15 +573,20 @@ def _worker_loop():
                     pass
     except Exception as e:
         logger.warning(f"Anthropic pre-flight could not run: {e}")
-
+        startup_checks.append(("Gatekeeper (Anthropic)", False,
+                               f"pre-flight could not run: {str(e)[:80]}"))
 
     # Hold off system sleep for the session: on 2026-08-31 the machine slept
     # at 12:36 ET and the frozen worker looked exactly like a hang.
     if session_clock.keep_awake(True):
         logger.info("Sleep suppression enabled for the trading session.")
+        startup_checks.append(("Sleep suppression", True, "on"))
     else:
         logger.warning("Could not suppress system sleep — a machine sleep will "
                        "freeze this worker mid-session.")
+        startup_checks.append(("Sleep suppression", False,
+                               "off - a machine sleep will freeze the worker"))
+
 
     last_cycle_wallclock = 0.0     # suspend detection (machine sleep)
     cycle_count = 0                # liveness counter (status line, NOT the journal)
@@ -588,6 +598,8 @@ def _worker_loop():
     gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
                                    # never re-ask about the same signal bar (launch sessions
                                    # burned 60+ Claude calls re-asking about one XOM bar)
+
+    desk_up_sent = False           # S19b: "Desk up" once per worker start
 
     while os.path.exists(LOCK_FILE):
         cycle_count += 1
@@ -1344,6 +1356,24 @@ def _worker_loop():
         breaker_note = " | ⛔ CIRCUIT BREAKER ACTIVE" if breaker_tripped else ""
         write_status(f"Cycle #{cycle_count} | Monitoring Live (Alpaca paper): "
                      + " | ".join(status_updates) + breaker_note)
+        if not desk_up_sent:
+            # S19b: after the FIRST completed cycle, from values this cycle
+            # already holds - no broker read, and alerts.post_async never
+            # blocks the loop.
+            desk_up_sent = True
+            try:
+                trade_alerts.alert_startup(
+                    ts=now_et, pid=os.getpid(), cycle=cycle_count,
+                    equity=equity,
+                    positions=sorted(t for t, st_ in positions.items()
+                                     if st_.get("in_position")),
+                    universe_n=universe_n,
+                    regime=("chop" if spy_regime and not spy_regime.get("trending")
+                            else "trending" if spy_regime else "unknown"),
+                    checks=[("Broker", True, "Alpaca PAPER - cycle completed")]
+                    + startup_checks)
+            except Exception as e:          # an alert never costs a cycle
+                logger.warning(f"Desk up alert skipped: {e}")
         a_time.sleep(30)
 
     logger.info("Bot worker thread has been stopped.")

@@ -45,10 +45,10 @@ def test_in_worker_reads_the_marker(monkeypatch):
 
 
 def test_the_order_path_has_no_alert_wait():
+    """CEO audit B, as amended by S19b: alerts on the order path are
+    async (post_async) - none may wait or join."""
     src = open(os.path.join(ROOT, "orders.py"), encoding="utf-8").read()
-    start = src.index("def execute_order(")
-    close_branch = src[start:src.index('if action in ("SET_STOP"', start)]
-    assert "trade_alerts" not in close_branch
+    assert "wait=" not in src
 
 
 # ================================================== C: catch-up grading
