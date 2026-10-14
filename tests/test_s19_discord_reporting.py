@@ -84,14 +84,13 @@ def test_describe_exit_reads_the_journal(temp_journal):
     assert f["Toward target"] == "32% of the way"
 
 
-def test_a_ceo_close_sends_no_alert_from_the_order_path(temp_journal,
-                                                       monkeypatch):
-    """CEO 2026-10-14 (audit B): execute_order must not wait on Discord -
-    a blocking alert there delays the next order on the sheet."""
+def test_a_ceo_close_alerts_without_waiting(temp_journal, monkeypatch):
+    """S19b: CEO closes alert again - via post_async, never waited on
+    (the hung-Discord timing test lives in test_s19b_async_discord)."""
     import orders
-    sent = []
+    calls = []
     monkeypatch.setattr(ta, "alert_exit",
-                        lambda *a, **k: sent.append(a))
+                        lambda *a, **k: calls.append((a, k)))
     did = temp_journal.log_decision("PLTR", "ceo", {"stop": 195.0}, {})
     temp_journal.log_trade("PLTR", "BUY", 2, 202.8, reason="CEO x",
                            decision_id=did)
@@ -105,9 +104,12 @@ def test_a_ceo_close_sends_no_alert_from_the_order_path(temp_journal,
 
     positions = {"PLTR": {"in_position": True, "entry_price": 202.8,
                           "shares_held": 2, "decision_id": did}}
-    result = orders.execute_order({"action": "CLOSE", "ticker": "PLTR"},
-                                  Broker(), did, positions)
-    assert "closed" in result and sent == []
+    orders.execute_order({"action": "CLOSE", "ticker": "PLTR"}, Broker(),
+                         did, positions)
+    assert len(calls) == 1 and calls[0][1] == {}      # no wait= kwarg
+    orders.execute_order({"action": "CLOSE", "ticker": "PLTR"}, Broker(),
+                         did, positions)               # already journaled
+    assert len(calls) == 1
 
 
 # ================================================== never blocks, never raises
@@ -130,17 +132,23 @@ def test_post_returns_immediately_while_the_send_is_slow():
 
 
 def test_alert_helpers_swallow_their_own_errors(monkeypatch):
+    """S19b: the message is built on the background thread, so a bad row
+    fails THERE - the caller gets its thread back and nothing raises."""
     monkeypatch.setattr(ta, "describe_exit",
                         lambda *a: (_ for _ in ()).throw(ValueError("bad row")))
-    assert ta.alert_exit(123) is None
-    assert ta.alert_buy(ticker="X") is None       # missing fields: no raise
+    sent = []
+    monkeypatch.setattr(ta, "_send", lambda embed: sent.append(embed))
+    ta.alert_exit(123).join(2)
+    ta.alert_buy(ticker="X").join(2)          # missing fields: no raise
+    assert sent == [] and ta.alert_exit(None) is None
 
 
 def test_alerts_respect_the_config_switch():
     sent = []
-    assert ta.post(ta.buy_embed("X", 1, 10.0, TS),
-                   config={"discord": {"trade_alerts": False}},
-                   sender=sent.append) is None
+    t = ta.post(ta.buy_embed("X", 1, 10.0, TS),
+                config={"discord": {"trade_alerts": False}},
+                sender=sent.append)
+    t.join(2)
     assert sent == []
 
 
@@ -345,24 +353,25 @@ def test_a_failed_preflight_turns_the_up_message_amber():
 def test_startup_alert_has_its_own_switch_and_never_raises(monkeypatch):
     sent = []
     monkeypatch.setattr(ta, "_send", lambda embed: sent.append(embed))
-    t = ta.post(ta.startup_embed(TS, 1), config={"discord": {"startup": False}},
-                key="startup")
-    assert t is None and sent == []
-    t = ta.post(ta.startup_embed(TS, 1),
-                config={"discord": {"trade_alerts": False}}, key="startup")
-    t.join(5)
+    ta.post(ta.startup_embed(TS, 1), config={"discord": {"startup": False}},
+            key="startup").join(2)
+    assert sent == []
+    ta.post(ta.startup_embed(TS, 1),
+            config={"discord": {"trade_alerts": False}}, key="startup").join(2)
     assert len(sent) == 1                  # fills off does not silence UP
-    assert ta.alert_startup(ts="not a datetime", pid=1) is None
+    ta.alert_startup(ts="not a datetime", pid=1).join(2)   # fails off-thread
+    assert len(sent) == 1
 
 
-def test_the_worker_loop_makes_no_startup_alert_call():
-    """CEO 2026-10-14 (audit B): the "Desk up" hook did a synchronous broker
-    read before the trading loop; it was reverted. Re-adding it needs an
-    approved merge, and this test failing is the reminder."""
+def test_desk_up_is_sent_from_inside_the_loop_only():
+    """S19b: "Desk up" comes from the loop after the first completed cycle -
+    never from the start-up path before it (CEO audit, 2026-10-14)."""
     with open("streamlit_app.py", encoding="utf-8") as f:
         src = f.read()
-    loop = src[src.index("def _worker_loop():"):src.index("\ndef ", src.index("def _worker_loop():") + 10)]
-    assert "alert_startup" not in loop and "startup_checks" not in loop
+    start = src.index("def _worker_loop():")
+    loop = src.index("    while os.path.exists(LOCK_FILE):\n        cycle_count", start)
+    assert "alert_startup" not in src[start:loop]
+    assert "alert_startup(" in src[loop:src.index("\ndef ", loop)]
 
 
 # ================================================== dashboard: $5,000 account table

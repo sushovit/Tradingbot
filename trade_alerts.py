@@ -10,17 +10,15 @@ trade_alerts.py — S19. One Discord embed per fill. Reporting only.
   UP   (green, amber if a pre-flight failed): the worker finished starting -
        time, PID, capital, open positions, universe, pre-flight results.
 
-post() never blocks the trading loop: the webhook call runs on a daemon
-thread and every failure is caught and logged. Alerts are on unless
+Nothing here blocks a caller: every message is built and sent on a
+background thread by alerts.post_async (S19b), and every failure is
+caught and logged. Alerts are on unless
 bot_config.json sets "discord": {"trade_alerts": false} (fills) or
 {"startup": false} (the UP message).
 """
 
-import net  # S13: timeouts + redaction
 import json
 import logging
-import os
-import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -149,12 +147,16 @@ def describe_exit(sell_trade_id: int, state: dict = None) -> dict:
 
 
 def startup_embed(ts, pid, equity=None, positions=(), universe_n=None,
-                  checks=()) -> dict:
+                  checks=(), regime=None, cycle=None) -> dict:
     """The worker is up. `checks` is [(name, ok, detail)]; any failure turns
     the message amber and lists what failed, so a start that is up but
     degraded never reads as all-clear."""
     failed = [(n, d) for n, ok, d in checks if not ok]
     fields = [("Time", two_zone(ts)), ("PID", str(pid))]
+    if cycle is not None:
+        fields.append(("First cycle", f"#{cycle} completed"))
+    if regime:
+        fields.append(("Regime", regime))
     if equity is not None:
         fields.append(("Capital", f"${equity:,.2f}"))
     fields.append(("Open positions",
@@ -171,73 +173,45 @@ def startup_embed(ts, pid, equity=None, positions=(), universe_n=None,
 
 
 # ============================================================ sending
+# S19b: every send goes through alerts.post_async. The message is BUILT and
+# sent on a background thread - a journal read, the config read, the HTTP
+# call - and no caller ever waits (there is no `wait=` any more).
 
 def _send(embed: dict, content: str = None, url: str = None):
-    url = (url or os.getenv("DISCORD_WEBHOOK_URL", "")).strip()
-    if not url:
-        return None
-    from discord_webhook import DiscordEmbed
-    wh = net.webhook(url, content=content)
-    e = DiscordEmbed(title=embed["title"], color=embed["color"])
-    for name, value in embed["fields"]:
-        e.add_embed_field(name=name, value=str(value))
-    e.set_timestamp()
-    wh.add_embed(e)
-    return wh.execute()
+    import alerts
+    return alerts._send(dict(embed, content=content) if content else embed,
+                        url)
 
 
-def post(embed: dict, config: dict = None, sender=None, wait: bool = False,
-         key: str = "trade_alerts"):
-    """Fire-and-forget. Returns the thread (tests join it); never raises."""
-    try:
-        if not enabled(key, config):
-            return None
-    except Exception:
-        return None
+def post(embed, config: dict = None, sender=None, key: str = "trade_alerts"):
+    """Fire-and-forget. `embed` is a dict or a callable that builds one.
+    Returns the thread (tests may join it); never raises, never blocks."""
+    import alerts
     send = sender or _send
 
-    def run():
-        try:
-            send(embed)
-        except Exception as e:
-            logger.warning(f"trade alert failed ({embed.get('title')}): {e}")
-
-    try:
-        t = threading.Thread(target=run, name="trade-alert", daemon=True)
-        t.start()
-        if wait:
-            t.join(timeout=30)
-        return t
-    except Exception as e:
-        logger.warning(f"trade alert could not start: {e}")
-        return None
-
-
-def alert_buy(wait=False, **kwargs):
-    """Call site helper for an entry fill. Never raises."""
-    try:
-        return post(buy_embed(**kwargs), wait=wait)
-    except Exception as e:
-        logger.warning(f"buy alert skipped: {e}")
-        return None
-
-
-def alert_exit(sell_trade_id, state=None, wait=False):
-    """Call site helper for a journaled exit. Never raises. `wait` for a
-    short-lived command, whose daemon thread would die with the process."""
-    try:
-        if sell_trade_id is None:
+    def build():
+        if not enabled(key, config):
             return None
-        return post(describe_exit(sell_trade_id, state), wait=wait)
-    except Exception as e:
-        logger.warning(f"exit alert skipped (trade {sell_trade_id}): {e}")
-        return None
+        return embed() if callable(embed) else embed
+
+    return alerts.post_async(build, sender=lambda payload, url: send(payload))
 
 
-def alert_startup(wait=False, **kwargs):
-    """Call site helper for a completed worker start. Never raises."""
-    try:
-        return post(startup_embed(**kwargs), wait=wait, key="startup")
-    except Exception as e:
-        logger.warning(f"startup alert skipped: {e}")
+def alert_buy(**kwargs):
+    """Entry fill. Never raises, never blocks."""
+    return post(lambda: buy_embed(**kwargs))
+
+
+def alert_exit(sell_trade_id, state=None):
+    """A journaled exit. The journal read (describe_exit) runs on the
+    background thread, not on the exit path. Never raises, never blocks."""
+    if sell_trade_id is None:
         return None
+    snapshot = dict(state or {})            # the caller may reuse its dict
+    return post(lambda: describe_exit(sell_trade_id, snapshot))
+
+
+def alert_startup(**kwargs):
+    """"Desk up", from the worker loop after its first completed cycle.
+    Never raises, never blocks."""
+    return post(lambda: startup_embed(**kwargs), key="startup")

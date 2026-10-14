@@ -301,6 +301,8 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         positions[ticker] = {"in_position": False}
         if trade_id is None:
             return f"{action} {ticker}: closed (exit already journaled)."
+        import trade_alerts                          # S19b: async, never waits
+        trade_alerts.alert_exit(trade_id, state)
         return f"{action} {ticker}: closed @ ~${price:.2f}."
 
     if action in ("SET_STOP", "TIGHTEN_STOP"):
@@ -416,7 +418,7 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         "hard_exit_date": order.get("hard_exit_date"),
     }
     import trade_alerts                              # S19: CEO entries too
-    trade_alerts.alert_buy(wait=True, ticker=ticker, qty=qty, fill=fill_price,
+    trade_alerts.alert_buy(ticker=ticker, qty=qty, fill=fill_price,  # S19b: async
                            ts=datetime.now(trade_alerts.ET), target=target,
                            stop=stop,
                            setup=f"CEO {order.get('setup', 'discretionary')}")
@@ -726,7 +728,7 @@ def sync(broker=None, desk: str = "main") -> int:
         journal.link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
         if not is_intern:
             import trade_alerts                      # S19
-            trade_alerts.alert_exit(trade_id, positions.get(ticker), wait=True)
+            trade_alerts.alert_exit(trade_id, positions.get(ticker))  # S19b: async
         if positions.get(ticker, {}).get("in_position"):
             positions[ticker] = {"in_position": False}
         synced += 1
