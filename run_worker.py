@@ -13,6 +13,8 @@ SINGLE-INSTANCE ENFORCEMENT (2026-08-10 priority override):
      null-bytes incident of 2026-07-29).
 """
 
+import net  # S13: timeouts + redacted logs for the worker process
+net.install()
 import logging
 import logging.handlers
 import os

@@ -47,7 +47,7 @@ def test_rules_only_buy_says_so():
 
 @pytest.mark.parametrize("reason, fill, win", [
     ("Profit Target", 129.0, True),            # target
-    ("Stop Loss", 100.0, False),               # lock at breakeven: not a win
+    ("Stop Loss", 100.0, None),                # lock at breakeven: grey
     ("Stop Loss", 104.0, True),                # lock above entry
     ("Stop Loss", 95.0, False),                # structural stop
     ("Owner close", 106.0, True),              # owner
@@ -59,8 +59,9 @@ def test_sell_embed_for_each_exit_type(reason, fill, win):
     e = ta.sell_embed("SPCX", 1, fill, TS, entry=100.0, reason=reason,
                       entry_ts=entry_ts, original_stop=95.0, target=115.0)
     f = fields(e)
-    assert e["color"] == (ta.GREEN if win else ta.RED)
-    assert e["title"].startswith("✅" if win else "🔴")
+    color, icon = {True: (ta.GREEN, "✅"), False: (ta.RED, "🔴"),
+                   None: (ta.GREY, "⚪")}[win]
+    assert e["color"] == color and e["title"].startswith(icon)
     assert reason in e["title"] and f["Exit"] == reason
     pnl = fill - 100.0
     assert f["P&L"].startswith(("+$" if pnl >= 0 else "-$") + f"{abs(pnl):,.2f}")
@@ -81,6 +82,33 @@ def test_describe_exit_reads_the_journal(temp_journal):
     assert f["P&L"] == "+$9.16 (+5.94%)"
     assert f["R"] == "+0.93R"
     assert f["Toward target"] == "32% of the way"
+
+
+def test_a_ceo_close_sends_an_exit_alert(temp_journal, monkeypatch):
+    import orders
+    sent = []
+    monkeypatch.setattr(ta, "alert_exit",
+                        lambda tid, state=None, wait=False: sent.append(tid))
+    did = temp_journal.log_decision("PLTR", "ceo", {"stop": 195.0}, {})
+    temp_journal.log_trade("PLTR", "BUY", 2, 202.8, reason="CEO x",
+                           decision_id=did)
+
+    class Broker:
+        def close_position(self, t):
+            return type("O", (), {"id": "close-1"})()
+
+        def get_latest_price(self, t):
+            return 205.3
+
+    positions = {"PLTR": {"in_position": True, "entry_price": 202.8,
+                          "shares_held": 2, "decision_id": did}}
+    orders.execute_order({"action": "CLOSE", "ticker": "PLTR"}, Broker(),
+                         did, positions)
+    assert len(sent) == 1 and sent[0] is not None
+    # a second close of the same order is not re-journaled, so no 2nd alert
+    orders.execute_order({"action": "CLOSE", "ticker": "PLTR"}, Broker(),
+                         did, positions)
+    assert len(sent) == 1
 
 
 # ================================================== never blocks, never raises
@@ -235,3 +263,155 @@ def test_drop_never_fails_because_the_table_did(monkeypatch, capsys):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("db")))
     assert drop.post_day_trades(day=DAY, broker=object()) == []
     assert "day trades table failed" in capsys.readouterr().out
+
+
+# ================================================== partial sells
+
+def with_partial(conn, close=True):
+    """AAA: BUY 4 @ 100 (decision 1), TAKE_PARTIAL 2 @ 110 on 10-13,
+    close 2 @ 104 on 10-14 (unless close=False)."""
+    rows = [("2026-10-13 12:00:00", "SELL", 2, 110.0, 20.0, "CEO TAKE_PARTIAL")]
+    if close:
+        rows.append(("2026-10-14 11:00:00", "SELL", 2, 104.0, 8.0,
+                     "Stop Loss"))
+    for ts, act, q, px, pnl, why in rows:
+        conn.execute("INSERT INTO trades (timestamp,ticker,action,qty,price,"
+                     "pnl_usd,reason,decision_id) VALUES (?,?,?,?,?,?,?,1)",
+                     (ts, "AAA", act, q, px, pnl, why))
+    return conn
+
+
+def test_a_partial_and_its_close_are_one_trade():
+    conn = with_partial(journal_with([("AAA", "2026-10-13 10:00:00", 100.0,
+                                       None, None, None, 4)]))
+    (t,) = tt.load_trades(conn)
+    assert t["qty"] == 4 and t["sell"] == 107.0 and t["pnl"] == 28.0
+    assert t["sell_ts"].startswith("2026-10-14") and t["reason"] == "Stop Loss"
+    lines = tt.day_table([t], DAY)
+    assert sum(l.startswith("AAA") for l in lines) == 1
+    assert "Realized +$28.00" in "\n".join(lines)
+
+
+def test_a_partly_sold_trade_shows_the_sold_part_and_the_rest_open():
+    conn = with_partial(journal_with([("AAA", "2026-10-13 10:00:00", 100.0,
+                                       None, None, None, 4)]), close=False)
+    (t,) = tt.load_trades(conn)
+    assert t["qty"] == 2 and t["sell"] == 110.0 and t["pnl"] == 20.0
+    open_pos = {"AAA": {"qty": 2, "entry": 100.0, "unrealized": 6.0}}
+    lines = tt.day_table([t], date(2026, 10, 13), open_pos)
+    rows = [l for l in lines if l.startswith("AAA")]
+    assert len(rows) == 2
+    assert rows[0].rstrip().endswith("part") and rows[1].endswith("open")
+    assert "Realized +$20.00" in "\n".join(lines)
+
+
+def test_a_later_trade_in_the_same_ticker_keeps_its_own_sell():
+    conn = journal_with([
+        ("AAA", "2026-10-13 10:00:00", 100.0, "2026-10-13 11:00:00", 95.0,
+         "Stop Loss", 1),
+        ("AAA", "2026-10-14 10:00:00", 96.0, "2026-10-14 11:00:00", 110.4,
+         "Profit Target", 1)])
+    a, b = tt.load_trades(conn)
+    assert (a["sell"], a["reason"]) == (95.0, "Stop Loss")
+    assert (b["sell"], b["reason"]) == (110.4, "Profit Target")
+
+
+# ================================================== desk up
+
+def test_startup_embed_all_clear_is_green():
+    e = ta.startup_embed(TS, 61090, equity=5000.0, positions=[],
+                         universe_n=162,
+                         checks=[("Broker", True, "Alpaca PAPER connected"),
+                                 ("Gatekeeper (Anthropic)", True,
+                                  "credits available")])
+    f = fields(e)
+    assert e["title"] == "🟢 Desk up" and e["color"] == ta.GREEN
+    assert f["Time"] == "2026-10-09 11:28 ET / 21:13 Nepal"
+    assert f["PID"] == "61090" and f["Capital"] == "$5,000.00"
+    assert f["Open positions"] == "none" and f["Universe"] == "162 names"
+    assert f["Gatekeeper (Anthropic)"] == "✅ credits available"
+
+
+def test_a_failed_preflight_turns_the_up_message_amber():
+    e = ta.startup_embed(TS, 1, positions=["PLTR", "SPCX"],
+                         checks=[("Broker", True, "ok"),
+                                 ("Gatekeeper (Anthropic)", False,
+                                  "billing: no credits")])
+    f = fields(e)
+    assert e["color"] == ta.AMBER and "1 pre-flight problem" in e["title"]
+    assert f["Gatekeeper (Anthropic)"] == "⚠️ billing: no credits"
+    assert f["Open positions"] == "PLTR, SPCX" and "Capital" not in f
+
+
+def test_startup_alert_has_its_own_switch_and_never_raises(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ta, "_send", lambda embed: sent.append(embed))
+    t = ta.post(ta.startup_embed(TS, 1), config={"discord": {"startup": False}},
+                key="startup")
+    assert t is None and sent == []
+    t = ta.post(ta.startup_embed(TS, 1),
+                config={"discord": {"trade_alerts": False}}, key="startup")
+    t.join(5)
+    assert len(sent) == 1                  # fills off does not silence UP
+    assert ta.alert_startup(ts="not a datetime", pid=1) is None
+
+
+def test_the_worker_announces_itself_only_inside_the_session():
+    with open("streamlit_app.py", encoding="utf-8") as f:
+        src = f.read()
+    hook = src.index("trade_alerts.alert_startup(")
+    assert "session_clock.session_over(startup_config)" in src[hook - 400:hook]
+    # after every pre-flight, before the loop starts
+    assert src.index("credit_preflight()") < hook
+    assert src.index("keep_awake(True)") < hook
+    assert hook < src.index("while os.path.exists(LOCK_FILE):\n        cycle_count")
+
+
+# ================================================== dashboard: $5,000 account table
+
+def test_dashboard_table_is_the_5k_account_from_the_journal():
+    conn = journal_with([
+        # retired account, before the 12:47 takeover: excluded
+        ("SWKS", "2026-09-11 09:40:00", 89.86, "2026-10-09 09:41:00", 74.63,
+         "Stop Loss", 1),
+        ("PLTR", "2026-10-09 09:32:00", 202.815, "2026-10-09 11:28:00",
+         205.26, "Exit (synced)", 2),
+        # $5,000 account
+        ("AMD", "2026-10-13 09:31:00", 100.0, "2026-10-14 10:00:00", 115.0,
+         "Profit Target", 3),                        # target
+        ("ON", "2026-10-13 09:33:00", 80.0, "2026-10-13 15:00:00", 78.0,
+         "Stop Loss (synced)", 2),                   # found by sync
+        ("MU", "2026-10-14 09:32:00", 50.0, None, None, None, 10),  # open
+        ("XOM", "2026-10-14 09:40:00", 100.0, "2026-10-14 11:00:00", 101.0,
+         "CEO CLOSE", 1),                            # CEO exit
+    ])
+    conn.execute("INSERT INTO trades (timestamp,ticker,action,qty,price,pnl_usd,"
+                 "reason,decision_id) VALUES ('2026-10-14 09:45:00','F','BUY',"
+                 "5,10.0,0,'INTERN momentum',99)")
+    rows = tt.account_trades(conn, open_positions={"MU": {"unrealized": 12.5}})
+    assert [r["Ticker"] for r in rows] == ["XOM", "MU", "ON", "AMD"]
+    by = {r["Ticker"]: r for r in rows}
+    assert by["AMD"]["Result"] == "target" and by["AMD"]["P&L $"] == 45.0  # 3 sh
+    assert by["AMD"]["P&L %"] == 15.0 and by["AMD"]["Closed (ET)"] == "2026-10-14 10:00"
+    assert by["ON"]["Result"] == "stop" and by["ON"]["P&L $"] == -4.0
+    assert by["MU"]["Result"] == "open" and by["MU"]["Sell"] is None
+    assert by["MU"]["P&L $"] == 12.5 and by["MU"]["P&L %"] == 2.5
+    assert by["XOM"]["Result"] == "exit"
+    assert by["AMD"]["Setup"] == "setup" and by["AMD"]["Target"] == pytest.approx(115.0)
+    s = tt.account_summary(rows, equity=5011.0)
+    assert (s["trades"], s["open"], s["wins"], s["losses"]) == (4, 1, 2, 1)
+    assert s["realized"] == 42.0 and s["change"] == 11.0
+
+
+def test_dashboard_table_marks_a_partly_sold_trade():
+    conn = with_partial(journal_with([("AAA", "2026-10-13 10:00:00", 100.0,
+                                       None, None, None, 4)]), close=False)
+    (r,) = tt.account_trades(conn, open_positions={"AAA": {"unrealized": 6.0}})
+    assert r["Result"] == "part" and r["Sell"] is None and r["P&L $"] == 6.0
+
+
+def test_dashboard_no_longer_reads_live_trades_csv():
+    with open("streamlit_app.py", encoding="utf-8") as f:
+        src = f.read()
+    assert "pd.read_csv(TRADE_LOG_FILE)" not in src
+    assert "trade_table.account_trades(" in src

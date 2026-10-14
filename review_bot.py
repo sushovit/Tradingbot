@@ -17,6 +17,7 @@ Failure mode: API error -> post "review unavailable" to Discord, journal the
 error, exit 0. Max 2 retries, no retry-flood.
 """
 
+import net  # S13: timeouts + redaction
 import json
 import os
 import sys
@@ -581,11 +582,10 @@ def post_discord(content: str, attach_full: str = None, date: str = None):
         print("(no webhook configured)")
         return
     try:
-        from discord_webhook import DiscordWebhook
         long_memo = len(content) > DISCORD_MSG_LIMIT
         body = content if not long_memo else \
             content[:DISCORD_MSG_LIMIT - 60] + "\n... (full memo attached)"
-        wh = DiscordWebhook(url=url, content=body)
+        wh = net.webhook(url, content=body)
         if long_memo and attach_full:
             wh.add_file(file=attach_full.encode("utf-8"),
                         filename=f"review_{date or 'memo'}.md")

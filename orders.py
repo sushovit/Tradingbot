@@ -301,6 +301,8 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         positions[ticker] = {"in_position": False}
         if trade_id is None:
             return f"{action} {ticker}: closed (exit already journaled)."
+        import trade_alerts                          # S19: CEO exits too
+        trade_alerts.alert_exit(trade_id, state, wait=True)
         return f"{action} {ticker}: closed @ ~${price:.2f}."
 
     if action in ("SET_STOP", "TIGHTEN_STOP"):

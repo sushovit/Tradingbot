@@ -12,6 +12,7 @@ and skip the cycle rather than crash the loop.
 Market data uses Alpaca's free IEX feed.
 """
 
+import net  # S13: every Alpaca call gets (5 s connect, 30 s read)
 import os
 import time
 import logging
@@ -38,6 +39,8 @@ from alpaca.data.requests import (StockBarsRequest, MostActivesRequest,
                                   MarketMoversRequest, StockLatestTradeRequest)
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed, MostActivesBy, MarketType
+
+net.install(streams=False)
 
 load_dotenv()
 logger = logging.getLogger(__name__)

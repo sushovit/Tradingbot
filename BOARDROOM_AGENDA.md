@@ -724,3 +724,179 @@ sync` journaled both (rows 39-40); profit lock merged; worker restarted
 once via launchd. The PLTR BUY (row 37) is excluded from the
 mean_reversion_reclaim probation count (`setup_probation.exclude_trade_ids`).
 
+
+---
+
+## 14. Study: trade funnel (S21, 2026-10-13) — study only, nothing ships without a CEO decision
+
+Commissioned as S21. `study_trade_funnel.py` (read-only: journal opened
+read-only, bars fetched from Alpaca market data into the git-ignored
+`data/s21/`, no config, strategy, position or journal writes). Full output:
+`reports/s21_trade_funnel.md`.
+
+**Window:** the 30 NYSE sessions 2026-08-31 .. 2026-10-12. The worker
+journaled on 26 of them; it was **silent on 09-30, 10-01, 10-02 and 10-12**
+(10-12: launchd started it ~12 times; DNS failures, then Alpaca
+`unauthorized` on `get_account` after the 10-09 account switch — no cycle
+completed). SPY regime read chop on 14 of 30 sessions.
+
+A **signal** = (ET date, ticker, setup, signal bar), placed at the furthest
+gate it reached, in the live order of `streamlit_app._worker_loop`. Worker
+setups only — CEO order-sheet rows are excluded. A gatekeeper "approval"
+below conviction 70 is counted as the rejection the worker treats it as.
+
+### Funnel
+
+| Stage (live order) | Removed | Alive after |
+|---|---|---|
+| Detected (a trigger fired) | — | 5,314 |
+| Rules filters (detector) | 5,033 | 281 |
+| Circuit breaker | 0 | 281 |
+| Regime: `spy_bearish` (chop, setup not exempt) | 42 | 239 |
+| Entry window: `outside_hours` | 46 | 193 |
+| `max_positions` / `check_signal` | 1 | 192 |
+| **Gatekeeper** (192 asked) | **175** | **17** (9% pass) |
+| Probation: `probation_position_open` | 10 | 7 |
+| Size: `size_zero` / `price_too_high_for_account` | 3 | 4 |
+| Duplicate / bracket failure | 0 | 4 |
+| **Filled** | | **4** (SWKS, SPCX, ON, PLTR) |
+
+Rules-filter detail: `adx_low` 4,220 (all trend_continuation, 5-minute
+crosses), `volume_low` 474, `below_ema9` 148, `rsi_low` 67,
+`gap_below_reclaim_mid` 47, `change_too_small` 43, others 34. Gatekeeper
+detail (bucketed by what the reason cites): RSI 92, ADX 30, conviction <70
+23, resistance 16, volume 9, unstated/other 5. Chop-reclaim exemptions
+(Rule #5) used: 47.
+
+**Every gatekeeper pass is accounted for:** 17 = 10 probation + 3 size + 4
+filled. The 3 size rejections (ARM, NET, SPOT) were at the old account's
+~$1,975 equity — the cap rose to $5,000 on 09-21 but the account held
+~$2,000. **All three are affordable at $5,000**: the size stage disappears
+on the new account.
+
+### Rejections replayed 10 sessions
+
+Geometry from the journal where it exists (gatekeeper, probation, size rows);
+otherwise **rebuilt with the detector's own formula on the same bar** (daily:
+entry ~ the decision session's open, stop/target per setup; trend: 5-minute
+IEX bars, entry at the next bar's open, stop 2.0 x ATR14, 3R). Daily exits
+use today's live rule (bracket + 1R -> breakeven lock); trend uses a static
+bracket. The decision session is bar 1, and a bar spanning both levels is a
+stop. Signals younger than 10 sessions at 10-12 are marked to the last
+close ("unres.").
+
+| Gate | Reason | Replayed | Unres. | Win % | Avg R |
+|---|---|---|---|---|---|
+| rules | adx_low (trend) | 4,195 | 6 | 25% | -0.04 |
+| rules | volume_low | 440 | 24 | 25% | +0.14 |
+| rules | below_ema9 (reclaim) | 138 | 19 | 20% | **-0.41** |
+| rules | rsi_low (trend) | 67 | 1 | 21% | -0.18 |
+| rules | gap_below_reclaim_mid | 36 | 1 | 19% | +0.60 |
+| rules | change_too_small (momentum) | 40 | 6 | 25% | -0.27 |
+| rules | gap_below_signal_mid | 10 | 0 | 10% | -0.40 |
+| regime | spy_bearish | 41 | 0 | 22% | **-0.39** |
+| window | outside_hours | 46 | 5 | 39% | +0.27 |
+| gatekeeper | RSI | 92 | 20 | 41% | +0.18 |
+| gatekeeper | ADX | 30 | 3 | 40% | +0.16 |
+| gatekeeper | conviction < 70 | 23 | 11 | 48% | +0.40 |
+| gatekeeper | resistance (trend) | 16 | 0 | 25% | 0.00 |
+| gatekeeper | volume | 9 | 1 | 56% | +1.22 |
+| post-gate | **probation_position_open** | **10** | 1 | **50%** | **+0.55** |
+| post-gate | size (all 3) | 3 | 1 | 67% | -0.14 |
+| — | the 4 actual fills, same replay | 4 | 1 | 25% | +0.02 |
+
+Not replayable: post-earnings `not_first_close_above` / `no_earnings_event`
+(14; this needs the earnings calendar) and about 85 others whose bars did not
+line up: a daily signal bar that is not the session before the decision, or
+5-minute bars missing for the bar.
+
+Gatekeeper, passes vs rejections, **resolved signals only**: passed 14 —
+43% win, +0.26R; rejected 140 — 32% win, +0.10R. On reclaim alone: passed
+12 at +0.36R, rejected 96 at **+0.18R**. The gatekeeper picks the better
+trades, but the reclaim signals it throws away are still positive on this
+replay.
+
+### Trades per week at $5,000 (capacity simulation, full uptime)
+
+Each simulated session is a resampled real session's stream of
+gatekeeper-passed signals, with their replayed outcome and holding time,
+pushed through probation (one open position per probation setup, counting
+every position — today's rule), `max_positions` 4, one position per ticker,
+and `risk.position_size` at $5,000 / 1% / 25% cap / 0.15 lot tolerance.
+Holding time runs to the end of the data (no time stop, as live). 2,000
+runs.
+
+**Calibration:** the real stream in date order, silent sessions empty, at
+~$1,975 gives **3 fills; the desk made 4.** The difference is SWKS and SPCX,
+which were open at the same time: both pre-date the v5 prompt and have no
+prompt version, so neither held the reclaim slot (`risk.probation_open_tickers`).
+The simulation applies the stricter rule that holds from now on.
+
+| Scenario | Trades / week | 80% range | Win % | Avg R / trade |
+|---|---|---|---|---|
+| (a) current rules at $5,000 | **0.78** | 0.50–1.00 | 39% | +0.18 |
+| (b) watchlist x2 | 1.14 | 0.83–1.50 | 30% | -0.04 |
+| (c) probation `max_concurrent` 2 | **1.21** | 0.83–1.50 | 48% | +0.43 |
+| (d) entry window 09:30–15:30 | 0.88 | 0.50–1.17 | 40% | +0.21 |
+| (e) oversold_bounce lane, chop only | 0.98 | 0.67–1.33 | 40% | +0.33 |
+| (c) + (d) + (e) | 1.53 | 1.17–2.00 | 47% | +0.48 |
+
+- **(b)** draws two real sessions per simulated session. Extra supply mostly
+  meets a full probation slot, so the added fills are the overflow:
+  momentum and late reclaim entries. More trades, lower R.
+- **(d)** adds the 42 replayable `outside_hours` signals from 11:30–14:00 and
+  15:00–15:30, each passing the gatekeeper at its setup's observed rate
+  (reclaim 11%, momentum 11%, trend 0% — the gatekeeper passed no
+  trend_continuation signal in the window).
+- **(e)** `backtest.detect_oversold_bounce` on the 188 tickers the worker
+  scanned, chop sessions only: **15 fires, 53% win, +1.08R before any
+  gatekeeper**, then reclaim's 11% pass rate and its own probation slot.
+  It needs a new `strategies/` module and a "require chop" gate that no
+  config key expresses today (item 11).
+
+**Read the trade counts, not the R columns.** Every R figure in this table
+rests on 17 gatekeeper passes. The ±0.2R gaps between scenarios are inside
+the noise.
+
+### Also found (not asked)
+
+1. **`pullback_in_uptrend` cannot fire live.** It needs 62 daily bars; the
+   worker fetches `lookback_days=60` calendar days (~41 bars,
+   `streamlit_app.py:735`). Zero journal rows ever. It is a probation setup
+   that can never earn its 20 trades.
+2. **Uptime cost more than any scenario gains.** 4 of 30 sessions were
+   silent, and 10-12 failed on auth. At 0.78 trades/week that is about 0.6
+   of a trade lost. Fixing the 10-12 auth failure is an ops task, not a
+   ruling.
+3. The 10 probation blocks include DDOG, LRCX and NET on 09-23. Those were
+   held out by v4 positions under the counting rule that was fixed later.
+
+### Recommendation (PM, for the CEO — nothing ships without a decision)
+
+1. **Ops first, no ruling needed:** get the worker running on the new
+   account's keys, then confirm a full session journals.
+2. **Ratify (c): probation `max_concurrent` 1 -> 2.** It is the largest
+   single lever: 0.78 -> 1.21 trades/week. It frees the constraint that
+   binds the desk's best-replaying population (10 blocks, +0.55R). Cost:
+   while reclaim is 0/20 on probation, two unproven positions can be open
+   at once, and worst-case exposure on the setup doubles to 2% of equity
+   ($100). Daily loss breaker unchanged. Review again at 10 v5 trades.
+3. **Commission, don't ship, (e):** build oversold_bounce as a journal-only
+   shadow lane (detect + journal, no orders) to measure its gatekeeper pass
+   rate and live fires in chop. 15 fires is not evidence for a live lane.
+4. **Decline (b) for now.** Supply isn't the constraint while probation is
+   one slot, and the extra fills replay worse.
+5. **(d) is optional:** +0.10 trades/week. The `outside_hours` population
+   replays +0.27R on 46, but the window is hard-coded
+   (`streamlit_app.py:908`), so this is a code change.
+6. **Order two follow-up studies:** (i) the gatekeeper's conviction
+   threshold, since the 23 signals approved below 70 replay +0.40R (half
+   unresolved); (ii) the `pullback_in_uptrend` bar-count fix, as an S-item.
+
+**Caveats.** Rebuilt daily entries use the decision session's open; the
+live entry is the price at evaluation, usually 09:3x. Trend exits ignore the
+intraday ATR trail. The universe for (e) is the tickers the worker touched
+in the window, not each day's exact scan. The profit lock went live on
+10-09, so the replay applies today's rules to the past six weeks. These
+figures estimate the current rules forward, not what the desk would have
+earned.
