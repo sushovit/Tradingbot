@@ -3,12 +3,17 @@ trade_alerts.py — S19. One Discord embed per fill. Reporting only.
 
   BUY  (green): qty, fill, time (ET + Nepal), target, stop (% from entry),
        setup, conviction, $ at risk.
-  SELL (green win / red loss): qty, fill, time, P&L $ and %, R, exit reason,
+  SELL (green win / red loss / grey breakeven): qty, fill, time, P&L $ and
+       %, R, exit reason,
        holding time, % of the way from entry to target.
+
+  UP   (green, amber if a pre-flight failed): the worker finished starting -
+       time, PID, capital, open positions, universe, pre-flight results.
 
 post() never blocks the trading loop: the webhook call runs on a daemon
 thread and every failure is caught and logged. Alerts are on unless
-bot_config.json sets "discord": {"trade_alerts": false}.
+bot_config.json sets "discord": {"trade_alerts": false} (fills) or
+{"startup": false} (the UP message).
 """
 
 import json
@@ -22,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 NEPAL = ZoneInfo("Asia/Kathmandu")
-GREEN, RED = 0x2ECC71, 0xE74C3C
+GREEN, RED, GREY, AMBER = 0x2ECC71, 0xE74C3C, 0x95A5A6, 0xF39C12
 CONFIG_FILE = "bot_config.json"
 
 
@@ -86,7 +91,8 @@ def sell_embed(ticker, qty, fill, ts, entry, reason, entry_ts=None,
                original_stop=None, target=None) -> dict:
     pnl = (fill - entry) * qty
     pct = (fill / entry - 1) * 100 if entry else 0.0
-    win = pnl > 0
+    flat = abs(pnl) < 0.005          # prints as $0.00: a breakeven lock
+    win = pnl > 0 and not flat
     fields = [("Qty", f"{qty:g}"), ("Fill", _price(fill)),
               ("Time", two_zone(ts)),
               ("P&L", f"{_money(pnl)} ({pct:+.2f}%)")]
@@ -98,9 +104,10 @@ def sell_embed(ticker, qty, fill, ts, entry, reason, entry_ts=None,
     if target is not None and target > entry:
         fields.append(("Toward target",
                        f"{(fill - entry) / (target - entry) * 100:.0f}% of the way"))
-    icon = "✅" if win else "🔴"
+    icon, color = (("⚪", GREY) if flat else ("✅", GREEN) if win
+                   else ("🔴", RED))
     return {"title": f"{icon} SELL {ticker} — {reason}",
-            "color": GREEN if win else RED, "fields": fields}
+            "color": color, "fields": fields}
 
 
 def describe_exit(sell_trade_id: int, state: dict = None) -> dict:
@@ -140,6 +147,28 @@ def describe_exit(sell_trade_id: int, state: dict = None) -> dict:
                       float(target) if target is not None else None)
 
 
+def startup_embed(ts, pid, equity=None, positions=(), universe_n=None,
+                  checks=()) -> dict:
+    """The worker is up. `checks` is [(name, ok, detail)]; any failure turns
+    the message amber and lists what failed, so a start that is up but
+    degraded never reads as all-clear."""
+    failed = [(n, d) for n, ok, d in checks if not ok]
+    fields = [("Time", two_zone(ts)), ("PID", str(pid))]
+    if equity is not None:
+        fields.append(("Capital", f"${equity:,.2f}"))
+    fields.append(("Open positions",
+                   ", ".join(positions) if positions else "none"))
+    if universe_n is not None:
+        fields.append(("Universe", f"{universe_n} names"))
+    for name, ok, detail in checks:
+        fields.append((name, ("✅ " if ok else "⚠️ ") + (detail or
+                                                        ("ok" if ok else "failed"))))
+    title = ("🟢 Desk up" if not failed
+             else f"🟠 Desk up — {len(failed)} pre-flight problem(s)")
+    return {"title": title, "color": AMBER if failed else GREEN,
+            "fields": fields}
+
+
 # ============================================================ sending
 
 def _send(embed: dict, content: str = None, url: str = None):
@@ -156,10 +185,11 @@ def _send(embed: dict, content: str = None, url: str = None):
     return wh.execute()
 
 
-def post(embed: dict, config: dict = None, sender=None, wait: bool = False):
+def post(embed: dict, config: dict = None, sender=None, wait: bool = False,
+         key: str = "trade_alerts"):
     """Fire-and-forget. Returns the thread (tests join it); never raises."""
     try:
-        if not enabled("trade_alerts", config):
+        if not enabled(key, config):
             return None
     except Exception:
         return None
@@ -200,4 +230,13 @@ def alert_exit(sell_trade_id, state=None, wait=False):
         return post(describe_exit(sell_trade_id, state), wait=wait)
     except Exception as e:
         logger.warning(f"exit alert skipped (trade {sell_trade_id}): {e}")
+        return None
+
+
+def alert_startup(wait=False, **kwargs):
+    """Call site helper for a completed worker start. Never raises."""
+    try:
+        return post(startup_embed(**kwargs), wait=wait, key="startup")
+    except Exception as e:
+        logger.warning(f"startup alert skipped: {e}")
         return None

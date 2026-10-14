@@ -6,7 +6,8 @@ screen). Reporting only.
 A trade is a BUY and the SELL that carries its decision_id. The day table
 lists every trade opened or closed on the day plus every open position;
 result is one of target / lock (a stop that filled at or above entry) /
-stop / owner (closed by hand) / time (hard exit date) / open.
+stop / owner (closed by hand) / time (hard exit date) / part (partly sold,
+rest still open) / exit (any other close, e.g. a CEO CLOSE) / open.
 """
 
 import json
@@ -25,6 +26,8 @@ ACCOUNT_START_EQUITY = 5000.0
 
 def result_for(reason: str, pnl: float) -> str:
     r = (reason or "").lower()
+    if r == "partial":
+        return "part"
     if "target" in r:
         return "target"
     if "owner" in r or "manual" in r or r.startswith("exit"):
@@ -39,8 +42,14 @@ def result_for(reason: str, pnl: float) -> str:
 # ============================================================ data
 
 def load_trades(conn):
-    """[{ticker, qty, buy, buy_ts, sell, sell_ts, pnl, reason, target, stop,
-    source}] - one per BUY, sell fields None while open."""
+    """[{ticker, qty, buy, buy_ts, sell, sell_ts, pnl, reason, target, stop}]
+    - one per BUY, sell fields None while nothing has been sold.
+
+    A BUY's SELLs (same ticker and decision_id) are summed until they cover
+    its qty, so a TAKE_PARTIAL and the later close are one trade: sell is the
+    qty-weighted average, pnl the total, reason and sell_ts the last SELL's.
+    While SELLs cover only part of it, the row is the sold part (reason
+    "partial"); the rest is still at the broker and listed as open."""
     conn.row_factory = __import__("sqlite3").Row
     buys = conn.execute("SELECT * FROM trades WHERE action='BUY' "
                         "ORDER BY id").fetchall()
@@ -48,12 +57,17 @@ def load_trades(conn):
                          "ORDER BY id").fetchall()
     used, out = set(), []
     for b in buys:
-        sell = next((s for s in sells if s["id"] not in used
-                     and s["id"] > b["id"] and s["ticker"] == b["ticker"]
-                     and (b["decision_id"] is None
-                          or s["decision_id"] == b["decision_id"])), None)
-        if sell is not None:
-            used.add(sell["id"])
+        matched, sold = [], 0.0
+        for s in sells:
+            if sold >= float(b["qty"]) - 1e-9:
+                break
+            if (s["id"] not in used and s["id"] > b["id"]
+                    and s["ticker"] == b["ticker"]
+                    and (b["decision_id"] is None
+                         or s["decision_id"] == b["decision_id"])):
+                used.add(s["id"])
+                matched.append(s)
+                sold += float(s["qty"])
         ctx = {}
         if b["decision_id"] is not None:
             row = conn.execute("SELECT context FROM decisions WHERE id=?",
@@ -63,15 +77,68 @@ def load_trades(conn):
                     ctx = json.loads(row["context"])
                 except ValueError:
                     ctx = {}
+        last = matched[-1] if matched else None
+        partial = bool(matched) and sold < float(b["qty"]) - 1e-9
         out.append({
-            "ticker": b["ticker"], "qty": float(b["qty"]),
+            "ticker": b["ticker"], "setup": b["reason"],
+            "qty": sold if partial else float(b["qty"]),
             "buy": float(b["price"]), "buy_ts": b["timestamp"],
-            "sell": float(sell["price"]) if sell else None,
-            "sell_ts": sell["timestamp"] if sell else None,
-            "pnl": float(sell["pnl_usd"] or 0) if sell else None,
-            "reason": sell["reason"] if sell else None,
+            "sell": (sum(float(s["price"]) * float(s["qty"]) for s in matched)
+                     / sold) if matched and sold else None,
+            "sell_ts": last["timestamp"] if last else None,
+            "pnl": sum(float(s["pnl_usd"] or 0) for s in matched)
+            if matched else None,
+            "reason": "partial" if partial else (last["reason"] if last
+                                                 else None),
             "target": ctx.get("target"), "stop": ctx.get("stop"),
         })
+    return out
+
+
+def account_trades(conn, since: str = ACCOUNT_START, open_positions=None):
+    """The dashboard's trade table: every trade OPENED on the $5,000 account
+    (BUY at or after `since`), newest first, from the journal - the one
+    record every entry/exit path writes, unlike live_trades.csv. Intern-desk
+    rows are not this account's. `open_positions` (live_open_positions)
+    supplies unrealized P&L for trades still open."""
+    open_positions = open_positions or {}
+    rows = []
+    for t in load_trades(conn):
+        if t["buy_ts"] < since or str(t.get("setup") or "").upper().startswith("INTERN"):
+            continue
+        closed = t["sell"] is not None and t["reason"] != "partial"
+        if closed:
+            pnl = t["pnl"]
+            result = result_for(t["reason"], pnl)
+        else:
+            live = open_positions.get(t["ticker"]) or {}
+            pnl = live.get("unrealized")
+            result = "part" if t["reason"] == "partial" else "open"
+        cost = t["buy"] * t["qty"]
+        rows.append({
+            "Opened (ET)": t["buy_ts"][:16], "Ticker": t["ticker"],
+            "Setup": t.get("setup") or "", "Qty": t["qty"],
+            "Buy": t["buy"], "Sell": t["sell"] if closed else None,
+            "Closed (ET)": t["sell_ts"][:16] if closed else "",
+            "Target": t["target"], "Stop": t["stop"],
+            "P&L $": round(pnl, 2) if pnl is not None else None,
+            "P&L %": round(100 * pnl / cost, 2) if pnl is not None and cost
+            else None,
+            "Result": result,
+        })
+    rows.sort(key=lambda r: r["Opened (ET)"], reverse=True)
+    return rows
+
+
+def account_summary(rows, equity=None):
+    closed = [r for r in rows if r["Result"] not in ("open", "part")]
+    wins = sum(1 for r in closed if (r["P&L $"] or 0) > 0)
+    realized = sum(r["P&L $"] or 0 for r in closed)
+    out = {"trades": len(rows), "open": len(rows) - len(closed),
+           "wins": wins, "losses": len(closed) - wins,
+           "realized": round(realized, 2), "equity": equity,
+           "change": (round(equity - ACCOUNT_START_EQUITY, 2)
+                      if equity is not None else None)}
     return out
 
 
