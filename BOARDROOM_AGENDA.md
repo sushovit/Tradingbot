@@ -900,3 +900,70 @@ in the window, not each day's exact scan. The profit lock went live on
 10-09, so the replay applies today's rules to the past six weeks. These
 figures estimate the current rules forward, not what the desk would have
 earned.
+
+---
+
+## 15. DECISION — gatekeeper resistance rule: keep (CEO, 2026-10-14)
+
+**Ruling: keep the rule. No change.** Read-only evidence below (ops order
+of 2026-10-14, item 4); nothing in config, prompts or code moves.
+
+**Population:** every gatekeeper rejection since 2026-09-01 whose *stated*
+`rejection_reason` cites distance to resistance or the 20-bar high: **33**
+(30 trend_continuation, 3 mean_reversion_reclaim). Another 60 rejections
+mention resistance only in the free-text reasoning and are excluded, as are
+6 whose only match was the RSI "overextension ceiling".
+
+**Outcome source:** the outcome tracker (`outcomes.py`, daily bars, 10
+sessions) answers the 3 reclaim rows. It reports trend_continuation as
+`no_geometry` by design — 5-minute stops on daily bars are a category error —
+so those 30 were replayed on 5-minute IEX bars with the S21 method (entry and
+geometry as journaled, static bracket, 10 sessions, a bar spanning both
+levels counts as a stop).
+
+| Date | Ticker | Setup | Outcome | R |
+|---|---|---|---|---|
+| 09-02 | FCX | trend | stop | -1.00 |
+| 09-02 | INTU | trend | stop | -1.00 |
+| 09-02 | WBD | trend | stop | -1.00 |
+| 09-08 | ORCL | reclaim | stop (tracker) | -1.00 |
+| 09-22 | TSLA | reclaim | stop (tracker) | -1.00 |
+| 09-22 | AMD | trend | stop | -1.00 |
+| 09-22 | NVDA | trend | stop | -1.00 |
+| 09-22 | META | trend | stop | -1.00 |
+| 09-22 | BKNG | trend | stop | -1.00 |
+| 09-22 | MU | trend | **target** | +3.00 |
+| 09-22 | MRVL | trend | stop | -1.00 |
+| 09-22 | AAL | trend | stop | -1.00 |
+| 09-23 | AMZN | trend | stop | -1.00 |
+| 09-24 | MMM | reclaim | stop (tracker) | -1.00 |
+| 09-25 | ABT | trend | stop | -1.00 |
+| 10-05 | ZS | trend | **target** | +3.00 |
+| 10-05 | NOW | trend | stop | -1.00 |
+| 10-05 | ISRG | trend | **target** | +3.00 |
+| 10-05 | JPM | trend | stop | -1.00 |
+| 10-06 | BRK.B | trend | stop | -1.00 |
+| 10-08 | INTU | trend | stop | -1.00 |
+| 10-08 | MCD | trend | **target** | +3.00 |
+| 10-08 | SHOP | trend | stop | -1.00 |
+| 10-08 | COST | trend | stop | -1.00 |
+| 10-08 | LMT | trend | stop | -1.20 |
+| 10-08 | VALE | trend | stop | -1.03 |
+| 10-09 | ORCL | trend | stop | -1.00 |
+| 10-09 | SHOP | trend | **target** | +3.00 |
+| 10-09 | MA | trend | **target** | +3.00 |
+| 10-13 | NOW | trend | stop | -1.00 |
+| 10-13 | NU | trend | stop | -1.00 |
+| 10-13 | FANG | trend | unresolved | (+1.31 at last close) |
+| 10-13 | TTWO | trend | unresolved | (-0.38 at last close) |
+
+| | Resolved | Targets | Stops | Win % | Avg R |
+|---|---|---|---|---|---|
+| trend_continuation (5-min replay) | 28 | 6 | 22 | 21% | -0.15 |
+| mean_reversion_reclaim (tracker) | 3 | 0 | 3 | 0% | -1.00 |
+| **All** | **31** | **6** | **25** | **19%** | **-0.23** |
+
+The signals the rule removes lose money as a group: at a 3R target the
+break-even win rate is 25%, and these resolve at 19%. The rule is earning its
+keep. Revisit only if a later sample of 30+ resolved replays comes in above
+25%.
