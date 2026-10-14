@@ -84,11 +84,14 @@ def test_describe_exit_reads_the_journal(temp_journal):
     assert f["Toward target"] == "32% of the way"
 
 
-def test_a_ceo_close_sends_an_exit_alert(temp_journal, monkeypatch):
+def test_a_ceo_close_sends_no_alert_from_the_order_path(temp_journal,
+                                                       monkeypatch):
+    """CEO 2026-10-14 (audit B): execute_order must not wait on Discord -
+    a blocking alert there delays the next order on the sheet."""
     import orders
     sent = []
     monkeypatch.setattr(ta, "alert_exit",
-                        lambda tid, state=None, wait=False: sent.append(tid))
+                        lambda *a, **k: sent.append(a))
     did = temp_journal.log_decision("PLTR", "ceo", {"stop": 195.0}, {})
     temp_journal.log_trade("PLTR", "BUY", 2, 202.8, reason="CEO x",
                            decision_id=did)
@@ -102,13 +105,9 @@ def test_a_ceo_close_sends_an_exit_alert(temp_journal, monkeypatch):
 
     positions = {"PLTR": {"in_position": True, "entry_price": 202.8,
                           "shares_held": 2, "decision_id": did}}
-    orders.execute_order({"action": "CLOSE", "ticker": "PLTR"}, Broker(),
-                         did, positions)
-    assert len(sent) == 1 and sent[0] is not None
-    # a second close of the same order is not re-journaled, so no 2nd alert
-    orders.execute_order({"action": "CLOSE", "ticker": "PLTR"}, Broker(),
-                         did, positions)
-    assert len(sent) == 1
+    result = orders.execute_order({"action": "CLOSE", "ticker": "PLTR"},
+                                  Broker(), did, positions)
+    assert "closed" in result and sent == []
 
 
 # ================================================== never blocks, never raises
@@ -356,15 +355,14 @@ def test_startup_alert_has_its_own_switch_and_never_raises(monkeypatch):
     assert ta.alert_startup(ts="not a datetime", pid=1) is None
 
 
-def test_the_worker_announces_itself_only_inside_the_session():
+def test_the_worker_loop_makes_no_startup_alert_call():
+    """CEO 2026-10-14 (audit B): the "Desk up" hook did a synchronous broker
+    read before the trading loop; it was reverted. Re-adding it needs an
+    approved merge, and this test failing is the reminder."""
     with open("streamlit_app.py", encoding="utf-8") as f:
         src = f.read()
-    hook = src.index("trade_alerts.alert_startup(")
-    assert "session_clock.session_over(startup_config)" in src[hook - 400:hook]
-    # after every pre-flight, before the loop starts
-    assert src.index("credit_preflight()") < hook
-    assert src.index("keep_awake(True)") < hook
-    assert hook < src.index("while os.path.exists(LOCK_FILE):\n        cycle_count")
+    loop = src[src.index("def _worker_loop():"):src.index("\ndef ", src.index("def _worker_loop():") + 10)]
+    assert "alert_startup" not in loop and "startup_checks" not in loop
 
 
 # ================================================== dashboard: $5,000 account table

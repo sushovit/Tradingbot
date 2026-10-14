@@ -1,7 +1,8 @@
 """
 outcomes.py — what would the trades we DIDN'T take have done?
 
-    python outcomes.py                 # yesterday and any unresolved rows
+    python outcomes.py                 # every day since the last graded one,
+                                       # then any unresolved rows
     python outcomes.py --date 2026-09-18
     python outcomes.py --backfill 30   # the last 30 sessions of rejections
 
@@ -45,6 +46,12 @@ import journal
 
 EASTERN_TZ = pytz.timezone("US/Eastern")
 HORIZON_SESSIONS = 10
+# journal meta: the last decision date the nightly run has graded. The run
+# grades every day after it through yesterday, so weekends, a missed night
+# or a machine that slept never leave a hole (2026-10-14: 09-19..10-05 and
+# Fri 10-09 had never been graded - the old run only ever did "yesterday").
+LAST_GRADED_KEY = "outcomes_last_graded_date"
+MAX_CATCH_UP_DAYS = 60
 SOURCES = ("rules", "claude")
 OUTCOMES = ("target", "stop", "neither", "no_geometry")
 
@@ -241,14 +248,87 @@ def replay(bars, decided_date: str, entry: float, stop: float, target: float,
     return "neither", r_now, used, used >= horizon
 
 
+# ============================================================ catch-up
+
+def catch_up_dates(yesterday, last_graded: str = None, seed: str = None,
+                   cap: int = MAX_CATCH_UP_DAYS) -> list:
+    """Every calendar date after the last graded one, through `yesterday`.
+
+    `last_graded` is the journal meta value; `seed` stands in for it on the
+    first run (the newest decided_date already in the table). With neither,
+    just yesterday. Never more than `cap` days - the oldest are dropped,
+    and the caller says so."""
+    import datetime as dt
+    start = last_graded or seed
+    if not start:
+        return [yesterday.isoformat()]
+    day = dt.date.fromisoformat(start) + dt.timedelta(days=1)
+    out = []
+    while day <= yesterday:
+        out.append(day.isoformat())
+        day += dt.timedelta(days=1)
+    return out[-cap:]
+
+
+def _seed_date(db_file: str = None):
+    try:
+        conn = sqlite3.connect(db_file or journal.DB_FILE)
+        try:
+            row = conn.execute(
+                "SELECT max(decided_date) FROM rejection_outcomes").fetchone()
+        finally:
+            conn.close()
+        return row[0] if row and row[0] else None
+    except sqlite3.Error:
+        return None
+
+
+def nightly(today=None, db_file: str = None, evaluate_fn=None) -> dict:
+    """The scheduled run: grade every day since the last graded one, oldest
+    first, advancing the meta key after EACH day - a run killed half-way
+    (S13's wall-clock limit) resumes where it stopped, never skips. Rows
+    still unresolved are re-checked once, on the last day's pass."""
+    import datetime as dt
+    evaluate_fn = evaluate_fn or evaluate
+    today = today or datetime.now(EASTERN_TZ).date()
+    yesterday = today - dt.timedelta(days=1)
+    last = journal.get_meta(LAST_GRADED_KEY)
+    seed = None if last else _seed_date(db_file)
+    dates = catch_up_dates(yesterday, last, seed)
+    total = {"evaluated": 0, "resolved": 0, "by_outcome": {}, "dates": []}
+    if not dates:                     # already graded through yesterday
+        dates_to_run = [(None, True)]
+    else:
+        dates_to_run = [(d, i == len(dates) - 1) for i, d in enumerate(dates)]
+    for date_str, with_unresolved in dates_to_run:
+        result = evaluate_fn(date_str, db_file=db_file,
+                             include_unresolved=with_unresolved)
+        total["evaluated"] += result["evaluated"]
+        total["resolved"] += result["resolved"]
+        for k, v in result["by_outcome"].items():
+            total["by_outcome"][k] = total["by_outcome"].get(k, 0) + v
+        if date_str:
+            journal.set_meta(LAST_GRADED_KEY, date_str)
+            total["dates"].append(date_str)
+    return total
+
+
+def _advance_meta(date_str: str):
+    """Move the meta key forward (never back) after a manual backfill."""
+    last = journal.get_meta(LAST_GRADED_KEY)
+    if not last or date_str > last:
+        journal.set_meta(LAST_GRADED_KEY, date_str)
+
+
 # ============================================================ evaluation
 
 def evaluate(date_str: str = None, bars_by_ticker=None, db_file: str = None,
-             horizon: int = HORIZON_SESSIONS, broker=None) -> dict:
+             horizon: int = HORIZON_SESSIONS, broker=None,
+             include_unresolved: bool = True) -> dict:
     """Evaluate rejections and upsert their outcomes. Idempotent."""
     db_file = db_file or journal.DB_FILE
     init_table(db_file)
-    rows = pending_decisions(date_str, db_file)
+    rows = pending_decisions(date_str, db_file, include_unresolved)
     if not rows:
         return {"evaluated": 0, "resolved": 0, "by_outcome": {}}
     try:
@@ -365,16 +445,22 @@ def main() -> int:
                   f"{row['count']:5} {row['avg_r']}")
         return 0
 
-    dates = []
+    import datetime as dt
+    if not args.backfill and not args.date:
+        total = nightly()
+        span = (f"{total['dates'][0]}..{total['dates'][-1]}"
+                if total["dates"] else "nothing new")
+        print(f"Graded {span}. Evaluated {total['evaluated']} "
+              f"rejection(s); {total['resolved']} resolved. " + ", ".join(
+                  f"{k}={v}" for k, v in sorted(total["by_outcome"].items())))
+        return 0
+
     if args.backfill:
-        import datetime as dt
         today = datetime.now(EASTERN_TZ).date()
         dates = [(today - dt.timedelta(days=i)).isoformat()
                  for i in range(1, args.backfill + 1)]
     else:
-        import datetime as dt
-        dates = [args.date or (datetime.now(EASTERN_TZ).date()
-                               - dt.timedelta(days=1)).isoformat()]
+        dates = [args.date]
 
     total = {"evaluated": 0, "resolved": 0, "by_outcome": {}}
     for date_str in dates:
@@ -383,6 +469,8 @@ def main() -> int:
         total["resolved"] += result["resolved"]
         for k, v in result["by_outcome"].items():
             total["by_outcome"][k] = total["by_outcome"].get(k, 0) + v
+    if args.backfill:
+        _advance_meta(max(dates))
     print(f"Evaluated {total['evaluated']} rejection(s); "
           f"{total['resolved']} resolved. " + ", ".join(
               f"{k}={v}" for k, v in sorted(total["by_outcome"].items())))

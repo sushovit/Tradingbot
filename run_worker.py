@@ -377,6 +377,11 @@ def main(argv=None) -> int:
     logging.getLogger(__name__).info(
         f"worker process starting (PID {os.getpid()})")
 
+    # The page code runs on this import (bare mode). Mark the process so the
+    # dashboard-only sections - charts, the $5k table, the intern panel -
+    # never make network calls inside the trading worker (CEO 2026-10-14).
+    import desk_config
+    os.environ[desk_config.WORKER_ENV] = "1"
     import streamlit_app  # noqa: E402  (bare-mode import)
     streamlit_app.live_bot_worker()
     print("worker stopped (session ended or lock removed).")

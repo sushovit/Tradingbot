@@ -624,6 +624,14 @@ def grade_batch_cmd(path: str) -> int:
 
 def main() -> int:
     args = sys.argv[1:]
+    import desk_config
+    if not desk_config.intern_enabled() and not (
+            args and args[0] in ("grade", "grade-batch")):
+        # CEO 2026-10-14: desk OFF. Grading past calls (journal only) is
+        # still allowed; a scan or a trade is not.
+        print("Intern desk is disabled (bot_config.json intern.enabled = "
+              "false) - nothing run.")
+        return 0
     if args and args[0] == "grade":
         return grade_cmd(args[1:])
     if args and args[0] == "grade-batch":

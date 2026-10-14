@@ -1,4 +1,5 @@
 import net  # S13: timeouts + redaction
+import desk_config
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -510,19 +511,13 @@ def _worker_loop():
     write_positions(positions)
 
     # Refresh the candidate universe once per session start (graceful on failure).
-    startup_checks, startup_config, universe_n = [], {}, None
     try:
         with open(CONFIG_FILE, "r") as f:
             startup_config = json.load(f)
         candidates = universe.refresh(broker, startup_config)
-        universe_n = len(candidates)
         logger.info(f"Universe refreshed: {len(candidates)} candidates.")
-        startup_checks.append(("Universe scan", bool(candidates),
-                               f"{len(candidates)} candidates"))
     except Exception as e:
         logger.warning(f"Universe refresh failed — falling back to configured tickers: {e}")
-        startup_checks.append(("Universe scan", False,
-                               f"failed, configured tickers only: {str(e)[:80]}"))
 
     logger.info("Live bot worker started against Alpaca PAPER account.")
 
@@ -534,8 +529,6 @@ def _worker_loop():
         state = local_analyst.ensure_ollama()
         logger.info(f"Shadow analyst pre-flight: {state['detail']} "
                     f"(started={state['started']}, warmed={state['warmed']})")
-        startup_checks.append(("Shadow analyst", bool(state["up"]),
-                               state["detail"]))
         if not state["up"]:
             journal.log_integrity_event(
                 "shadow_analyst_down",
@@ -543,7 +536,6 @@ def _worker_loop():
                 f"({state['detail']}) — shadow verdicts will be errors")
     except Exception as e:
         logger.warning(f"Ollama pre-flight failed: {e}")
-        startup_checks.append(("Shadow analyst", False, str(e)[:80]))
 
     # Anthropic must be reachable before the first gatekeeper call. 2026-09-08:
     # credits ran out at 09:36 ET and four signals (FCX, XOM, SMCI, BE) got
@@ -553,10 +545,6 @@ def _worker_loop():
     try:
         import claude_integration as _ci
         preflight = _ci.credit_preflight()
-        startup_checks.append((
-            "Gatekeeper (Anthropic)", bool(preflight["ok"]),
-            "credits available" if preflight["ok"]
-            else f"{preflight['reason']}: {str(preflight['detail'])[:80]}"))
         if preflight["ok"]:
             logger.info("Anthropic pre-flight: credits available")
         else:
@@ -580,40 +568,15 @@ def _worker_loop():
                     pass
     except Exception as e:
         logger.warning(f"Anthropic pre-flight could not run: {e}")
-        startup_checks.append(("Gatekeeper (Anthropic)", False,
-                               f"pre-flight could not run: {str(e)[:80]}"))
+
 
     # Hold off system sleep for the session: on 2026-08-31 the machine slept
     # at 12:36 ET and the frozen worker looked exactly like a hang.
     if session_clock.keep_awake(True):
         logger.info("Sleep suppression enabled for the trading session.")
-        startup_checks.append(("Sleep suppression", True, "on"))
     else:
         logger.warning("Could not suppress system sleep — a machine sleep will "
                        "freeze this worker mid-session.")
-        startup_checks.append(("Sleep suppression", False,
-                               "off - a machine sleep will freeze the worker"))
-
-    # S19+: tell the owner the desk is up. Only for a start INSIDE the
-    # session: a start after session_end_et shuts down on its first cycle,
-    # and an "up" message for it would be a lie. Background, never blocks.
-    try:
-        if not session_clock.session_over(startup_config):
-            try:
-                startup_equity = risk.effective_equity(broker.get_equity(),
-                                                       startup_config)
-            except Exception:
-                startup_equity = None
-            trade_alerts.alert_startup(
-                ts=datetime.now(EASTERN_TZ), pid=os.getpid(),
-                equity=startup_equity,
-                positions=sorted(t for t, st_ in positions.items()
-                                 if st_.get("in_position")),
-                universe_n=universe_n,
-                checks=[("Broker", True, "Alpaca PAPER connected")]
-                + startup_checks)
-    except Exception as e:
-        logger.warning(f"startup alert skipped: {e}")
 
     last_cycle_wallclock = 0.0     # suspend detection (machine sleep)
     cycle_count = 0                # liveness counter (status line, NOT the journal)
@@ -1582,7 +1545,10 @@ with tab1:
     st.info(status_message)
 
     # --- Charts: market trend, our progress, the stocks in play ---
-    _render_live_charts(broker, broker_err)
+    # Dashboard only: never inside the trading worker (its bare-mode import
+    # runs this page), where the reads would delay the trading loop.
+    if not desk_config.in_worker():
+        _render_live_charts(broker, broker_err)
 
     # --- Open positions (broker is the source of truth) ---
     st.subheader("📊 Open Positions")
@@ -1623,50 +1589,51 @@ with tab1:
     # live_trades.csv was only rotated by the Start button (launchd never
     # presses it), missed sync-found exits and CEO trades, and still showed
     # the retired account's 10-09 rows. The journal records every path.
-    st.subheader("📋 Trades — $5,000 account")
-    try:
-        import sqlite3
-        import trade_table
-        live_open = {}
-        if not broker_err:
+    if not desk_config.in_worker():   # dashboard only (CEO 2026-10-14)
+        st.subheader("📋 Trades — $5,000 account")
+        try:
+            import sqlite3
+            import trade_table
+            live_open = {}
+            if not broker_err:
+                try:
+                    live_open = trade_table.live_open_positions(broker)
+                except Exception:
+                    live_open = {}
+            conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
             try:
-                live_open = trade_table.live_open_positions(broker)
+                acct_rows = trade_table.account_trades(conn, open_positions=live_open)
+            finally:
+                conn.close()
+            try:
+                acct_equity = None if broker_err else float(broker.get_equity())
             except Exception:
-                live_open = {}
-        conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
-        try:
-            acct_rows = trade_table.account_trades(conn, open_positions=live_open)
-        finally:
-            conn.close()
-        try:
-            acct_equity = None if broker_err else float(broker.get_equity())
-        except Exception:
-            acct_equity = None
-        summ = trade_table.account_summary(acct_rows, acct_equity)
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Trades", summ["trades"], help=f"{summ['open']} open")
-        m2.metric("Won / Lost", f"{summ['wins']} / {summ['losses']}")
-        m3.metric("Realized P&L", ("-" if summ["realized"] < 0 else "+")
-                  + f"${abs(summ['realized']):,.2f}")
-        if summ["equity"] is not None:
-            m4.metric("Account equity", f"${summ['equity']:,.2f}",
-                      f"{summ['change']:+,.2f} vs $5,000")
-        if acct_rows:
-            st.dataframe(
-                pd.DataFrame(acct_rows), width='stretch', hide_index=True,
-                column_config={
-                    "Buy": st.column_config.NumberColumn(format="$%.2f"),
-                    "Sell": st.column_config.NumberColumn(format="$%.2f"),
-                    "Target": st.column_config.NumberColumn(format="$%.2f"),
-                    "Stop": st.column_config.NumberColumn(format="$%.2f"),
-                    "P&L $": st.column_config.NumberColumn(format="$%.2f"),
-                    "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
-                })
-        else:
-            st.caption(f"No trades on the $5,000 account yet (it took over "
-                       f"{trade_table.ACCOUNT_START[:16]} ET).")
-    except Exception as e:
-        st.caption(f"Trade table unavailable: {e}")
+                acct_equity = None
+            summ = trade_table.account_summary(acct_rows, acct_equity)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Trades", summ["trades"], help=f"{summ['open']} open")
+            m2.metric("Won / Lost", f"{summ['wins']} / {summ['losses']}")
+            m3.metric("Realized P&L", ("-" if summ["realized"] < 0 else "+")
+                      + f"${abs(summ['realized']):,.2f}")
+            if summ["equity"] is not None:
+                m4.metric("Account equity", f"${summ['equity']:,.2f}",
+                          f"{summ['change']:+,.2f} vs $5,000")
+            if acct_rows:
+                st.dataframe(
+                    pd.DataFrame(acct_rows), width='stretch', hide_index=True,
+                    column_config={
+                        "Buy": st.column_config.NumberColumn(format="$%.2f"),
+                        "Sell": st.column_config.NumberColumn(format="$%.2f"),
+                        "Target": st.column_config.NumberColumn(format="$%.2f"),
+                        "Stop": st.column_config.NumberColumn(format="$%.2f"),
+                        "P&L $": st.column_config.NumberColumn(format="$%.2f"),
+                        "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
+                    })
+            else:
+                st.caption(f"No trades on the $5,000 account yet (it took over "
+                           f"{trade_table.ACCOUNT_START[:16]} ET).")
+        except Exception as e:
+            st.caption(f"Trade table unavailable: {e}")
 
     # --- Read-only view of the active config (verify what the bot loaded) ---
     st.subheader("⚙️ Active Configuration (read-only)")
@@ -1829,6 +1796,13 @@ with tab4:
     st.header("🎓 Intern Desk")
     st.caption("Read-only. Trading stays CLI/scheduler-only; grades via "
                "`python intern_desk.py grade ...`.")
+    # CEO 2026-10-14: desk OFF -> no intern API call from this page (the
+    # page reruns every 15 s, and the worker runs it on import).
+    intern_on = desk_config.intern_enabled()
+    if not intern_on:
+        st.info("Intern desk is **off** (`bot_config.json` intern.enabled = "
+                "false). No intern account calls are made; history below is "
+                "from the journal.")
 
     # --- 1. Live run progress ---
     status = intern_desk.read_status()
@@ -1851,7 +1825,8 @@ with tab4:
         st.caption("Desk idle — no runs recorded yet.")
 
     # The single allowed convenience: analysis-only run (never --trade).
-    if st.button("🧠 Run analysis now (no trading)", disabled=run_active):
+    if st.button("🧠 Run analysis now (no trading)",
+                 disabled=run_active or not intern_on):
         _subprocess.Popen([sys.executable, "intern_desk.py"],
                           cwd=os.getcwd(),
                           creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0))
@@ -1863,6 +1838,8 @@ with tab4:
     # --- 2. Scoreboard (intern account) ---
     st.subheader("📊 Scoreboard")
     try:
+        if not intern_on:
+            raise RuntimeError("intern desk disabled - scoreboard not queried")
         _ib = Broker(account="intern")
         _iacct = _ib.get_account()
         _ieq = float(_iacct.equity)

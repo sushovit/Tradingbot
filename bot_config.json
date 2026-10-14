@@ -1,4 +1,7 @@
 {
+    "intern": {
+        "enabled": false
+    },
     "discord": {
         "trade_alerts": true,
         "daily_table": true
