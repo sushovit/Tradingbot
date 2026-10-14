@@ -10,6 +10,7 @@ stop / owner (closed by hand) / time (hard exit date) / part (partly sold,
 rest still open) / exit (any other close, e.g. a CEO CLOSE) / open.
 """
 
+import net  # S13: timeouts + redaction
 import json
 import os
 from datetime import date, datetime, timedelta
@@ -331,12 +332,11 @@ def build_messages(conn, day: date, broker=None, weekly=None):
 def post_messages(messages, url=None):
     """Send each message; return the HTTP statuses. Errors are returned, not
     raised - the drop itself must never fail because Discord did."""
-    from discord_webhook import DiscordWebhook
     url = (url or os.getenv("DISCORD_WEBHOOK_URL", "")).strip()
     statuses = []
     for m in messages:
         try:
-            resp = DiscordWebhook(url=url, content=m).execute()
+            resp = net.webhook(url, content=m).execute()
             statuses.append(getattr(resp, "status_code", None))
         except Exception as e:
             statuses.append(f"error: {e}")

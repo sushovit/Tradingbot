@@ -16,6 +16,7 @@ bot_config.json sets "discord": {"trade_alerts": false} (fills) or
 {"startup": false} (the UP message).
 """
 
+import net  # S13: timeouts + redaction
 import json
 import logging
 import os
@@ -175,8 +176,8 @@ def _send(embed: dict, content: str = None, url: str = None):
     url = (url or os.getenv("DISCORD_WEBHOOK_URL", "")).strip()
     if not url:
         return None
-    from discord_webhook import DiscordEmbed, DiscordWebhook
-    wh = DiscordWebhook(url=url, content=content)
+    from discord_webhook import DiscordEmbed
+    wh = net.webhook(url, content=content)
     e = DiscordEmbed(title=embed["title"], color=embed["color"])
     for name, value in embed["fields"]:
         e.add_embed_field(name=name, value=str(value))

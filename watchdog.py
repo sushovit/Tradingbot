@@ -15,6 +15,7 @@ and post ONE Discord alert. No lock = the desk was stopped deliberately;
 the watchdog does nothing.
 """
 
+import net  # S13: timeouts + redaction
 import os
 import subprocess
 import sys
@@ -198,8 +199,7 @@ def post_alert(message: str):
         print("(no webhook configured)")
         return
     try:
-        from discord_webhook import DiscordWebhook
-        DiscordWebhook(url=url, content=message[:1900]).execute()
+        net.webhook(url, content=message[:1900]).execute()
         print("Discord alerted.")
     except Exception as e:
         print(f"(alert failed: {e})")

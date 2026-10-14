@@ -15,6 +15,7 @@ Emoji/box characters are replaced with plain ASCII (OK/NO/WARN...) so the
 file survives any viewer. The dual-timezone self-dating header stays on top.
 """
 
+import net  # S13: timeouts + redaction
 import os
 import shutil
 import subprocess
@@ -116,7 +117,6 @@ def post_discord(session_path: str, latest_path: str, content: str):
         print("(no webhook configured - skipping Discord notification)")
         return
     try:
-        from discord_webhook import DiscordWebhook
         headline = ""
         for line in content.splitlines():
             if "Effective capital" in line:
@@ -124,7 +124,7 @@ def post_discord(session_path: str, latest_path: str, content: str):
                 break
         msg = (f"[DROP] Session file ready {clockline.two_zone_line()}{headline}\n"
                f"Upload `drop\\latest.md` (attached below).")
-        wh = DiscordWebhook(url=url, content=msg[:1900])
+        wh = net.webhook(url, content=msg[:1900])
         with open(session_path, "rb") as f:
             wh.add_file(file=f.read(), filename=os.path.basename(session_path))
         resp = wh.execute()

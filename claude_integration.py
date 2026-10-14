@@ -1,3 +1,5 @@
+import net  # S13: timeouts + redaction
+net.install(streams=False)
 import anthropic
 import os
 import json
@@ -54,7 +56,8 @@ def _get_client():
     if _claude_client is None:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if api_key:
-            _claude_client = anthropic.Anthropic(api_key=api_key)
+            _claude_client = anthropic.Anthropic(api_key=api_key,
+                                                 timeout=net.ANTHROPIC_TIMEOUT_S)
     return _claude_client
 
 

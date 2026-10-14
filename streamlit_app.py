@@ -1,3 +1,4 @@
+import net  # S13: timeouts + redaction
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 import finnhub
 import json
 import math
-from discord_webhook import DiscordWebhook, DiscordEmbed
+from discord_webhook import DiscordEmbed
 
 # --- Import from Claude integration file ---
 from claude_integration import (
@@ -117,7 +118,7 @@ def append_trade_log(timestamp, ticker, action, price, shares, pnl_usd, pnl_pct,
 def send_discord_notification(ticker, action, price, reason, pnl_pct=None):
     if not DISCORD_WEBHOOK_URL:
         return
-    webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
+    webhook = net.webhook(DISCORD_WEBHOOK_URL)
     color = "00ff00" if action.upper() == "BUY" else "ff0000"
     title = f"🚀 BUY Signal: {ticker}" if action.upper() == "BUY" else f"🛑 SELL Signal: {ticker}"
     
@@ -1724,7 +1725,7 @@ with tab3:
 
             try:
                 with st.spinner("📈 Technical Trader is analyzing the charts..."):
-                    tech_data = yf.download(ai_ticker, period="1mo", interval="15m", progress=False, auto_adjust=True)
+                    tech_data = yf.download(ai_ticker, period="1mo", interval="15m", progress=False, timeout=net.YFINANCE_TIMEOUT_S, auto_adjust=True)
 
                     if tech_data.empty:
                         raise ValueError(f"No data downloaded for '{ai_ticker}'. It may be an invalid symbol or have no recent data.")

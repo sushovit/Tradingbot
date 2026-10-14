@@ -23,6 +23,7 @@ intern account exists). 20s timeout per ticker, skip-and-log on failure —
 a slow ticker never kills the report.
 """
 
+import net  # S13: timeouts + redaction
 import os
 import sys
 import json
@@ -369,12 +370,11 @@ def post_discord(report: str, file_path: str, headline: str):
         print("(no webhook configured — skipping Discord post)")
         return
     try:
-        from discord_webhook import DiscordWebhook
         fenced = f"```markdown\n{report}\n```"
         if len(fenced) <= DISCORD_MSG_LIMIT:
-            wh = DiscordWebhook(url=url, content=fenced)
+            wh = net.webhook(url, content=fenced)
         else:
-            wh = DiscordWebhook(url=url, content=headline)
+            wh = net.webhook(url, content=headline)
             with open(file_path, "rb") as f:
                 wh.add_file(file=f.read(), filename=os.path.basename(file_path))
         resp = wh.execute()

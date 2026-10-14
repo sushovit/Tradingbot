@@ -3,6 +3,7 @@
 Filenames are ET-anchored (scan_ET<date>_<time>.md) so the filename and the
 report header can never disagree about which session a file belongs to.
 Report age is annotated at post time via clockline.annotate_age."""
+import net  # S13: timeouts + redaction
 import subprocess
 import sys
 import os
@@ -41,7 +42,6 @@ except OSError:
 url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 if url:
     try:
-        from discord_webhook import DiscordWebhook
         # headline: pull the equity line if present
         headline = f"📊 Scan ET{stamp}"
         with open(out_path, encoding="utf-8", errors="replace") as f:
@@ -49,7 +49,7 @@ if url:
                 if "Effective capital" in line:
                     headline += f" — {line.strip().replace('**', '')}"
                     break
-        wh = DiscordWebhook(url=url, content=headline)
+        wh = net.webhook(url, content=headline)
         with open(out_path, "rb") as f:
             wh.add_file(file=f.read(), filename=f"scan_{stamp}.md")
         resp = wh.execute()

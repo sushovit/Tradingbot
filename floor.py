@@ -19,6 +19,7 @@ file, logs, and exits 0.
 Reads journal.db + bot_status.log + positions.json + the broker.
 """
 
+import net  # S13: timeouts + redaction
 import os
 import json
 import sqlite3
@@ -348,12 +349,11 @@ def post_discord(report: str, stats: dict, dense_lines: list,
         print("(no webhook configured — skipping Discord post)")
         return
     try:
-        from discord_webhook import DiscordWebhook
 
         fenced = f"```markdown\n{report}\n```"
         if len(fenced) <= DISCORD_MSG_LIMIT:
             # Fits in one message: code block = clean select-copy on any client.
-            wh = DiscordWebhook(url=url, content=fenced)
+            wh = net.webhook(url, content=fenced)
         else:
             hb = stats.get("heartbeat_age")
             state = "🟢" if stats.get("running") else "⚪"
@@ -365,7 +365,7 @@ def post_discord(report: str, stats: dict, dense_lines: list,
             # Mobile copy: trim-post the dense sections under the headline.
             budget = DISCORD_MSG_LIMIT - len(headline) - 20  # fences + newlines
             snippet = _fit_snippet(dense_lines, budget)
-            wh = DiscordWebhook(url=url,
+            wh = net.webhook(url,
                                 content=f"{headline}\n```markdown\n{snippet}\n```")
             if file_path and os.path.exists(file_path):
                 with open(file_path, "rb") as f:
