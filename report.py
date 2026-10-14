@@ -26,6 +26,10 @@ logging.basicConfig(level=logging.WARNING)
 EASTERN_TZ = pytz.timezone("US/Eastern")
 
 
+
+class _InternOff(Exception):
+    """The intern desk is switched off: skip its section quietly."""
+
 def sessions_held(ticker: str):
     """Trading sessions since the journaled BUY (Goal 21: >= 10 = review)."""
     try:
@@ -197,6 +201,9 @@ def build_report() -> str:
     # --- Intern account (his public scoreboard) ---
     lines.append("\n## Intern account")
     try:
+        import desk_config
+        if not desk_config.intern_enabled():
+            raise _InternOff()
         from broker import Broker as _B
         intern_broker = _B(account="intern")
         try:
@@ -229,6 +236,9 @@ def build_report() -> str:
             lines.append("Today's intern fills: " + "; ".join(
                 f"{t['action']} {t['qty']:g} {t['ticker']} @ ${t['price']:,.2f}"
                 for t in ifills))
+    except _InternOff:
+        lines.append("_Intern desk disabled (bot_config.json intern.enabled "
+                     "= false) - no intern account calls._")
     except Exception as e:
         lines.append(f"_Intern account unavailable: {e}_")
 

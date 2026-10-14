@@ -38,6 +38,13 @@ REPO_SED="$(printf '%s' "$REPO" | sed 's/[&#\]/\\&/g')"
 labels=()
 for src in "$HERE"/com.tradingbot.*.plist; do
     label="$(basename "$src" .plist)"
+    # CEO 2026-10-14: the intern desk is off. Its plist stays in the repo;
+    # it is installed only on request (INSTALL_INTERN=1 ./install.sh) and
+    # bot_config.json intern.enabled must be true for it to do anything.
+    if [ "$label" = "com.tradingbot.intern" ] && [ "${INSTALL_INTERN:-0}" != "1" ]; then
+        echo "skipping $label (intern desk off; INSTALL_INTERN=1 to install)"
+        continue
+    fi
     dst="$AGENTS/$label.plist"
     sed "s#__REPO__#$REPO_SED#g" "$src" > "$dst"
     plutil -lint "$dst"

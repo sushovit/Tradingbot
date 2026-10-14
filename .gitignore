@@ -37,3 +37,9 @@ logs/
 
 # Virtual environment (macOS host)
 venv/
+
+# Key copies can never be committed (CEO 2026-10-14): any .env variant
+# (.env.laptop, .env.bak, .env.cutover-...) and any *.cutover-* file.
+.env.*
+!.env.example
+*.cutover-*
