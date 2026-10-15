@@ -604,6 +604,39 @@ def post_discord(content: str, attach_full: str = None, date: str = None):
         print(f"(Discord post failed: {e})")
 
 
+def goals_section(date_str: str) -> str:
+    """S26: "## 6. Goals" for the memo - computed here, deterministically,
+    and appended AFTER the model's sections 1-5. No goal ever enters a
+    prompt or the journal (HARD RULE: goals never reach the gatekeeper,
+    prompts, filters, sizing or orders). Fridays also write
+    reports/goals_week_<YYYY-WW>.md and post the goal table to Discord.
+    Never raises: a goal-sheet failure must not cost the memo."""
+    from datetime import date as _date
+    try:
+        import sqlite3
+        import goals
+        asof = _date.fromisoformat(date_str)
+        try:
+            from broker import Broker
+            broker = Broker()
+        except Exception:
+            broker = None
+        conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
+        try:
+            targets = goals.load_goals()
+            lines, wk, mo = goals.build(asof, conn, broker, targets)
+        finally:
+            conn.close()
+        if asof.weekday() == 4:
+            path = goals.weekly_file(asof, lines)
+            print(f"Weekly goals written: {path}")
+            post_discord(goals.discord_table(wk, mo, targets, asof))
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"(goal sheet unavailable: {e})")
+        return f"## 6. Goals\n\n_Goal sheet unavailable: {e}_"
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     backfill_date = None
@@ -613,6 +646,7 @@ def main(argv=None) -> int:
             backfill_date = argv[i + 1]
 
     bundle = collect_bundle(date=backfill_date)
+    goals_md = goals_section(bundle["date"])      # S26: never in a prompt
     result = request_review(bundle)
     journal.init_db()
 
@@ -655,7 +689,7 @@ def main(argv=None) -> int:
         memo_path = os.path.join("reports", f"review_{bundle['date']}.md")
         with open(memo_path, "w", encoding="utf-8") as f:
             f.write(f"# Daily review — {bundle['date']}\n"
-                    f"{bundle.get('clock', '')}\n\n{review}\n")
+                    f"{bundle.get('clock', '')}\n\n{review}\n\n{goals_md}\n")
         print(f"Memo written: {memo_path} ({len(review)} chars)")
     except OSError as e:
         print(f"(could not write memo file: {e})")
@@ -669,8 +703,9 @@ def main(argv=None) -> int:
     header = f"📋 Daily review — {bundle['date']}\n"
     # Long memos exceed Discord's 2,000-char limit: post the head inline and
     # attach the full text so nothing is lost.
-    post_discord(header + review, attach_full=review, date=bundle["date"])
-    print(header + review)
+    full = f"{review}\n\n{goals_md}"            # goals: file + Discord only
+    post_discord(header + full, attach_full=full, date=bundle["date"])
+    print(header + full)
     return 0
 
 
