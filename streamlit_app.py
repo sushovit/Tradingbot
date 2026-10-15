@@ -1585,18 +1585,6 @@ with tab1:
 
     st.divider()
 
-    # --- Live status line ---
-    st.subheader("Live Status")
-    status_message = "Bot is Idle."
-    if is_running:
-        if os.path.exists(STATUS_FILE):
-            try:
-                with open(STATUS_FILE, "r") as f: status_message = f.read()
-            except Exception: pass
-        else:
-            status_message = "Bot is initializing..."
-    st.info(status_message)
-
     # --- Charts: market trend, our progress, the stocks in play ---
     # Dashboard only: never inside the trading worker (its bare-mode import
     # runs this page), where the reads would delay the trading loop.
@@ -1637,6 +1625,18 @@ with tab1:
                 st.caption("No open positions.")
         except BrokerError as e:
             st.caption(f"Could not fetch positions: {e}")
+
+    # --- Live status line (below the open positions, owner 2026-10-14) ---
+    st.subheader("Live Status")
+    status_message = "Bot is Idle."
+    if is_running:
+        if os.path.exists(STATUS_FILE):
+            try:
+                with open(STATUS_FILE, "r") as f: status_message = f.read()
+            except Exception: pass
+        else:
+            status_message = "Bot is initializing..."
+    st.info(status_message)
 
     # --- Trades on the $5,000 account, from the journal ---
     # live_trades.csv was only rotated by the Start button (launchd never
