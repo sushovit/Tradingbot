@@ -241,5 +241,5 @@ def test_the_stop_raise_alert_formats_and_never_raises():
 def test_the_review_prompt_states_the_current_daily_rule():
     """S24b (owner 2026-10-14) replaced the percent lock with the ladder."""
     prompt = review_bot.REVIEW_SYSTEM_PROMPT
-    assert "OWNER LADDER" in prompt and "daily_lock" in prompt
+    assert "R/ATR LADDER" in prompt and "daily_r_atr" in prompt   # S25
     assert "BROKER's average fill" in prompt

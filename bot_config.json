@@ -119,10 +119,29 @@
             "atr_multiplier": 1.5,
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.0,
-            "daily_trailing": "ladder",
+            "daily_trailing": "r_atr",
+            "daily_r_atr": {
+                "steps": [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]],
+                "trail_atr": 2.5,
+                "atr_length": 14,
+                "not_before_et": "10:00",
+                "market_gap_pct": 0.1,
+                "initial_stop_atr_buffer": 0.25,
+                "initial_stop_min_atr": 1.5,
+                "initial_stop_max_atr": 2.5
+            },
+            "daily_exits": {
+                "time_stop_day": 5,
+                "time_stop_min_mfe_r": 0.5,
+                "max_hold_days": 10,
+                "exit_at_et": "15:55",
+                "earnings_exit": true,
+                "earnings_exit_at_et": "15:50"
+            },
             "daily_lock": {
                 "start_pct": 0.50,
                 "cushion_pct": 0.50,
+                "step_pct": 0.25,
                 "market_gap_pct": 0.1
             },
             "use_volume_filter": true
@@ -136,10 +155,29 @@
             "atr_multiplier": 2.0,
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.5,
-            "daily_trailing": "ladder",
+            "daily_trailing": "r_atr",
+            "daily_r_atr": {
+                "steps": [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]],
+                "trail_atr": 2.5,
+                "atr_length": 14,
+                "not_before_et": "10:00",
+                "market_gap_pct": 0.1,
+                "initial_stop_atr_buffer": 0.25,
+                "initial_stop_min_atr": 1.5,
+                "initial_stop_max_atr": 2.5
+            },
+            "daily_exits": {
+                "time_stop_day": 5,
+                "time_stop_min_mfe_r": 0.5,
+                "max_hold_days": 10,
+                "exit_at_et": "15:55",
+                "earnings_exit": true,
+                "earnings_exit_at_et": "15:50"
+            },
             "daily_lock": {
                 "start_pct": 0.50,
                 "cushion_pct": 0.50,
+                "step_pct": 0.25,
                 "market_gap_pct": 0.1
             },
             "use_volume_filter": true

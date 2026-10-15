@@ -63,7 +63,8 @@ def is_bot_managed(state: dict) -> bool:
 PROFIT_LOCK = "profit_lock"
 PCT_LOCK = "pct_lock"
 LADDER = "ladder"
-DAILY_LOCKS = (PCT_LOCK, LADDER)
+R_ATR = "r_atr"
+DAILY_LOCKS = (PCT_LOCK, LADDER, R_ATR)
 
 
 def trailing_type_for(state: dict, risk_profile: dict) -> str:
@@ -199,7 +200,7 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
     # this ATR ratchet must never act on it. Without this guard
     # compute_trailing_stop would read the unknown type as the PERCENT rule.
     if trailing_type_for(state, risk_profile) in ("none", PROFIT_LOCK,
-                                                   PCT_LOCK, LADDER):
+                                                   PCT_LOCK, LADDER, R_ATR):
         return False
 
     r = r_multiple(state, current_price)
@@ -523,7 +524,7 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
                    risk_profile: dict, last_price: float, now_utc,
                    broker_entry: float = None, entry_time=None,
                    interval_minutes: int = 5, persist=None,
-                   journal_raise=None, alert=None) -> bool:
+                   journal_raise=None, alert=None, daily_df=None) -> bool:
     """Apply the S24 percent lock to one BOT daily position. Returns True if
     the broker stop was replaced. Never lowers a stop, keeps it below the
     market, and is a no-op on restart (the raised level is persisted)."""
@@ -544,14 +545,40 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
         rec["original_stop"] = state["original_stop"] = original_stop(state)
         changed = True
     entry = state.get("entry_price")
-    closes = completed_closes_since(df, entry_time, now_utc, interval_minutes)
+    if ttype == R_ATR:
+        # Only closes of bars starting at/after 10:00 ET count, and the
+        # stop only ratchets after 10:00 ET.
+        rp = r_atr_params(risk_profile)
+        closes = qualifying_closes(df, entry_time, now_utc,
+                                   rp["not_before_et"], interval_minutes)
+    else:
+        closes = completed_closes_since(df, entry_time, now_utc, interval_minutes)
     if closes:
         hc = max([state.get("highest_close") or 0.0] + closes)
         if hc != state.get("highest_close"):
             rec["highest_close"] = state["highest_close"] = hc
             changed = True
+    # MFE for the time stop: the highest 5-minute HIGH since entry.
+    highs = _completed_highs_since(df, entry_time, now_utc, interval_minutes)
+    if highs:
+        mh = max([state.get("max_high") or 0.0] + highs)
+        if mh != state.get("max_high"):
+            rec["max_high"] = state["max_high"] = mh
+            changed = True
     close = last_completed_close(df, now_utc, interval_minutes)
-    if ttype == LADDER:
+    if ttype == R_ATR:
+        import pandas as pd
+        now_et = pd.Timestamp(now_utc).tz_convert("America/New_York")
+        hh, mm = (int(x) for x in rp["not_before_et"].split(":"))
+        atr = daily_atr(daily_df, int(rp["atr_length"]), now_et.date())
+        hdc = _highest_daily_close_since(daily_df, entry_time, now_et.date())
+        if (now_et.hour, now_et.minute) < (hh, mm):
+            new_stop, step = None, None
+        else:
+            new_stop, step = r_atr_target(entry, original_stop(state),
+                                          state.get("highest_close"), hdc, atr,
+                                          last_price, rp)
+    elif ttype == LADDER:
         new_stop, step = ladder_target(entry, close, state.get("highest_close"),
                                        last_price, ladder_params(risk_profile))
     else:
@@ -596,3 +623,208 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
             logger.warning(f"{ticker}: pct-lock alert skipped: {e}")
     return True
 
+
+# --- R/ATR ladder for daily positions (S25, CEO 2026-10-14) ----------------
+# After the stop-loss research. R = entry - original stop.
+#   +1.0R -> stop = entry - 0.25R;  +1.5R -> entry;  +2R -> entry + 1R;
+#   beyond +2R: stop = max(stop, highest completed DAILY close - 2.5 x ATR14).
+# Steps are decided on completed 5-minute closes of bars starting at/after
+# 10:00 ET (the opening range is ignored) and only ratchet after 10:00 ET.
+# Never lowered; at least market_gap_pct below the last price; rounded up to
+# the cent. New entries get an ATR-aware initial stop (initial_stop below);
+# existing positions keep theirs.
+
+R_ATR_DEFAULTS = {"steps": [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]],
+                  "trail_atr": 2.5, "atr_length": 14, "not_before_et": "10:00",
+                  "market_gap_pct": 0.1, "initial_stop_atr_buffer": 0.25,
+                  "initial_stop_min_atr": 1.5, "initial_stop_max_atr": 2.5}
+
+
+def r_atr_params(risk_profile: dict) -> dict:
+    out = dict(R_ATR_DEFAULTS)
+    for key, value in ((risk_profile or {}).get("daily_r_atr") or {}).items():
+        if key not in out:
+            continue
+        if key == "steps":
+            try:
+                out[key] = sorted([float(a), float(b)] for a, b in value)
+            except (TypeError, ValueError):
+                pass
+        elif key == "not_before_et":
+            out[key] = str(value)
+        else:
+            try:
+                out[key] = float(value)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def daily_atr(daily_df, length: int = 14, today=None):
+    """ATR(length) as of the last COMPLETED daily bar (today's partial bar,
+    if present, is excluded). None if it cannot be computed."""
+    if daily_df is None or getattr(daily_df, "empty", True):
+        return None
+    df = daily_df
+    if today is not None:
+        days = [str(i)[:10] for i in df.index]
+        df = df[[d < str(today) for d in days]]
+    if len(df) < length + 1:
+        return None
+    series = ta.atr(df["high"], df["low"], df["close"], length=length)
+    if series is None or series.dropna().empty:
+        return None
+    value = float(series.dropna().iloc[-1])
+    return None if math.isnan(value) else value
+
+
+def initial_stop(entry, structural_stop, atr, params=None):
+    """The ATR-aware initial stop for a NEW daily entry: the structural low
+    minus buffer x ATR, with its distance from entry clamped to
+    [min_atr, max_atr] x ATR. Returns the structural stop unchanged when ATR
+    is unknown."""
+    p = params or R_ATR_DEFAULTS
+    if atr is None or atr <= 0 or entry is None or structural_stop is None:
+        return structural_stop
+    dist = entry - (structural_stop - p["initial_stop_atr_buffer"] * atr)
+    dist = min(max(dist, p["initial_stop_min_atr"] * atr),
+               p["initial_stop_max_atr"] * atr)
+    return math.floor((entry - dist) * 100 + 1e-6) / 100
+
+
+def r_atr_target(entry, orig_stop, highest_close, highest_daily_close, atr,
+                 last_price, params):
+    """(stop, step) the R/ATR ladder asks for now, or (None, None). Pure.
+    `highest_close` is the highest qualifying 5-minute close since entry."""
+    if entry is None or orig_stop is None or orig_stop >= entry \
+            or highest_close is None:
+        return None, None
+    risk = entry - orig_stop
+    reached_r = (highest_close - entry) / risk
+    c = []
+    for trigger_r, stop_r in params["steps"]:
+        if reached_r >= trigger_r:
+            c.append((entry + stop_r * risk, f"+{trigger_r:g}R"))
+    last_trigger = params["steps"][-1][0] if params["steps"] else None
+    if last_trigger is not None and reached_r >= last_trigger \
+            and highest_daily_close and atr:
+        c.append((highest_daily_close - params["trail_atr"] * atr,
+                  f"trail {params['trail_atr']:g}xATR"))
+    if not c:
+        return None, None
+    price, step = max(c)
+    price = _cent_up(price)
+    if last_price is not None:
+        ceiling = math.floor(last_price * (1 - params["market_gap_pct"] / 100)
+                             * 100 + 1e-6) / 100
+        if price > ceiling:
+            price, step = ceiling, f"{step} (capped {params['market_gap_pct']:g}% below market)"
+    return price, step
+
+
+def qualifying_closes(df, since, now_utc, not_before_et="10:00",
+                      interval_minutes=5):
+    """completed_closes_since, keeping only bars that START at/after
+    `not_before_et` (ET) on their own day - the opening range is ignored."""
+    import pandas as pd
+    if df is None or getattr(df, "empty", True):
+        return []
+    hh, mm = (int(x) for x in not_before_et.split(":"))
+    idx = pd.DatetimeIndex(df.index)
+    idx = idx.tz_localize("UTC") if idx.tz is None else idx
+    et = idx.tz_convert("America/New_York")
+    keep = [(t.hour, t.minute) >= (hh, mm) for t in et]
+    sub = df[keep]
+    return completed_closes_since(sub, since, now_utc, interval_minutes)
+
+
+# --- Time stop and earnings exit for daily positions (S25) ------------------
+
+DAILY_EXIT_DEFAULTS = {"time_stop_day": 5, "time_stop_min_mfe_r": 0.5,
+                       "max_hold_days": 10, "exit_at_et": "15:55",
+                       "earnings_exit": True, "earnings_exit_at_et": "15:50"}
+
+
+def daily_exit_params(risk_profile: dict) -> dict:
+    out = dict(DAILY_EXIT_DEFAULTS)
+    for key, value in ((risk_profile or {}).get("daily_exits") or {}).items():
+        if key in out:
+            if key in ("exit_at_et", "earnings_exit_at_et"):
+                out[key] = str(value)
+            elif key == "earnings_exit":
+                out[key] = bool(value)
+            else:
+                try:
+                    out[key] = float(value)
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def session_day(entry_date, today) -> int:
+    """Trading day number of `today` with the entry session as day 1
+    (weekends excluded; holidays are not, which can only make the count
+    run a day early - the conservative direction for a time stop)."""
+    import pandas as pd
+    if entry_date is None:
+        return None
+    return int(len(pd.bdate_range(entry_date, today)))
+
+
+def daily_exit_due(day, mfe_r, now_et, earnings_soon, params):
+    """Reason to close a daily position now, or None.
+      - day >= max_hold_days, at/after exit_at_et          -> time stop
+      - day == time_stop_day and MFE < min_mfe_r, same time -> time stop
+      - earnings_soon and at/after earnings_exit_at_et      -> earnings exit
+    `earnings_soon` None (calendar unknown) never forces an exit."""
+    def at_or_after(hhmm):
+        hh, mm = (int(x) for x in hhmm.split(":"))
+        return (now_et.hour, now_et.minute) >= (hh, mm)
+    if params["earnings_exit"] and earnings_soon and \
+            at_or_after(params["earnings_exit_at_et"]):
+        return "Earnings exit (reports within 1 session)"
+    if day is not None and at_or_after(params["exit_at_et"]):
+        if day >= params["max_hold_days"]:
+            return f"Time stop (day {day} close)"
+        if day >= params["time_stop_day"] and (mfe_r is None
+                                               or mfe_r < params["time_stop_min_mfe_r"]):
+            return (f"Time stop (day {day}, MFE "
+                    f"{'n/a' if mfe_r is None else f'{mfe_r:+.2f}R'} "
+                    f"< +{params['time_stop_min_mfe_r']:g}R)")
+    return None
+
+
+def _completed_highs_since(df, since, now_utc, interval_minutes=5):
+    if df is None or getattr(df, "empty", True) or "high" not in df:
+        return []
+    sub = df.drop(columns=["close"]).rename(columns={"high": "close"})
+    return completed_closes_since(sub, since, now_utc, interval_minutes)
+
+
+def _highest_daily_close_since(daily_df, since, today):
+    """Highest COMPLETED daily close from the entry day onward (today's
+    partial bar excluded), or None."""
+    if daily_df is None or getattr(daily_df, "empty", True):
+        return None
+    start = str(since)[:10] if since else None
+    closes = [float(c) for i, c in zip(daily_df.index, daily_df["close"])
+              if str(i)[:10] < str(today)
+              and (start is None or str(i)[:10] >= start)]
+    return max(closes) if closes else None
+
+
+
+def stepped_ladder_target(entry, close, highest_close, params):
+    """SHADOW owner ladder (S25 - computed, never ordered): once the highest
+    close reaches entry x (1 + start_pct%), stop = entry; then
+    stop = max(entry, floor_to_step(highest close x (1 - cushion_pct%)))
+    where the steps are entry + k x step_pct% of entry. Pure."""
+    if entry is None or close is None:
+        return None
+    hc = max(highest_close or close, close)
+    if hc < entry * (1 + params["start_pct"] / 100):
+        return None
+    step = entry * params.get("step_pct", 0.25) / 100
+    raw = hc * (1 - params["cushion_pct"] / 100)
+    k = math.floor((raw - entry) / step + 1e-9)
+    return _cent_up(max(entry, entry + k * step))

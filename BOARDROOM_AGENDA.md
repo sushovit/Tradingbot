@@ -1038,3 +1038,55 @@ close.
 Reporting: the Discord weekly line now also shows, for the week's closed
 daily trades, what "cushion 0.25%" and the "old +1R rule" would have made,
 replayed on 5-minute bars (lock_replay.py).
+---
+
+## 17. DECISION — R/ATR ladder for daily positions, owner ladder as shadow (S25, CEO, 2026-10-14)
+
+**CEO decision 2026-10-14, after the stop-loss research.** The owner's 0.5%
+ladder (S24b) is replaced for LIVE daily positions by an R/ATR ladder; the
+owner ladder keeps running as a SHADOW. Intraday positions are unchanged.
+
+### Live rule (bot_config.json `daily_trailing: "r_atr"`, `daily_r_atr`, `daily_exits`)
+
+R = entry (the broker's average fill) - original stop.
+
+| When | Stop becomes |
+|---|---|
+| new entry | structural low - 0.25 x ATR14, distance clamped to 1.5-2.5 ATR (target kept at the same R multiple) |
+| +1.0R | entry - 0.25R |
+| +1.5R | entry |
+| +2.0R | entry + 1R |
+| beyond | max(stop, highest completed daily close - 2.5 x ATR14) |
+
+Decided on completed 5-minute closes of bars starting at/after 10:00 ET and
+only after 10:00 ET; never lowered; at least 0.1% below the last price;
+stop-market legs. Existing positions keep their stop (TXN: R = 280.25 -
+278.00 = 2.25; +1R at 282.50 -> 279.69, +1.5R at 283.63 -> 280.25, +2R at
+284.75 -> 282.50).
+
+Time stop: exit at the day-5 close (15:55 ET; entry day = day 1) if the best
+move (highest 5-minute high) was under +0.5R; exit at the day-10 close
+regardless. Earnings: if the company reports after today's close or before
+the next session, exit at 15:50 ET; an unreachable calendar does not force
+an exit (journaled as an ops event).
+
+### Shadow (no orders)
+
+The owner ladder - breakeven at +0.5%, then 0.5% under the highest close in
+0.25%-of-entry steps - is replayed on 5-minute bars for every closed daily
+trade. The Discord weekly line shows live vs shadow: P&L, win %, and capture
+ratio (realized / best move during the hold).
+
+### Not done here
+
+- **S25 study (the ranked grid) is blocked**: the research report
+  `reports/Swing trading stop loss methods.md` is not in this repository,
+  and the grid is defined there.
+- The order said to keep "the s24 dashboard sell button and trade-log
+  changes"; no such dashboard button or trade-log change exists in this
+  repository (S24 here was the percent lock), so there was nothing to keep.
+
+Defaults chosen where the order was silent: ATR14 = daily ATR as of the last
+completed day; "highest daily close" = completed daily closes since entry;
+time-stop exits at 15:55 ET, earnings exits at 15:50 ET.
+

@@ -137,3 +137,69 @@ def reset_cache():
     with _lock:
         _cache.clear()
         _failed.clear()
+        _upcoming_cache.clear()
+        _upcoming_failed.clear()
+
+
+# --- Upcoming earnings, for the daily-position exit (S25) -------------------
+_upcoming_cache = {}     # {asof_iso: {SYMBOL: [(date_iso, hour), ...]}}
+_upcoming_failed = set()
+
+
+def _fetch_upcoming(asof: datetime.date, client=None) -> dict:
+    """{SYMBOL: [(date iso, hour), ...]} for asof .. asof + 5 days. `hour`
+    is Finnhub's bmo / amc / dmh, or '' when not given."""
+    client = client or _client()
+    if client is None:
+        raise RuntimeError("no Finnhub client (missing package or API key)")
+    end = (asof + datetime.timedelta(days=5)).isoformat()
+    payload = client.earnings_calendar(_from=asof.isoformat(), to=end, symbol="")
+    out = {}
+    for row in (payload or {}).get("earningsCalendar") or []:
+        sym = str(row.get("symbol") or "").upper()
+        day = str(row.get("date") or "")[:10]
+        if sym and day:
+            out.setdefault(sym, []).append((day, str(row.get("hour") or "").lower()))
+    return out
+
+
+def next_session(asof: datetime.date) -> datetime.date:
+    day = asof + datetime.timedelta(days=1)
+    while day.weekday() >= 5:
+        day += datetime.timedelta(days=1)
+    return day
+
+
+def reports_within_one_session(ticker: str, asof: datetime.date = None,
+                               client=None):
+    """True / False / None (calendar unreachable - the caller must NOT exit
+    on unknown, and should journal it).
+
+    True when the company reports after today's close (date today and hour
+    amc, or no hour given) or at/before the next session (date = next
+    session, any hour) - i.e. holding through today's close would carry the
+    position through the print."""
+    asof = asof or datetime.date.today()
+    key = asof.isoformat()
+    with _lock:
+        cached = _upcoming_cache.get(key)
+        failed = key in _upcoming_failed
+    if cached is None:
+        if failed:
+            return None
+        try:
+            cached = _fetch_upcoming(asof, client=client)
+        except Exception as e:
+            logger.warning(f"Upcoming-earnings calendar unavailable for {key}: {e}")
+            with _lock:
+                _upcoming_failed.add(key)
+            return None
+        with _lock:
+            _upcoming_cache[key] = cached
+    nxt = next_session(asof).isoformat()
+    for day, hour in cached.get(str(ticker or "").upper(), []):
+        if day == key and hour in ("amc", ""):
+            return True
+        if day == nxt:
+            return True
+    return False
