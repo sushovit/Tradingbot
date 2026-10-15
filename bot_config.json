@@ -1,4 +1,12 @@
 {
+    "goals": {
+        "trades_per_week": 3,
+        "monthly_pnl_usd": 100,
+        "win_rate_pct": 40,
+        "capture_ratio_pct": 35,
+        "on_time_sessions_pct": 100,
+        "max_profit_to_loss_trades": 0
+    },
     "intern": {
         "enabled": false
     },
