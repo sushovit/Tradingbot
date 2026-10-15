@@ -61,6 +61,7 @@ def is_bot_managed(state: dict) -> bool:
 
 
 PROFIT_LOCK = "profit_lock"
+PCT_LOCK = "pct_lock"
 
 
 def trailing_type_for(state: dict, risk_profile: dict) -> str:
@@ -195,7 +196,8 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
     # "profit_lock" (S16) is handled by maybe_lock_profit, on 5-minute closes;
     # this ATR ratchet must never act on it. Without this guard
     # compute_trailing_stop would read the unknown type as the PERCENT rule.
-    if trailing_type_for(state, risk_profile) in ("none", PROFIT_LOCK):
+    if trailing_type_for(state, risk_profile) in ("none", PROFIT_LOCK,
+                                                   PCT_LOCK):
         return False
 
     r = r_multiple(state, current_price)
@@ -392,3 +394,157 @@ def maybe_lock_profit(broker, positions: dict, ticker: str, state: dict,
         except Exception as e:
             logger.error(f"{ticker}: could not persist profit-lock stop: {e}")
     return True
+
+
+# --- Percent lock for daily positions (S24, CEO + owner 2026-10-14) ---------
+# Replaces the S16 R-step lock. Decided on the last COMPLETED 5-minute close,
+# in percent of the BROKER's average entry (never a journaled reference):
+#   step1  close >= entry*(1+step1_trigger_pct)  -> stop = original_stop
+#          + step1_risk_fraction*(entry - original_stop)     (halve the risk)
+#   step2  close >= entry*(1+step2_trigger_pct)  -> stop = entry*(1+step2_stop_pct)
+#   trail  highest close since entry >= entry*(1+trail_trigger_pct)
+#          -> stop = highest_close*(1-trail_pct)
+# The highest candidate wins; a stop never moves down and is kept at least
+# market_gap_pct below the last price.
+
+PCT_LOCK_DEFAULTS = {"step1_trigger_pct": 0.75, "step1_risk_fraction": 0.5,
+                     "step2_trigger_pct": 1.25, "step2_stop_pct": 0.1,
+                     "trail_trigger_pct": 2.0, "trail_pct": 1.0,
+                     "market_gap_pct": 0.1}
+
+
+def pct_lock_params(risk_profile: dict) -> dict:
+    """`daily_pct_lock` over the defaults; unparseable values fall back."""
+    out = dict(PCT_LOCK_DEFAULTS)
+    for key, value in ((risk_profile or {}).get("daily_pct_lock") or {}).items():
+        if key in out:
+            try:
+                out[key] = float(value)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _cent_up(x: float) -> float:
+    """Round UP to the cent: a lock never sits below its level."""
+    return math.ceil(x * 100 - 1e-6) / 100
+
+
+def pct_lock_target(entry, original_stop, close, highest_close, last_price,
+                    params):
+    """(stop, step) the rule asks for now, or (None, None). Pure arithmetic."""
+    if entry is None or close is None:
+        return None, None
+    c = []
+    if close >= entry * (1 + params["step1_trigger_pct"] / 100) \
+            and original_stop is not None and original_stop < entry:
+        c.append((original_stop + params["step1_risk_fraction"]
+                  * (entry - original_stop), "step1"))
+    if close >= entry * (1 + params["step2_trigger_pct"] / 100):
+        c.append((entry * (1 + params["step2_stop_pct"] / 100), "step2"))
+    hc = max(highest_close or close, close)
+    if hc >= entry * (1 + params["trail_trigger_pct"] / 100):
+        c.append((hc * (1 - params["trail_pct"] / 100), "trail"))
+    if not c:
+        return None, None
+    price, step = max(c)
+    price = _cent_up(price)
+    if last_price is not None:
+        ceiling = math.floor(last_price * (1 - params["market_gap_pct"] / 100)
+                             * 100 + 1e-6) / 100
+        if price > ceiling:
+            price, step = ceiling, f"{step} (capped {params['market_gap_pct']:g}% below market)"
+    return price, step
+
+
+def completed_closes_since(df, since, now_utc, interval_minutes=5):
+    """Closes of the 5-minute bars that STARTED at/after `since` and have
+    finished by now_utc."""
+    import pandas as pd
+    if df is None or getattr(df, "empty", True):
+        return []
+    now = pd.Timestamp(now_utc)
+    now = now.tz_localize("UTC") if now.tzinfo is None else now
+    idx = pd.DatetimeIndex(df.index)
+    idx = idx.tz_localize("UTC") if idx.tz is None else idx
+    done = idx + pd.Timedelta(minutes=interval_minutes) <= now
+    if since is not None:
+        s = pd.Timestamp(since)
+        s = s.tz_localize("America/New_York") if s.tzinfo is None else s
+        done &= idx >= s.floor(f"{interval_minutes}min")
+    return [float(x) for x in df["close"][done] if not math.isnan(float(x))]
+
+
+def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
+                   risk_profile: dict, last_price: float, now_utc,
+                   broker_entry: float = None, entry_time=None,
+                   interval_minutes: int = 5, persist=None,
+                   journal_raise=None, alert=None) -> bool:
+    """Apply the S24 percent lock to one BOT daily position. Returns True if
+    the broker stop was replaced. Never lowers a stop, keeps it below the
+    market, and is a no-op on restart (the raised level is persisted)."""
+    if not is_bot_managed(state):
+        return False
+    if trailing_type_for(state, risk_profile) != PCT_LOCK:
+        return False
+    rec = positions.setdefault(ticker, state)
+    changed = False
+    # Entry = the broker's average fill, never a journaled reference.
+    if broker_entry is not None and state.get("entry_price") != broker_entry:
+        logger.info(f"{ticker}: entry_price {state.get('entry_price')} -> "
+                    f"{broker_entry} (broker average fill)")
+        rec["entry_price"] = state["entry_price"] = broker_entry
+        changed = True
+    if state.get("original_stop") is None and original_stop(state) is not None:
+        rec["original_stop"] = state["original_stop"] = original_stop(state)
+        changed = True
+    entry = state.get("entry_price")
+    closes = completed_closes_since(df, entry_time, now_utc, interval_minutes)
+    if closes:
+        hc = max([state.get("highest_close") or 0.0] + closes)
+        if hc != state.get("highest_close"):
+            rec["highest_close"] = state["highest_close"] = hc
+            changed = True
+    close = last_completed_close(df, now_utc, interval_minutes)
+    params = pct_lock_params(risk_profile)
+    new_stop, step = pct_lock_target(entry, original_stop(state), close,
+                                     state.get("highest_close"), last_price,
+                                     params)
+    try:
+        old_stop = float(state.get("trailing_stop_price") or 0)
+    except (TypeError, ValueError):
+        old_stop = 0.0
+    if new_stop is None or new_stop <= old_stop or not state.get("stop_order_id"):
+        if changed and persist is not None:
+            persist(positions)
+        return False
+    try:
+        new_order = broker.replace_stop(state["stop_order_id"], new_stop)
+    except BrokerError as e:
+        logger.warning(f"{ticker}: pct lock could not replace stop: {e}")
+        if changed and persist is not None:
+            persist(positions)
+        return False
+    rec["stop_order_id"] = str(new_order.id)
+    rec["trailing_stop_price"] = new_stop
+    rec["lock_step"] = step
+    detail = (f"pct_lock {step} (close {close:g}, entry {entry:g}): "
+              f"stop {old_stop:g} -> {new_stop:g}")
+    logger.info(f"{ticker}: {detail}")
+    if journal_raise is not None:
+        try:
+            journal_raise(ticker, state.get("shares_held") or 0, new_stop, detail)
+        except Exception as e:
+            logger.error(f"{ticker}: could not journal pct lock: {e}")
+    if persist is not None:
+        try:
+            persist(positions)
+        except Exception as e:
+            logger.error(f"{ticker}: could not persist pct-lock stop: {e}")
+    if alert is not None:
+        try:
+            alert(ticker, old_stop, new_stop, step, entry, last_price)
+        except Exception as e:
+            logger.warning(f"{ticker}: pct-lock alert skipped: {e}")
+    return True
+

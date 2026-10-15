@@ -215,3 +215,28 @@ def alert_startup(**kwargs):
     """"Desk up", from the worker loop after its first completed cycle.
     Never raises, never blocks."""
     return post(lambda: startup_embed(**kwargs), key="startup")
+
+
+def stop_raise_embed(ticker, old_stop, new_stop, step, entry, last_price,
+                     ts=None) -> dict:
+    """S24: the percent lock raised a stop."""
+    ts = ts or datetime.now(ET)
+    fields = [("Stop", f"${old_stop:,.2f} -> ${new_stop:,.2f}"),
+              ("Step", step), ("Entry (broker fill)", _price(entry)),
+              ("Locked", f"{(new_stop / entry - 1) * 100:+.2f}% vs entry"),
+              ("Time", two_zone(ts))]
+    if last_price:
+        fields.insert(2, ("Last", f"${last_price:,.2f}"))
+    return {"title": f"🔒 STOP RAISED {ticker}", "color": AMBER,
+            "fields": fields}
+
+
+def alert_stop_raise(ticker, old_stop, new_stop, step, entry, last_price):
+    """Never raises; posted through alerts.post_async."""
+    try:
+        return post(lambda: stop_raise_embed(ticker, old_stop, new_stop, step,
+                                             entry, last_price))
+    except Exception as e:
+        logger.warning(f"stop-raise alert skipped: {e}")
+        return None
+

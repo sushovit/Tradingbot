@@ -119,8 +119,16 @@
             "atr_multiplier": 1.5,
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.0,
-            "daily_trailing": "profit_lock",
-            "daily_profit_lock": [[1.0, 0.0]],
+            "daily_trailing": "pct_lock",
+            "daily_pct_lock": {
+                "step1_trigger_pct": 0.75,
+                "step1_risk_fraction": 0.5,
+                "step2_trigger_pct": 1.25,
+                "step2_stop_pct": 0.1,
+                "trail_trigger_pct": 2.0,
+                "trail_pct": 1.0,
+                "market_gap_pct": 0.1
+            },
             "use_volume_filter": true
         },
         "Moderate": {
@@ -132,8 +140,16 @@
             "atr_multiplier": 2.0,
             "trailing_stop_type": "ATR",
             "trailing_stop_value": 2.5,
-            "daily_trailing": "profit_lock",
-            "daily_profit_lock": [[1.0, 0.0]],
+            "daily_trailing": "pct_lock",
+            "daily_pct_lock": {
+                "step1_trigger_pct": 0.75,
+                "step1_risk_fraction": 0.5,
+                "step2_trigger_pct": 1.25,
+                "step2_stop_pct": 0.1,
+                "trail_trigger_pct": 2.0,
+                "trail_pct": 1.0,
+                "market_gap_pct": 0.1
+            },
             "use_volume_filter": true
         }
     },
