@@ -292,6 +292,21 @@ def judge(key: str, target, actual, frac: float, monthly: bool):
     return ("MET" if actual >= target else "MISSED"), target
 
 
+def _probation_slots(config: dict = None) -> int:
+    """The live setup_probation.max_concurrent, read from the config FILE so
+    a proposal never repeats a change that has already shipped."""
+    if config is None:
+        try:
+            with open("bot_config.json", encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            config = {}
+    try:
+        return int((config.get("setup_probation") or {}).get("max_concurrent", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
     """(why with numbers, one proposed fix) for a goal."""
     f = ev["funnel"]
@@ -307,8 +322,12 @@ def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
                f"{top(skipped)}; late/missed sessions "
                f"{len(ev['late'])}/{len(ev['missed'])}.")
         if skipped.get("probation slot"):
-            fix = ("raise setup_probation.max_concurrent 1 -> 2 (agenda 14: "
-                   "the probation-blocked signals replay best)")
+            n = _probation_slots()
+            fix = (f"raise setup_probation.max_concurrent {n} -> {n + 1} "
+                   f"(probation-blocked signals replay best - agenda 14; "
+                   f"{n} ratified 2026-10-15)" if n >= 2 else
+                   f"raise setup_probation.max_concurrent {n} -> {n + 1} "
+                   f"(agenda 14: the probation-blocked signals replay best)")
         elif ev["missed"] or ev["late"]:
             fix = "fix uptime first (missed/late sessions cost whole days)"
         elif f["approvals"] == 0 and sum(f["gatekeeper_blocks"].values()):

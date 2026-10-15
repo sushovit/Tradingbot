@@ -222,7 +222,8 @@ def test_sheet_says_why_and_proposes_one_fix_per_miss(temp_journal):
     misses = text.count("— MISSED.** Why:")
     assert len(fixes) == misses and misses >= 1
     assert all("proposal, CEO to decide" in l for l in fixes)
-    assert "max_concurrent 1 -> 2" in text      # the probation skip drives it
+    n = goals._probation_slots()                # the live value, never stale
+    assert f"max_concurrent {n} -> {n + 1}" in text   # probation skip drives it
     assert "Profit->loss trades — MET" in text and "Reporting only" in text
 
 
@@ -294,3 +295,9 @@ def test_goal_sheet_failure_never_costs_the_memo(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
     out = review_bot.goals_section("2026-10-15")
     assert out.startswith("## 6. Goals") and "unavailable: boom" in out
+
+
+def test_probation_proposal_follows_the_live_config():
+    assert goals._probation_slots({"setup_probation": {"max_concurrent": 1}}) == 1
+    assert goals._probation_slots({"setup_probation": {"max_concurrent": 2}}) == 2
+    assert goals._probation_slots({}) == 1
