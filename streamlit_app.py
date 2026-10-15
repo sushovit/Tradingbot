@@ -1537,7 +1537,22 @@ with tab1:
     active_config, config_error = load_active_config()
     broker, broker_err = connect_broker()
 
-    # --- Real effective capital, straight from the broker (hard-capped) ---
+    # --- Desk status: worker, market, money - the exact numbers first ---
+    import clockline
+    import dashboard_data
+    desk = dashboard_data.desk_status(LOCK_FILE, STATUS_FILE)
+    st.caption(clockline.two_zone_line())
+    m1, m2, m3, m4, m5 = st.columns(5)
+    if desk["running"]:
+        hb = desk["heartbeat_age"]
+        m1.metric("Worker", "🟢 Running",
+                  delta=(f"heartbeat {int(hb)}s ago" if hb is not None else "no heartbeat"),
+                  delta_color="off",
+                  help=f"PID {desk['pid']} · last cycle #{desk['cycle']} at {desk['time']} ET")
+    else:
+        m1.metric("Worker", "⚪ Stopped", delta=desk["headline"][:40] or "—",
+                  delta_color="off",
+                  help="Starts by itself at 09:25 ET on trading days (launchd).")
     if broker_err:
         st.warning(f"Broker unreachable — {broker_err}")
     else:
@@ -1545,15 +1560,37 @@ with tab1:
             broker_equity = broker.get_equity()
             effective = risk.effective_equity(broker_equity, active_config or {})
             cap = (active_config or {}).get("capital_cap_usd")
-            state = "🟢 Running" if is_running else "⚪ Idle"
-            if cap is not None:
-                st.metric(f"{state} · Effective Capital", f"${effective:,.2f}",
-                          help=f"min(capital_cap_usd ${cap:,.0f}, broker equity ${broker_equity:,.2f})")
-            else:
-                st.metric(f"{state} · Effective Capital (UNCAPPED)", f"${effective:,.2f}",
-                          help="capital_cap_usd missing from bot_config.json — sizing off full broker equity!")
+            m2.metric("Equity (broker)", f"${broker_equity:,.2f}",
+                      delta=f"{broker_equity - 5000:+,.2f} vs $5,000 start",
+                      help="Paper account started at $5,000 on 2026-10-09.")
+            m3.metric("Effective capital" + ("" if cap is not None else " (UNCAPPED)"),
+                      f"${effective:,.2f}",
+                      help=(f"min(capital_cap_usd ${cap:,.0f}, broker equity)"
+                            if cap is not None else
+                            "capital_cap_usd missing - sizing off full equity!"))
         except BrokerError as e:
             st.warning(f"Could not read account equity: {e}")
+    try:
+        m4.metric("Realized P&L today", f"${journal.daily_realized_pnl():+,.2f}",
+                  help="Closed trades today, from the journal (broker fills).")
+    except Exception:
+        m4.metric("Realized P&L today", "—")
+    _open_rows = []
+    # Never inside the worker (its bare-mode import runs this page).
+    if not broker_err and not desk_config.in_worker():
+        try:
+            with open(POSITIONS_STATE_FILE, encoding="utf-8") as _f:
+                _local = json.load(_f)
+        except (OSError, ValueError):
+            _local = {}
+        try:
+            _open_rows = dashboard_data.position_rows(
+                broker.get_positions(), _local, broker.get_live_orders(),
+                active_config or {})
+        except BrokerError as e:
+            st.caption(f"Could not fetch positions: {e}")
+    m5.metric("Open P&L", f"${sum(r['P&L $'] for r in _open_rows):+,.2f}",
+              delta=f"{len(_open_rows)} open position(s)", delta_color="off")
 
     # --- Start / Stop (never create or modify bot_config.json) ---
     ctrl1, ctrl2 = st.columns(2)
@@ -1591,52 +1628,73 @@ with tab1:
     if not desk_config.in_worker():
         _render_live_charts(broker, broker_err)
 
-    # --- Open positions (broker is the source of truth) ---
+    # --- Open positions: broker fill, LIVE stop at the broker, next move ---
     st.subheader("📊 Open Positions")
     if broker_err:
         st.caption("Broker unreachable — cannot list positions.")
+    elif not _open_rows:
+        st.caption("No open positions.")
     else:
-        try:
-            positions_list = broker.get_positions()
-            if positions_list:
-                rows = []
-                for p in positions_list:
-                    pl = getattr(p, "unrealized_pl", None)
-                    plpc = getattr(p, "unrealized_plpc", None)
-                    rows.append({
-                        "Ticker": p.symbol,
-                        "Qty": float(p.qty),
-                        "Avg Entry": float(p.avg_entry_price),
-                        "Current": float(getattr(p, "current_price", 0) or 0),
-                        "Mkt Value": float(getattr(p, "market_value", 0) or 0),
-                        "Unreal. P/L $": float(pl) if pl is not None else 0.0,
-                        "P/L %": (float(plpc) * 100) if plpc is not None else 0.0,
-                    })
-                st.dataframe(
-                    pd.DataFrame(rows), width='stretch', hide_index=True,
-                    column_config={
-                        "Avg Entry": st.column_config.NumberColumn(format="$%.2f"),
-                        "Current": st.column_config.NumberColumn(format="$%.2f"),
-                        "Mkt Value": st.column_config.NumberColumn(format="$%.2f"),
-                        "Unreal. P/L $": st.column_config.NumberColumn(format="$%.2f"),
-                        "P/L %": st.column_config.NumberColumn(format="%.2f%%"),
-                    })
-            else:
-                st.caption("No open positions.")
-        except BrokerError as e:
-            st.caption(f"Could not fetch positions: {e}")
+        st.dataframe(
+            pd.DataFrame(_open_rows), width='stretch', hide_index=True,
+            column_config={
+                "Entry (fill)": st.column_config.NumberColumn(format="$%.2f",
+                    help="The broker's average fill - not the signal price."),
+                "Last": st.column_config.NumberColumn(format="$%.2f"),
+                "P&L $": st.column_config.NumberColumn(format="$%+.2f"),
+                "P&L %": st.column_config.NumberColumn(format="%+.2f%%"),
+                "R now": st.column_config.NumberColumn(format="%+.2fR",
+                    help="(last - entry) / (entry - original stop)"),
+                "Stop (live)": st.column_config.NumberColumn(format="$%.2f",
+                    help="The stop order working at the broker right now."),
+                "If stopped $": st.column_config.NumberColumn(format="$%+.2f",
+                    help="P&L if the live stop fills: negative = still at risk, "
+                         "positive = profit locked."),
+                "Target": st.column_config.NumberColumn(format="$%.2f"),
+                "To target %": st.column_config.ProgressColumn(
+                    format="%.0f%%", min_value=0, max_value=100,
+                    help="How far price has come from entry toward the target."),
+            })
+        st.caption("Stop and target are the orders live at the broker; they "
+                   "protect the position even when the worker is stopped.")
 
     # --- Live status line (below the open positions, owner 2026-10-14) ---
     st.subheader("Live Status")
-    status_message = "Bot is Idle."
-    if is_running:
-        if os.path.exists(STATUS_FILE):
-            try:
-                with open(STATUS_FILE, "r") as f: status_message = f.read()
-            except Exception: pass
+    if desk["cycle"] is not None:
+        counts = desk["counts"]
+        st.markdown(f"**Cycle #{desk['cycle']}** at {desk['time']} ET — "
+                    f"scanned {sum(counts.values())} tickers")
+        if counts:
+            st.dataframe(pd.DataFrame([counts]), width='stretch', hide_index=True)
+    else:
+        st.info(desk["headline"] or ("Bot is initializing..." if is_running
+                                     else "Bot is idle."))
+    with st.expander("Raw status lines (last 3)"):
+        try:
+            with open(STATUS_FILE, "r", encoding="utf-8", errors="replace") as f:
+                st.code(f.read(), language=None)
+        except OSError:
+            st.caption("No status file yet.")
+
+    # --- Today's gatekeeper decisions ---
+    st.subheader("🧠 Gatekeeper decisions today")
+    try:
+        if desk_config.in_worker():
+            raise RuntimeError("not rendered inside the worker")
+        import sqlite3 as _sqlite3
+        _conn = _sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
+        _conn.row_factory = _sqlite3.Row
+        _today = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+        _dec = dashboard_data.decision_rows(
+            _conn, _today,
+            (active_config or {}).get("claude_conviction_threshold", 70))
+        _conn.close()
+        if _dec:
+            st.dataframe(pd.DataFrame(_dec), width='stretch', hide_index=True)
         else:
-            status_message = "Bot is initializing..."
-    st.info(status_message)
+            st.caption("No gatekeeper calls yet today.")
+    except Exception as e:
+        st.caption(f"Decisions unavailable: {e}")
 
     # --- Trades on the $5,000 account, from the journal ---
     # live_trades.csv was only rotated by the Start button (launchd never
@@ -1908,7 +1966,7 @@ with tab4:
                 "Entry": float(p.avg_entry_price),
                 "Current": float(getattr(p, "current_price", 0) or 0),
                 "Unreal. P/L $": float(getattr(p, "unrealized_pl", 0) or 0),
-            } for p in _ipos]), use_container_width=True, hide_index=True)
+            } for p in _ipos]), width='stretch', hide_index=True)
     except Exception as e:
         st.caption(f"Intern account unavailable: {e}")
 
@@ -1938,7 +1996,7 @@ with tab4:
             g4.metric("Good rate", f"{card['good_pct']}%" if card["good_pct"] is not None else "—")
             st.dataframe(pd.DataFrame(_hist)[
                 ["date", "ticker", "stance", "conviction", "grade", "grade_note"]],
-                use_container_width=True, hide_index=True)
+                width='stretch', hide_index=True)
         else:
             st.caption("No intern calls recorded yet.")
     except Exception as e:
