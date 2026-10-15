@@ -901,6 +901,18 @@ in the window, not each day's exact scan. The profit lock went live on
 figures estimate the current rules forward, not what the desk would have
 earned.
 
+### Decision (CEO, 2026-10-15)
+
+**Ratified: recommendation 2 — `setup_probation.max_concurrent` 1 -> 2.**
+Shipped as config only (`bot_config.json`); `risk.check_setup_probation`
+already reads the value, so no code changed. Effective from the 2026-10-15
+09:25 ET start. Each probation setup may now hold two open positions:
+worst-case risk on one setup is 2% of equity ($100; $125 if both entries
+carried the 1.25x conviction sizing). Daily loss breaker (4%) unchanged.
+Review again at 10 v5 reclaim trades, per the recommendation. The other
+recommendations of item 14 stand as written: (b) declined, (d) optional,
+(e) a journal-only shadow lane to be commissioned, not shipped.
+
 ---
 
 ## 15. DECISION — gatekeeper resistance rule: keep (CEO, 2026-10-14)

@@ -58,7 +58,7 @@ def no_journal(decision_id):
 def test_the_config_under_test_still_scopes_reclaim_from_v5():
     """Everything below assumes the ratified scope; fail loudly if it moves."""
     assert risk.probation_min_prompt_version(RECLAIM, CONFIG) == 5
-    assert risk.probation_max_concurrent(CONFIG) == 1
+    assert risk.probation_max_concurrent(CONFIG) == 2   # agenda 14, ratified 2026-10-15
 
 
 def test_two_open_v4_reclaims_do_not_block_a_v5_signal():
@@ -68,17 +68,25 @@ def test_two_open_v4_reclaims_do_not_block_a_v5_signal():
     assert gate(v4_book(), resolver=no_journal) == (True, None)
 
 
-def test_one_open_v5_reclaim_blocks_the_next():
-    """The probation still bounds exposure: one v5 reclaim at a time."""
+def test_v5_reclaims_fill_the_slots_up_to_max_concurrent():
+    """The probation still bounds exposure: max_concurrent v5 reclaims at a
+    time (2 since agenda 14 was ratified, 2026-10-15). v4 never counts."""
     book = dict(v4_book(), DDOG=reclaim(prompt_version=5))
     assert risk.probation_open_tickers(RECLAIM, book, CONFIG,
                                        resolver=no_journal) == ["DDOG"]
+    assert gate(book, resolver=no_journal) == (True, None)          # 1 of 2
+    book["LRCX"] = reclaim(prompt_version=5)
+    assert risk.probation_open_tickers(RECLAIM, book, CONFIG,
+                                       resolver=no_journal) == ["DDOG", "LRCX"]
     assert gate(book, resolver=no_journal) == (False, "probation_position_open")
 
 
 def test_a_later_version_still_holds_the_slot():
-    assert gate({"NET": reclaim(prompt_version=6)}, resolver=no_journal) \
-        == (False, "probation_position_open")
+    book = {"NET": reclaim(prompt_version=6)}
+    assert risk.probation_open_count(RECLAIM, book, CONFIG,
+                                     resolver=no_journal) == 1
+    book["NU"] = reclaim(prompt_version=6)
+    assert gate(book, resolver=no_journal) == (False, "probation_position_open")
 
 
 def test_a_closed_v5_position_does_not_hold_the_slot():
@@ -103,6 +111,9 @@ def test_a_legacy_record_with_a_v5_decision_id_is_counted(temp_journal):
         {"approved": True, "conviction_score": 74})
     book = {"PGR": reclaim(decision_id=decision_id)}
     assert risk.probation_open_count(RECLAIM, book, CONFIG) == 1
+    assert gate(book) == (True, None)                               # 1 of 2
+    book["MPC"] = reclaim(decision_id=decision_id)
+    assert risk.probation_open_count(RECLAIM, book, CONFIG) == 2
     assert gate(book) == (False, "probation_position_open")
 
 
@@ -176,10 +187,10 @@ def desk(tmp_path, monkeypatch, temp_journal):
     return tmp_path
 
 
-def test_the_floor_reads_zero_of_one_for_the_v4_only_book(desk):
+def test_the_floor_reads_zero_slots_used_for_the_v4_only_book(desk):
     lines = floor.probation_section()
     line = next(l for l in lines if RECLAIM in l)
-    assert "(0/1 slot in use)" in line
+    assert "(0/2 slot in use)" in line
 
 
 def test_the_floor_counts_a_v5_position(desk):
@@ -187,7 +198,7 @@ def test_the_floor_counts_a_v5_position(desk):
         json.dumps(dict(v4_book(), DDOG=reclaim(prompt_version=5))),
         encoding="utf-8")
     line = next(l for l in floor.probation_section() if RECLAIM in l)
-    assert "(1/1 slot in use)" in line
+    assert "(1/2 slot in use)" in line
 
 
 class _OfflineBroker:
@@ -214,7 +225,7 @@ def test_the_report_line_uses_the_same_count(desk, monkeypatch):
     text = report.build_report()
     line = next(l for l in text.splitlines()
                 if RECLAIM in l and "probation**" in l)
-    assert "0/1 slot in use" in line
+    assert "0/2 slot in use" in line
 
 
 # ================================================ the worker
@@ -268,3 +279,14 @@ def test_a_reconciled_position_has_a_null_prompt_version():
     assert "prompt_version" in positions["SPCX"]
     assert positions["SPCX"]["prompt_version"] is None
     assert risk.probation_open_count(RECLAIM, positions, CONFIG) == 0
+
+
+def test_ratified_probation_allows_two_open_and_blocks_the_third():
+    """Agenda 14 (CEO, 2026-10-15): max_concurrent 1 -> 2 on the shipped
+    config. A probation setup with one position open may take a second;
+    with two open, the third is refused."""
+    setup = "mean_reversion_reclaim"
+    assert risk.check_setup_probation(setup, 0, 0, CONFIG) == (True, None)
+    assert risk.check_setup_probation(setup, 1, 0, CONFIG) == (True, None)
+    assert risk.check_setup_probation(setup, 2, 0, CONFIG) == \
+        (False, "probation_position_open")
