@@ -1015,3 +1015,26 @@ that trigger are 284.94 and 286.36; and entry x 1.001 = 283.0978 rounds to
 283.10 (the example's 283.09 is a round-down). Row 41 was NOT changed to
 282.815 - that would replace a broker fill with a reference price.
 
+
+### Superseded the same evening — owner ladder (S24b, 2026-10-14)
+
+Before the percent lock ever ran live, the owner replaced step1/step2/trail
+with a ladder (`daily_trailing: "ladder"`, `daily_lock`):
+
+- once a completed 5-minute close >= entry x 1.005 -> stop = entry (breakeven);
+- then stop = max(stop, highest close since entry x 0.995).
+
+Never lowered; at least 0.1% below the last price; rounded up to the cent;
+original stop and 3R target unchanged; each raise journaled (TIGHTEN_STOP)
+and alerted via alerts.post_async. Entry is the broker's average fill.
+
+The order text also said the stop rises in 0.25%-of-entry steps
+(`step_pct`), but its own test numbers (TXN at 282.815: 284.23 -> 282.82,
+284.93 -> 283.51) only hold for a continuous trail - stepping would give
+282.82 at 284.93. The owner chose the **continuous** trail; `step_pct` is
+not in the config. At TXN's real 280.25 fill, breakeven arms at a 281.66
+close.
+
+Reporting: the Discord weekly line now also shows, for the week's closed
+daily trades, what "cushion 0.25%" and the "old +1R rule" would have made,
+replayed on 5-minute bars (lock_replay.py).

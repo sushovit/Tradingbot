@@ -84,10 +84,10 @@ def run(state, price=TWO_R, profile=PROFILE, spread=0.01):
 # ============================================ the config
 
 def test_both_profiles_use_a_daily_lock():
-    """S16 (2026-10-09) reversed 10.6's static stop; S24 (2026-10-14)
-    replaced its R-step lock with the percent lock."""
+    """S16 (2026-10-09) reversed 10.6's static stop; S24/S24b (2026-10-14)
+    replaced its R-step lock with the owner ladder."""
     for name in ("Aggressive", "Moderate"):
-        assert CONFIG["risk_profiles"][name]["daily_trailing"] == "pct_lock"
+        assert CONFIG["risk_profiles"][name]["daily_trailing"] == "ladder"
 
 
 def test_intraday_trailing_is_untouched_in_config():
