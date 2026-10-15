@@ -213,7 +213,7 @@ def test_the_config_puts_reclaim_on_probation_from_v5():
     prob = CONFIG["setup_probation"]
     assert "mean_reversion_reclaim" in prob["setups"]
     assert prob["trades"] == 20
-    assert prob["max_concurrent"] == 1
+    assert prob["max_concurrent"] == 2          # agenda 14, ratified 2026-10-15
     assert prob["count_from_prompt_version"]["mean_reversion_reclaim"] == 5
     assert risk.probation_min_prompt_version("mean_reversion_reclaim",
                                              CONFIG) == 5
@@ -276,7 +276,8 @@ def test_the_count_is_still_per_setup(temp_journal):
 
 
 def test_reclaim_is_on_probation_at_zero_v5_entries(temp_journal):
-    """The practical consequence: from Monday, one reclaim at a time."""
+    """The practical consequence: reclaim is on probation, two at a time
+    (max_concurrent 2 since agenda 14 was ratified, 2026-10-15)."""
     for _ in range(9):
         buy_under(temp_journal, 4)
     live_n = temp_journal.live_entry_count(
@@ -284,8 +285,11 @@ def test_reclaim_is_on_probation_at_zero_v5_entries(temp_journal):
         risk.probation_min_prompt_version("mean_reversion_reclaim", CONFIG))
     assert live_n == 0
     assert risk.on_probation("mean_reversion_reclaim", live_n, CONFIG) is True
+    assert risk.check_setup_probation("mean_reversion_reclaim",
+                                      open_for_setup=1, live_trades=live_n,
+                                      config=CONFIG) == (True, None)
     ok, reason = risk.check_setup_probation("mean_reversion_reclaim",
-                                            open_for_setup=1,
+                                            open_for_setup=2,
                                             live_trades=live_n, config=CONFIG)
     assert ok is False and reason == "probation_position_open"
 
