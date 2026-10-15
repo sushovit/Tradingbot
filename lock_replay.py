@@ -87,3 +87,70 @@ def alternatives(trades, bars_for):
             out[label][1] += 1
             out[label][2] += 1 if ts is None else 0
     return {k: tuple(v) for k, v in out.items()}
+
+
+# ============================================================ live vs shadow (S25)
+
+def shadow_ladder_policy(params=None):
+    """The owner ladder WITH 0.25% steps, as a shadow (never ordered)."""
+    p = dict({"start_pct": 0.50, "cushion_pct": 0.50, "step_pct": 0.25},
+             **(params or {}))
+
+    def policy(entry, original_stop, close, highest_close):
+        return pm.stepped_ladder_target(entry, close, highest_close, p)
+    return policy
+
+
+def _max_high(bars, start, end=None):
+    idx = pd.DatetimeIndex(bars.index)
+    idx = idx.tz_localize("UTC") if idx.tz is None else idx
+    s = pd.Timestamp(start)
+    s = s.tz_localize("America/New_York") if s.tzinfo is None else s
+    mask = idx > s
+    if end is not None:
+        e = pd.Timestamp(end)
+        e = e.tz_localize("America/New_York") if e.tzinfo is None else e
+        mask &= idx <= e
+    sub = bars[mask]
+    return float(sub["high"].max()) if len(sub) else None
+
+
+def shadow_vs_live(trades, bars_for, params=None):
+    """For each CLOSED trade with a stop: the live result (journal) and the
+    shadow owner-ladder result (5-minute replay), each with its best move
+    (max high during the holding window). Returns
+    {"live": {...}, "shadow": {...}} with pnl, trades, wins, win_pct,
+    capture (realized / best move, over trades whose best move > 0)."""
+    policy = shadow_ladder_policy(params)
+    side = {k: {"pnl": 0.0, "trades": 0, "wins": 0, "best": 0.0}
+            for k in ("live", "shadow")}
+    for t in trades:
+        if t.get("stop") is None or t.get("sell_ts") is None:
+            continue
+        try:
+            bars = bars_for(t["ticker"], t["buy_ts"])
+        except Exception:
+            bars = None
+        if bars is None or getattr(bars, "empty", True):
+            continue
+        entry, qty = t["buy"], t["qty"]
+        live_pnl = t.get("pnl") if t.get("pnl") is not None else (t["sell"] - entry) * qty
+        live_best = _max_high(bars, t["buy_ts"], t["sell_ts"])
+        px, ts, _ = replay(bars, t["buy_ts"], entry, float(t["stop"]),
+                           t.get("target"), policy)
+        if px is None:
+            continue
+        shadow_pnl = (px - entry) * qty
+        shadow_best = _max_high(bars, t["buy_ts"], ts)
+        for key, pnl, best in (("live", live_pnl, live_best),
+                               ("shadow", shadow_pnl, shadow_best)):
+            side[key]["pnl"] += pnl
+            side[key]["trades"] += 1
+            side[key]["wins"] += 1 if pnl > 0 else 0
+            if best is not None and best > entry:
+                side[key]["best"] += (best - entry) * qty
+    for v in side.values():
+        v["win_pct"] = 100 * v["wins"] / v["trades"] if v["trades"] else None
+        v["capture"] = v["pnl"] / v["best"] if v["best"] > 0 else None
+    return side
+

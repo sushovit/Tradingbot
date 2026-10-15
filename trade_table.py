@@ -254,10 +254,18 @@ def period_summary(trades, start: date, end: date, label: str,
     return [label] + summary_lines(closed)
 
 
-def weekly_lines(trades, today: date, equity=None, alts=None):
+def weekly_lines(trades, today: date, equity=None, alts=None, shadow=None):
     monday = today - timedelta(days=today.weekday())
     lines = period_summary(trades, monday, today,
                            f"Week {monday:%m-%d}..{today:%m-%d}")
+    if shadow and shadow["live"]["trades"]:
+        # S25: live R/ATR rule vs the shadow owner ladder, same trades.
+        lines.append("Live vs shadow (owner ladder):")
+        for key, label in (("live", "Live  "), ("shadow", "Shadow")):
+            v = shadow[key]
+            cap = f"{v['capture'] * 100:.0f}%" if v["capture"] is not None else "-"
+            win = f"{v['win_pct']:.0f}%" if v["win_pct"] is not None else "-"
+            lines.append(f"  {label} {_money(v['pnl'])}  win {win}  capture {cap}")
     if alts:
         # S24b: the week's closed daily trades replayed under other rules.
         lines.append("Daily trades, other stop rules:")
@@ -333,8 +341,9 @@ def build_messages(conn, day: date, broker=None, weekly=None):
                        day_table(trades, day, open_positions, equity))
     if weekly if weekly is not None else day.weekday() == 4:
         alts = weekly_alternatives(trades, day, broker) if broker else None
+        shadow = weekly_shadow(trades, day, broker) if broker else None
         msgs += to_messages(f"Week — {day:%Y-%m-%d}",
-                            weekly_lines(trades, day, equity, alts))
+                            weekly_lines(trades, day, equity, alts, shadow))
     return msgs
 
 
@@ -381,3 +390,31 @@ def post_messages(messages, url=None):
         except Exception as e:
             statuses.append(f"error: {e}")
     return statuses
+
+
+def weekly_shadow(trades, today: date, broker):
+    """S25: the week's closed daily trades, live vs the shadow owner ladder
+    (BE at +0.5%, trail 0.5% under the high close in 0.25% steps), from
+    5-minute bars. Never raises."""
+    try:
+        import lock_replay
+        cfg = {}
+        try:
+            with open("bot_config.json", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, ValueError):
+            pass
+        params = ((cfg.get("risk_profiles") or {}).get("Moderate") or {}).get("daily_lock")
+        monday = (today - timedelta(days=today.weekday())).isoformat()
+        week = [t for t in trades if t.get("sell_ts")
+                and monday <= t["sell_ts"][:10] <= today.isoformat()
+                and is_daily_setup(t.get("setup"), cfg)]
+
+        def bars_for(ticker, since):
+            days = (today - date.fromisoformat(since[:10])).days + 3
+            return broker.get_bars([ticker], timeframe_minutes=5,
+                                   lookback_days=min(max(days, 3), 60)).get(ticker)
+        return lock_replay.shadow_vs_live(week, bars_for, params)
+    except Exception:
+        return None
+

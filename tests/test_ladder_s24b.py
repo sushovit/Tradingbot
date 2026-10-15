@@ -131,13 +131,15 @@ def test_original_stop_and_target_are_never_touched():
     assert state["target_order_id"] == "tgt-0"
 
 
-def test_shipped_config_is_the_ladder():
+def test_the_ladder_parameters_remain_for_the_shadow():
+    """S25 moved the live rule to r_atr; the owner ladder's daily_lock stays
+    in the config as the SHADOW ladder's parameters (now with step_pct)."""
     cfg = json.load(open("bot_config.json", encoding="utf-8"))
     for name in ("Aggressive", "Moderate"):
         prof = cfg["risk_profiles"][name]
-        assert prof["daily_trailing"] == "ladder"
-        assert pm.ladder_params(prof) == {"start_pct": 0.5, "cushion_pct": 0.5,
-                                          "market_gap_pct": 0.1}
+        assert prof["daily_trailing"] == "r_atr"
+        assert prof["daily_lock"] == {"start_pct": 0.5, "cushion_pct": 0.5,
+                                      "step_pct": 0.25, "market_gap_pct": 0.1}
         assert prof["trailing_stop_type"] == "ATR"      # intraday unchanged
 
 
@@ -145,7 +147,7 @@ def test_the_worker_routes_both_daily_locks():
     with open("streamlit_app.py", encoding="utf-8") as f:
         src = f.read()
     assert "if _ttype in position_mgmt.DAILY_LOCKS:" in src
-    assert pm.DAILY_LOCKS == ("pct_lock", "ladder")
+    assert pm.DAILY_LOCKS == ("pct_lock", "ladder", "r_atr")
 
 
 # ================================================== weekly alternatives

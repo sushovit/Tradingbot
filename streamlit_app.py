@@ -425,6 +425,33 @@ def confirm_fill(broker, order, fallback: float, tries: int = 10):
     return fallback, False
 
 
+def daily_time_or_earnings_exit(ticker, state, risk_profile, now_et,
+                                journal_ops_once=None):
+    """S25: the reason to close a daily R/ATR position now (time stop or
+    earnings within one session), or None. MFE comes from the position's
+    max_high (kept by maybe_pct_lock); the earnings calendar is only asked
+    from the earnings exit time on, and an unreachable calendar never
+    forces an exit - it is journaled instead."""
+    params = position_mgmt.daily_exit_params(risk_profile)
+    entry_ts = journal.trade_timestamp(state.get("entry_trade_id"))
+    day = position_mgmt.session_day(entry_ts[:10], now_et.date()) if entry_ts else None
+    entry = state.get("entry_price")
+    orig = position_mgmt.original_stop(state)
+    mfe_r = None
+    if entry and orig is not None and orig < entry and state.get("max_high"):
+        mfe_r = (state["max_high"] - entry) / (entry - orig)
+    soon = None
+    hh, mm = (int(x) for x in params["earnings_exit_at_et"].split(":"))
+    if params["earnings_exit"] and (now_et.hour, now_et.minute) >= (hh, mm):
+        import earnings
+        soon = earnings.reports_within_one_session(ticker, now_et.date())
+        if soon is None and journal_ops_once is not None:
+            journal_ops_once("earnings_calendar_unavailable",
+                             f"{ticker}: upcoming-earnings check failed - "
+                             f"no earnings exit taken")
+    return position_mgmt.daily_exit_due(day, mfe_r, now_et, soon, params)
+
+
 def live_bot_worker():
     """SUPERVISOR — the cycle loop must never die silently.
 
@@ -898,8 +925,24 @@ def _worker_loop():
                             journal_raise=lambda t, q, px, why: journal.log_trade(
                                 t, "TIGHTEN_STOP", q, px, reason=why,
                                 decision_id=state.get("decision_id")),
-                            alert=trade_alerts.alert_stop_raise)
+                            alert=trade_alerts.alert_stop_raise,
+                            daily_df=daily_bars.get(ticker))
                         trail_df = None
+                        # S25: time stop and earnings exit (R/ATR rule).
+                        if _ttype == position_mgmt.R_ATR:
+                            _why = daily_time_or_earnings_exit(
+                                ticker, state, risk_profile, now_et,
+                                journal_ops_once)
+                            if _why:
+                                close_order = broker.close_position(ticker)
+                                exit_px, _ = confirm_fill(broker, close_order,
+                                                          current_price)
+                                handle_position_exit(
+                                    broker, positions, ticker, state, exit_px,
+                                    _why, now_et,
+                                    broker_order_id=str(getattr(close_order, "id", "")) or None)
+                                status_updates.append(f"{ticker}: CLOSED ({_why})")
+                                continue
                     elif _ttype == position_mgmt.PROFIT_LOCK:
                         position_mgmt.maybe_lock_profit(
                             broker, positions, ticker, state, df,
@@ -1026,6 +1069,30 @@ def _worker_loop():
                 continue
 
             signal = signal_found
+
+            # S25: a NEW daily entry on the R/ATR rule gets an ATR-aware
+            # initial stop - the structural low minus 0.25 x ATR14, its
+            # distance clamped to 1.5-2.5 ATR - and keeps its target at the
+            # same R multiple of the new R. Before every gate, so sizing,
+            # the gatekeeper and the bracket all see the same stop.
+            if signal_timeframe == "daily" and \
+                    position_mgmt.trailing_type_for(
+                        {"timeframe": "daily"}, risk_profile) == position_mgmt.R_ATR:
+                _rp = position_mgmt.r_atr_params(risk_profile)
+                _atr = position_mgmt.daily_atr(daily_bars.get(ticker),
+                                               int(_rp["atr_length"]),
+                                               now_et.date())
+                _new_stop = position_mgmt.initial_stop(signal.entry, signal.stop,
+                                                       _atr, _rp)
+                if _new_stop != signal.stop and signal.entry > signal.stop:
+                    _k = (signal.target - signal.entry) / (signal.entry - signal.stop)
+                    logger.info(f"{ticker}: initial stop {signal.stop:.2f} -> "
+                                f"{_new_stop:.2f} (ATR14 {_atr:.2f}); target "
+                                f"kept at {_k:.2f}R")
+                    signal.extras["structural_stop"] = signal.stop
+                    signal.extras["atr14"] = _atr
+                    signal.stop = _new_stop
+                    signal.target = round(signal.entry + _k * (signal.entry - _new_stop), 2)
 
             # --- Global deterministic gates: journaled as passes too ---
             if breaker_tripped:

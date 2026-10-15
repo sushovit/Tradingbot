@@ -112,7 +112,7 @@ def test_the_shipped_config_is_now_the_percent_lock():
     that still names it."""
     cfg = json.load(open("bot_config.json", encoding="utf-8"))
     for name in ("Aggressive", "Moderate"):
-        assert cfg["risk_profiles"][name]["daily_trailing"] == "ladder"
+        assert cfg["risk_profiles"][name]["daily_trailing"] == "r_atr"   # S25
 
 
 def test_breakeven_step_moves_the_stop_to_entry():
@@ -312,8 +312,8 @@ def test_the_worker_routes_daily_profit_lock_through_maybe_lock_profit():
 def test_the_review_prompt_states_the_new_rule():
     """Superseded by S24 (2026-10-14): the fact now states the percent lock."""
     prompt = review_bot.REVIEW_SYSTEM_PROMPT
-    assert "OWNER LADDER" in prompt and "reversed agenda 10.6" in prompt
-    assert "daily_lock" in prompt
+    assert "R/ATR LADDER" in prompt and "reversed agenda 10.6" in prompt
+    assert "daily_r_atr" in prompt
     assert "max(ATR trail, entry price)" in prompt     # intraday unchanged
     assert "static stop" not in prompt.replace("10.6's static stop", "")
 
