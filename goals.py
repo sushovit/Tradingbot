@@ -307,6 +307,74 @@ def _probation_slots(config: dict = None) -> int:
         return 1
 
 
+# ============================================================ exposure guard
+# CEO, S26: a proposal that INCREASES EXPOSURE (slots, max_positions,
+# risk %, sizing, a wider entry window, a looser filter) must cite the
+# outcome tracker's replay of the signals it would have let through -
+# n, win %, avg R - and with fewer than MIN_EVIDENCE replayed outcomes it
+# proposes nothing. A study, an exit change that takes risk off, or an
+# uptime fix is not exposure.
+
+MIN_EVIDENCE = 10
+INSUFFICIENT = "insufficient evidence, no change proposed"
+EXPOSURE_PATTERN = re.compile(
+    r"max_concurrent|max_positions|risk_per_trade|risk %|risk_pct|"
+    r"\bsizing\b|position size|conviction_size_mult|entry window|"
+    r"use_time_filter|outside_hours|conviction threshold|"
+    r"claude_conviction_threshold|adx_threshold|rsi_threshold|"
+    r"volume_multipliers|spy_filter_exempt|loosen|relax|lower the",
+    re.I)
+
+
+def exposure(text: str, evidence: tuple, label: str) -> dict:
+    """An exposure-increasing proposal and the tracker reason keys whose
+    replays are its evidence."""
+    return {"text": text, "exposure": True, "evidence": tuple(evidence),
+            "label": label}
+
+
+def tracker_evidence(conn, reason_keys) -> dict:
+    """n / win % / avg R of RESOLVED replays in rejection_outcomes for these
+    reason keys (target, stop, or neither at the 10-session horizon)."""
+    if not reason_keys or conn is None:
+        return {"n": 0, "win_pct": None, "avg_r": None}
+    marks = ",".join("?" * len(reason_keys))
+    try:
+        n, wins, avg = conn.execute(
+            f"SELECT count(*), sum(r_achieved > 0), avg(r_achieved) "
+            f"FROM rejection_outcomes WHERE reason_key IN ({marks}) "
+            f"AND resolved = 1 AND r_achieved IS NOT NULL "
+            f"AND outcome IN ('target','stop','neither')",
+            tuple(reason_keys)).fetchone()
+    except sqlite3.Error:
+        return {"n": 0, "win_pct": None, "avg_r": None}
+    n = n or 0
+    return {"n": n, "win_pct": (100.0 * (wins or 0) / n) if n else None,
+            "avg_r": avg if n else None}
+
+
+def guard(fix, conn) -> str:
+    """The printed Fix line for one miss. Exposure proposals - flagged, or
+    caught by EXPOSURE_PATTERN - need >= MIN_EVIDENCE tracker replays."""
+    if isinstance(fix, dict):
+        text, evidence, label = fix["text"], fix["evidence"], fix["label"]
+        is_exposure = fix.get("exposure", False)
+    else:
+        text, evidence, label = fix, (), "the change"
+        is_exposure = bool(EXPOSURE_PATTERN.search(text))
+    if not is_exposure:
+        return f"Fix ({PROPOSAL}): {text}"
+    ev = tracker_evidence(conn, evidence)
+    if ev["n"] < MIN_EVIDENCE:
+        keys = ", ".join(evidence) or "none recorded"
+        return (f"Fix: {INSUFFICIENT} (exposure increase; outcome tracker "
+                f"has n={ev['n']} replayed outcome(s) of signals blocked by "
+                f"{label} [{keys}]; >= {MIN_EVIDENCE} required)")
+    return (f"Fix ({PROPOSAL}): {text}. Evidence (outcome tracker, signals "
+            f"blocked by {label}): n={ev['n']} replayed, win "
+            f"{ev['win_pct']:.0f}%, avg R {ev['avg_r']:+.2f}")
+
+
 def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
     """(why with numbers, one proposed fix) for a goal."""
     f = ev["funnel"]
@@ -323,16 +391,16 @@ def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
                f"{len(ev['late'])}/{len(ev['missed'])}.")
         if skipped.get("probation slot"):
             n = _probation_slots()
-            fix = (f"raise setup_probation.max_concurrent {n} -> {n + 1} "
-                   f"(probation-blocked signals replay best - agenda 14; "
-                   f"{n} ratified 2026-10-15)" if n >= 2 else
-                   f"raise setup_probation.max_concurrent {n} -> {n + 1} "
-                   f"(agenda 14: the probation-blocked signals replay best)")
+            fix = exposure(f"raise setup_probation.max_concurrent {n} -> "
+                           f"{n + 1}", ("probation_position_open",),
+                           "the probation slot")
         elif ev["missed"] or ev["late"]:
             fix = "fix uptime first (missed/late sessions cost whole days)"
         elif f["approvals"] == 0 and sum(f["gatekeeper_blocks"].values()):
-            fix = ("study the gatekeeper's conviction threshold 70 (agenda "
-                   "14, follow-up i)")
+            fix = exposure("study lowering the gatekeeper's conviction "
+                           "threshold 70", ("conviction < 70",),
+                           "the conviction threshold (approvals below 70 are "
+                           "not graded by the tracker)")
         else:
             fix = ("commission the journal-only oversold_bounce shadow lane "
                    "(agenda 14) to add chop-session supply")
@@ -393,7 +461,8 @@ def _fmt(key, v, signed=True):
     return str(v)
 
 
-def sheet_lines(ev: dict, goals: dict, title: str, monthly: bool) -> list:
+def sheet_lines(ev: dict, goals: dict, title: str, monthly: bool,
+                conn=None) -> list:
     partial = ev["fraction"] < 1.0
     lines = [f"### {title} ({ev['start']} .. {ev['end']}, "
              f"{len(ev['sessions'])}/{ev['sessions_in_period']} sessions"
@@ -417,7 +486,7 @@ def sheet_lines(ev: dict, goals: dict, title: str, monthly: bool) -> list:
         status = next((st for k, st in misses if k == key), "MET")
         lines.append(f"- **{LABELS[key]} — {status}.** Why: {why}")
         if status == "MISSED":
-            lines.append(f"  - Fix ({PROPOSAL}): {fix}")
+            lines.append(f"  - {guard(fix, conn)}")
     return lines
 
 
@@ -426,6 +495,8 @@ DEFINITIONS = (
     "realized on trades closed in the period; capture = realized / peak "
     "open profit (5-minute highs); on time = worker started by 09:30 ET "
     "(logs/worker.log); profit->loss = up >= +0.5R open, closed red. "
+    "A fix that increases exposure needs >= 10 outcome-tracker replays of "
+    "the signals it would admit, else no change is proposed. "
     "Reporting only - goals never reach the gatekeeper, prompts, filters, "
     "sizing or orders._")
 
@@ -448,8 +519,9 @@ def build(asof: date, conn, broker=None, goals: dict = None,
     mo = evaluate(conn, *month_bounds(asof), asof, goals, broker,
                   bars_by_ticker, starts, open_pnl)
     lines = ["## 6. Goals", ""]
-    lines += sheet_lines(wk, goals, "Week to date", monthly=False)
-    lines += [""] + sheet_lines(mo, goals, "Month to date", monthly=True)
+    lines += sheet_lines(wk, goals, "Week to date", monthly=False, conn=conn)
+    lines += [""] + sheet_lines(mo, goals, "Month to date", monthly=True,
+                                conn=conn)
     lines += ["", DEFINITIONS]
     return lines, wk, mo
 

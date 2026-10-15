@@ -218,12 +218,15 @@ def test_sheet_says_why_and_proposes_one_fix_per_miss(temp_journal):
     text = "\n".join(lines)
     assert lines[0] == "## 6. Goals"
     assert "| Trades / week | 3 | 0 | **MISSED** |" in text
-    fixes = [l for l in lines if "Fix (" in l]
+    fixes = [l for l in lines if "Fix" in l and l.lstrip().startswith("- Fix")]
     misses = text.count("— MISSED.** Why:")
     assert len(fixes) == misses and misses >= 1
-    assert all("proposal, CEO to decide" in l for l in fixes)
-    n = goals._probation_slots()                # the live value, never stale
-    assert f"max_concurrent {n} -> {n + 1}" in text   # probation skip drives it
+    assert all("proposal, CEO to decide" in l or goals.INSUFFICIENT in l
+               for l in fixes)
+    # the probation skip drives an EXPOSURE proposal; this journal has no
+    # tracker replays, so the guard proposes nothing
+    probation = next(l for l in fixes if "probation slot" in l)
+    assert goals.INSUFFICIENT in probation and "max_concurrent" not in probation
     assert "Profit->loss trades — MET" in text and "Reporting only" in text
 
 
@@ -301,3 +304,105 @@ def test_probation_proposal_follows_the_live_config():
     assert goals._probation_slots({"setup_probation": {"max_concurrent": 1}}) == 1
     assert goals._probation_slots({"setup_probation": {"max_concurrent": 2}}) == 2
     assert goals._probation_slots({}) == 1
+
+
+# ================================================== exposure guard (CEO, S26)
+
+def _tracker(j, reason_key, rs):
+    import sqlite3
+    import outcomes
+    outcomes.init_table(j.DB_FILE)
+    c = sqlite3.connect(j.DB_FILE)
+    for i, r in enumerate(rs, 1):
+        c.execute("INSERT INTO rejection_outcomes (decision_id, decided_date, "
+                  "ticker, source, reason_key, outcome, r_achieved, resolved, "
+                  "updated_at) VALUES (?, '2026-10-01', 'X', 'rules', ?, ?, ?, 1, 'x')",
+                  (1000 + i, reason_key,
+                   "target" if r >= 3 else "stop" if r <= -1 else "neither", r))
+    c.commit()
+    return c
+
+
+PROBATION = goals.exposure("raise setup_probation.max_concurrent 2 -> 3",
+                           ("probation_position_open",), "the probation slot")
+
+
+def test_exposure_proposal_without_10_replays_proposes_nothing(temp_journal):
+    conn = _tracker(temp_journal, "probation_position_open", [3.0] * 9)
+    line = goals.guard(PROBATION, conn)
+    assert line.startswith("Fix: insufficient evidence, no change proposed")
+    assert "n=9" in line and "max_concurrent" not in line
+    assert "proposal, CEO to decide" not in line
+
+
+def test_exposure_proposal_with_10_replays_cites_n_win_and_avg_r(temp_journal):
+    rs = [3.0, 3.0, 3.0, -1.0, -1.0, -1.0, -1.0, 0.5, -0.2, 3.0]
+    conn = _tracker(temp_journal, "probation_position_open", rs)
+    line = goals.guard(PROBATION, conn)
+    assert line.startswith("Fix (proposal, CEO to decide): raise "
+                           "setup_probation.max_concurrent 2 -> 3")
+    assert "n=10 replayed" in line and "win 50%" in line
+    assert f"avg R {sum(rs) / 10:+.2f}" in line
+
+
+def test_unresolved_or_ungraded_rows_are_not_evidence(temp_journal):
+    conn = _tracker(temp_journal, "probation_position_open", [3.0] * 9)
+    conn.execute("INSERT INTO rejection_outcomes (decision_id, decided_date, "
+                 "ticker, source, reason_key, outcome, r_achieved, resolved, "
+                 "updated_at) VALUES (5000, '2026-10-01', 'X', 'rules', "
+                 "'probation_position_open', 'no_geometry', NULL, 1, 'x')")
+    conn.execute("INSERT INTO rejection_outcomes (decision_id, decided_date, "
+                 "ticker, source, reason_key, outcome, r_achieved, resolved, "
+                 "updated_at) VALUES (5001, '2026-10-13', 'X', 'rules', "
+                 "'probation_position_open', 'neither', 0.4, 0, 'x')")
+    assert goals.tracker_evidence(conn, ("probation_position_open",))["n"] == 9
+
+
+def test_the_conviction_threshold_idea_has_no_tracker_evidence(temp_journal):
+    """Approvals below 70 are approved=1 rows; the tracker grades only
+    rejections, so this can never clear the guard as things stand."""
+    import sqlite3
+    conn = sqlite3.connect(temp_journal.DB_FILE)
+    fix = goals.exposure("study lowering the gatekeeper's conviction threshold 70",
+                         ("conviction < 70",), "the conviction threshold")
+    assert goals.INSUFFICIENT in goals.guard(fix, conn)
+
+
+@pytest.mark.parametrize("text", [
+    "raise max_positions 4 -> 5",
+    "raise risk_per_trade_pct 1.0 -> 1.25",
+    "allow larger position size on conviction 80+",
+    "widen the entry window to 09:30-15:30",
+    "lower the adx_threshold to 25",
+    "loosen the volume filter",
+])
+def test_unflagged_exposure_wording_is_still_guarded(temp_journal, text):
+    import sqlite3
+    line = goals.guard(text, sqlite3.connect(temp_journal.DB_FILE))
+    assert goals.INSUFFICIENT in line and text not in line
+
+
+@pytest.mark.parametrize("text", [
+    "fix uptime first (missed/late sessions cost whole days)",
+    "schedule a 09:15 ET wake (pmset repeat wakeorpoweron) and keep the lid open",
+    "study moving the breakeven lock from +1.0R to +0.5R (S15 variants)",
+    "study entry quality on stopped trades (stop distance vs ATR) before "
+    "changing any filter",
+    "commission the journal-only oversold_bounce shadow lane (agenda 14) to "
+    "add chop-session supply",
+])
+def test_non_exposure_fixes_pass_through(temp_journal, text):
+    import sqlite3
+    line = goals.guard(text, sqlite3.connect(temp_journal.DB_FILE))
+    assert line == f"Fix (proposal, CEO to decide): {text}"
+
+
+def test_every_fix_why_and_fix_can_emit_is_classified_correctly():
+    """The two exposure proposals are flagged with evidence keys; every
+    plain-string fix in why_and_fix is non-exposure by the keyword net."""
+    import inspect
+    src = inspect.getsource(goals.why_and_fix)
+    assert src.count("exposure(") == 2
+    assert '("probation_position_open",)' in src and '("conviction < 70",)' in src
+    plain = re.findall(r'fix = \(?"([^"]+)', src)
+    assert plain and not any(goals.EXPOSURE_PATTERN.search(t) for t in plain)
