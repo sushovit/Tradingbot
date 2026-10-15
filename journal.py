@@ -1241,3 +1241,15 @@ def agreement_report() -> dict:
     if gaps:
         report["avg_conviction_gap"] = round(sum(gaps) / len(gaps), 1)
     return report
+
+
+def trade_timestamp(trade_id):
+    """ET timestamp string of a trade row, or None (S24: a position's entry
+    time, for the highest close since entry)."""
+    if trade_id is None:
+        return None
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT timestamp FROM trades WHERE id=?",
+                           (int(trade_id),)).fetchone()
+    return row["timestamp"] if row else None
+

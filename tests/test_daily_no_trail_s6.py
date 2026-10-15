@@ -83,11 +83,11 @@ def run(state, price=TWO_R, profile=PROFILE, spread=0.01):
 
 # ============================================ the config
 
-def test_both_profiles_use_the_daily_profit_lock():
-    """S16 (CEO 2026-10-09) reversed 10.6: daily positions no longer keep a
-    static stop; they step it up on the profit lock."""
+def test_both_profiles_use_a_daily_lock():
+    """S16 (2026-10-09) reversed 10.6's static stop; S24 (2026-10-14)
+    replaced its R-step lock with the percent lock."""
     for name in ("Aggressive", "Moderate"):
-        assert CONFIG["risk_profiles"][name]["daily_trailing"] == "profit_lock"
+        assert CONFIG["risk_profiles"][name]["daily_trailing"] == "pct_lock"
 
 
 def test_intraday_trailing_is_untouched_in_config():

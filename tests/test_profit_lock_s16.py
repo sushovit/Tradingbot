@@ -106,14 +106,13 @@ def test_malformed_or_unplaceable_steps_are_dropped(raw):
     assert pm.profit_lock_steps({"daily_profit_lock": raw}) == ()
 
 
-def test_the_shipped_config_is_breakeven_at_one_r():
-    """CEO rule 2026-10-09: f did not beat b on expectancy for both setups,
-    so b ships - stop to breakeven at +1R."""
+def test_the_shipped_config_is_now_the_percent_lock():
+    """S24 (CEO + owner 2026-10-14) replaced the R-step lock that shipped
+    here on 2026-10-09; the profit_lock code path stays for any profile
+    that still names it."""
     cfg = json.load(open("bot_config.json", encoding="utf-8"))
     for name in ("Aggressive", "Moderate"):
-        profile = cfg["risk_profiles"][name]
-        assert profile["daily_trailing"] == "profit_lock"
-        assert pm.profit_lock_steps(profile) == ((1.0, 0.0),)
+        assert cfg["risk_profiles"][name]["daily_trailing"] == "pct_lock"
 
 
 def test_breakeven_step_moves_the_stop_to_entry():
@@ -311,9 +310,10 @@ def test_the_worker_routes_daily_profit_lock_through_maybe_lock_profit():
 
 
 def test_the_review_prompt_states_the_new_rule():
+    """Superseded by S24 (2026-10-14): the fact now states the percent lock."""
     prompt = review_bot.REVIEW_SYSTEM_PROMPT
-    assert "PROFIT LOCK" in prompt and "reversing agenda 10.6" in prompt
-    assert "daily_profit_lock" in prompt
+    assert "PERCENT LOCK" in prompt and "reversed agenda 10.6" in prompt
+    assert "daily_pct_lock" in prompt
     assert "max(ATR trail, entry price)" in prompt     # intraday unchanged
     assert "static stop" not in prompt.replace("10.6's static stop", "")
 

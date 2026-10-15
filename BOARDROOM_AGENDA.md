@@ -967,3 +967,51 @@ The signals the rule removes lose money as a group: at a 3R target the
 break-even win rate is 25%, and these resolve at 19%. The rule is earning its
 keep. Revisit only if a later sample of 30+ resolved replays comes in above
 25%.
+---
+
+## 16. DECISION — daily percent lock replaces the R-step profit lock (S24, CEO + owner, 2026-10-14)
+
+**CEO + owner decision, 2026-10-14.** The daily profit lock is replaced by a
+percent lock (S24), effective for every open and new DAILY position,
+including TXN. Intraday positions are unchanged (ATR trail + breakeven
+floor). Owner override of the deploy window was given, as on 10-09; in the
+event the merge landed at ~21:40 ET, after the 16:15 shutdown, so no live
+session ran on mixed code.
+
+### The rule (bot_config.json `daily_trailing: "pct_lock"`, `daily_pct_lock`)
+
+Decided on the last COMPLETED 5-minute close, every worker cycle, in
+percent of the BROKER's average fill:
+
+| Step | When | Stop becomes |
+|---|---|---|
+| step1 | close >= entry x 1.0075 | original stop + 0.5 x (entry - original stop) |
+| step2 | close >= entry x 1.0125 | entry x 1.001 |
+| trail | highest close since entry >= entry x 1.02 | highest close x 0.99 |
+
+The highest candidate wins. A stop is never lowered, and never placed
+within 0.1% of the last price (it is capped 0.1% below). Prices round UP
+to the cent. Each raise is journaled as a TIGHTEN_STOP row (old -> new,
+step), positions are written immediately, and a Discord alert goes out via
+alerts.post_async. A restart is a no-op (the raised level is persisted).
+
+### TXN - entry is the broker fill
+
+The decision text gave TXN's entry as 282.815. That is the SIGNAL price
+(decision 12409 context). Alpaca's entry order filled at **280.25**
+(filled 09:32:53 ET; the position's avg_entry_price is 280.25), and journal
+row 41 already holds 280.25. The rule as written uses the broker fill, so
+TXN's live triggers are lower than the decision's worked example:
+
+| | At 282.815 (example) | At 280.25 (TXN live) |
+|---|---|---|
+| step1 trigger -> stop | 284.94 -> 280.41 | 282.36 -> 279.13 |
+| step2 trigger -> stop | 286.36 -> 283.10 | 283.76 -> 280.54 |
+| trail from | 288.47 | 285.86 |
+
+Two arithmetic notes: the example triggers 284.93 and 286.35 are a
+fraction of a cent below entry x 1.0075 / x 1.0125, so the first cents
+that trigger are 284.94 and 286.36; and entry x 1.001 = 283.0978 rounds to
+283.10 (the example's 283.09 is a round-down). Row 41 was NOT changed to
+282.815 - that would replace a broker fill with a reference price.
+

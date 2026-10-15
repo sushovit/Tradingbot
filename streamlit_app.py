@@ -750,11 +750,17 @@ def _worker_loop():
             except BrokerError as e:
                 logger.warning(f"Daily bars unavailable this cycle: {e}")
 
-        # Snapshot of broker positions once per cycle for exit detection.
+        # Snapshot of broker positions once per cycle for exit detection,
+        # and (S24) each holding's average fill - the entry the percent
+        # lock measures from, never a journaled reference price.
         try:
-            broker_symbols = {p.symbol for p in broker.get_positions()}
+            _held_now = broker.get_positions()
+            broker_symbols = {p.symbol for p in _held_now}
+            broker_entries = {p.symbol: float(p.avg_entry_price)
+                              for p in _held_now}
         except BrokerError:
             broker_symbols = None  # unknown — don't infer exits this cycle
+            broker_entries = {}
 
         def journal_pass_once(t, setup_name, filter_name, details="", bar_key=None):
             """Journal a rules pass ONCE per (ticker, setup, filter, bar/day).
@@ -876,8 +882,25 @@ def _worker_loop():
                     # steps its stop on the last COMPLETED 5-minute close
                     # (this cycle's `df`), so it needs no daily frame and
                     # never runs the ATR ratchet below.
-                    if position_mgmt.trailing_type_for(state, risk_profile) \
-                            == position_mgmt.PROFIT_LOCK:
+                    _ttype = position_mgmt.trailing_type_for(state, risk_profile)
+                    if _ttype == position_mgmt.PCT_LOCK:
+                        # S24 percent lock (CEO + owner 2026-10-14), every
+                        # cycle, on the last COMPLETED 5-minute close.
+                        position_mgmt.maybe_pct_lock(
+                            broker, positions, ticker, state, df,
+                            risk_profile, current_price,
+                            now_utc=datetime.now(pytz.utc),
+                            broker_entry=broker_entries.get(ticker),
+                            entry_time=journal.trade_timestamp(
+                                state.get("entry_trade_id")),
+                            interval_minutes=interval_mins,
+                            persist=write_positions,
+                            journal_raise=lambda t, q, px, why: journal.log_trade(
+                                t, "TIGHTEN_STOP", q, px, reason=why,
+                                decision_id=state.get("decision_id")),
+                            alert=trade_alerts.alert_stop_raise)
+                        trail_df = None
+                    elif _ttype == position_mgmt.PROFIT_LOCK:
                         position_mgmt.maybe_lock_profit(
                             broker, positions, ticker, state, df,
                             risk_profile, current_price,
