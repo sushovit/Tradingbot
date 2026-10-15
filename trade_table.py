@@ -92,6 +92,7 @@ def load_trades(conn):
             "reason": "partial" if partial else (last["reason"] if last
                                                  else None),
             "target": ctx.get("target"), "stop": ctx.get("stop"),
+            "setup": b["reason"],
         })
     return out
 
@@ -253,10 +254,17 @@ def period_summary(trades, start: date, end: date, label: str,
     return [label] + summary_lines(closed)
 
 
-def weekly_lines(trades, today: date, equity=None):
+def weekly_lines(trades, today: date, equity=None, alts=None):
     monday = today - timedelta(days=today.weekday())
     lines = period_summary(trades, monday, today,
                            f"Week {monday:%m-%d}..{today:%m-%d}")
+    if alts:
+        # S24b: the week's closed daily trades replayed under other rules.
+        lines.append("Daily trades, other stop rules:")
+        for label, (pnl, n, still_open) in alts.items():
+            if n:
+                lines += _wrap([f"  {label}: {_money(pnl)} ({n} tr"
+                                + (f", {still_open} open)" if still_open else ")")])
     lines.append("")
     lines += period_summary(trades, date.fromisoformat(ACCOUNT_START[:10]),
                             today, f"Since {ACCOUNT_START[:10]} ($5k acct)",
@@ -324,9 +332,41 @@ def build_messages(conn, day: date, broker=None, weekly=None):
     msgs = to_messages(f"Day trades — {day:%a %Y-%m-%d}",
                        day_table(trades, day, open_positions, equity))
     if weekly if weekly is not None else day.weekday() == 4:
+        alts = weekly_alternatives(trades, day, broker) if broker else None
         msgs += to_messages(f"Week — {day:%Y-%m-%d}",
-                            weekly_lines(trades, day, equity))
+                            weekly_lines(trades, day, equity, alts))
     return msgs
+
+
+def is_daily_setup(setup, config=None) -> bool:
+    import daily_eval
+    if config is None:
+        try:
+            with open("bot_config.json", encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            config = {}
+    name = (setup or "").replace("CEO ", "")
+    return daily_eval.strategy_timeframe(name, config, "intraday") == "daily"
+
+
+def weekly_alternatives(trades, today: date, broker):
+    """S24b: the week's closed DAILY trades under 'cushion 0.25%' and the
+    'old +1R rule', from 5-minute bars. Never raises."""
+    try:
+        import lock_replay
+        monday = (today - timedelta(days=today.weekday())).isoformat()
+        week = [t for t in trades if t.get("sell_ts")
+                and monday <= t["sell_ts"][:10] <= today.isoformat()
+                and is_daily_setup(t.get("setup"))]
+
+        def bars_for(ticker, since):
+            days = (today - date.fromisoformat(since[:10])).days + 3
+            return broker.get_bars([ticker], timeframe_minutes=5,
+                                   lookback_days=min(max(days, 3), 60)).get(ticker)
+        return lock_replay.alternatives(week, bars_for)
+    except Exception:
+        return None
 
 
 def post_messages(messages, url=None):

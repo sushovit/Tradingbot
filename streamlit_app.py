@@ -883,9 +883,9 @@ def _worker_loop():
                     # (this cycle's `df`), so it needs no daily frame and
                     # never runs the ATR ratchet below.
                     _ttype = position_mgmt.trailing_type_for(state, risk_profile)
-                    if _ttype == position_mgmt.PCT_LOCK:
-                        # S24 percent lock (CEO + owner 2026-10-14), every
-                        # cycle, on the last COMPLETED 5-minute close.
+                    if _ttype in position_mgmt.DAILY_LOCKS:
+                        # S24 percent lock / S24b owner ladder (2026-10-14),
+                        # every cycle, on the last COMPLETED 5-minute close.
                         position_mgmt.maybe_pct_lock(
                             broker, positions, ticker, state, df,
                             risk_profile, current_price,

@@ -62,6 +62,8 @@ def is_bot_managed(state: dict) -> bool:
 
 PROFIT_LOCK = "profit_lock"
 PCT_LOCK = "pct_lock"
+LADDER = "ladder"
+DAILY_LOCKS = (PCT_LOCK, LADDER)
 
 
 def trailing_type_for(state: dict, risk_profile: dict) -> str:
@@ -197,7 +199,7 @@ def maybe_ratchet_stop(broker, positions: dict, ticker: str, state: dict,
     # this ATR ratchet must never act on it. Without this guard
     # compute_trailing_stop would read the unknown type as the PERCENT rule.
     if trailing_type_for(state, risk_profile) in ("none", PROFIT_LOCK,
-                                                   PCT_LOCK):
+                                                   PCT_LOCK, LADDER):
         return False
 
     r = r_multiple(state, current_price)
@@ -475,6 +477,48 @@ def completed_closes_since(df, since, now_utc, interval_minutes=5):
     return [float(x) for x in df["close"][done] if not math.isnan(float(x))]
 
 
+# --- Owner ladder for daily positions (S24b, owner 2026-10-14) --------------
+# Replaces the S24 step1/step2/trail rule. Once a completed 5-minute close
+# reaches entry x (1 + start_pct%), the stop goes to entry (breakeven); from
+# then on stop = max(stop, highest close since entry x (1 - cushion_pct%)) -
+# a continuous trail ~0.5% under the high (owner's choice over 0.25% steps).
+# Same guards: never lowered, at least market_gap_pct below the last price,
+# rounded up to the cent. Original stop and the 3R target are untouched.
+
+LADDER_DEFAULTS = {"start_pct": 0.50, "cushion_pct": 0.50,
+                   "market_gap_pct": 0.1}
+
+
+def ladder_params(risk_profile: dict) -> dict:
+    """`daily_lock` over the defaults; unparseable values fall back."""
+    out = dict(LADDER_DEFAULTS)
+    for key, value in ((risk_profile or {}).get("daily_lock") or {}).items():
+        if key in out:
+            try:
+                out[key] = float(value)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def ladder_target(entry, close, highest_close, last_price, params):
+    """(stop, step) the ladder asks for now, or (None, None). Pure."""
+    if entry is None or close is None:
+        return None, None
+    hc = max(highest_close or close, close)
+    if hc < entry * (1 + params["start_pct"] / 100):
+        return None, None
+    trail = hc * (1 - params["cushion_pct"] / 100)
+    price, step = (trail, "trail") if trail > entry else (entry, "breakeven")
+    price = _cent_up(price)
+    if last_price is not None:
+        ceiling = math.floor(last_price * (1 - params["market_gap_pct"] / 100)
+                             * 100 + 1e-6) / 100
+        if price > ceiling:
+            price, step = ceiling, f"{step} (capped {params['market_gap_pct']:g}% below market)"
+    return price, step
+
+
 def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
                    risk_profile: dict, last_price: float, now_utc,
                    broker_entry: float = None, entry_time=None,
@@ -485,7 +529,8 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
     market, and is a no-op on restart (the raised level is persisted)."""
     if not is_bot_managed(state):
         return False
-    if trailing_type_for(state, risk_profile) != PCT_LOCK:
+    ttype = trailing_type_for(state, risk_profile)
+    if ttype not in DAILY_LOCKS:
         return False
     rec = positions.setdefault(ticker, state)
     changed = False
@@ -506,10 +551,13 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
             rec["highest_close"] = state["highest_close"] = hc
             changed = True
     close = last_completed_close(df, now_utc, interval_minutes)
-    params = pct_lock_params(risk_profile)
-    new_stop, step = pct_lock_target(entry, original_stop(state), close,
-                                     state.get("highest_close"), last_price,
-                                     params)
+    if ttype == LADDER:
+        new_stop, step = ladder_target(entry, close, state.get("highest_close"),
+                                       last_price, ladder_params(risk_profile))
+    else:
+        new_stop, step = pct_lock_target(entry, original_stop(state), close,
+                                         state.get("highest_close"), last_price,
+                                         pct_lock_params(risk_profile))
     try:
         old_stop = float(state.get("trailing_stop_price") or 0)
     except (TypeError, ValueError):
@@ -528,7 +576,7 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
     rec["stop_order_id"] = str(new_order.id)
     rec["trailing_stop_price"] = new_stop
     rec["lock_step"] = step
-    detail = (f"pct_lock {step} (close {close:g}, entry {entry:g}): "
+    detail = (f"{ttype} {step} (close {close:g}, entry {entry:g}): "
               f"stop {old_stop:g} -> {new_stop:g}")
     logger.info(f"{ticker}: {detail}")
     if journal_raise is not None:

@@ -209,16 +209,11 @@ def test_config_parsing_and_defaults():
     assert "bogus" not in custom
 
 
-def test_shipped_config_is_the_ceo_rule():
-    cfg = json.load(open("bot_config.json", encoding="utf-8"))
-    for name in ("Aggressive", "Moderate"):
-        prof = cfg["risk_profiles"][name]
-        assert prof["daily_trailing"] == "pct_lock"
-        assert pm.pct_lock_params(prof) == {
-            "step1_trigger_pct": 0.75, "step1_risk_fraction": 0.5,
-            "step2_trigger_pct": 1.25, "step2_stop_pct": 0.1,
-            "trail_trigger_pct": 2.0, "trail_pct": 1.0, "market_gap_pct": 0.1}
-        assert prof["trailing_stop_type"] == "ATR"        # intraday unchanged
+def test_pct_lock_still_runs_for_a_profile_that_names_it():
+    """The shipped config moved to the ladder (S24b); the percent lock stays
+    available and correct for any profile set to "pct_lock"."""
+    changed, broker, _, _, _, _ = run(txn(), bars(282.5), 282.6)
+    assert changed and broker.replaced == [("stop-0", 279.13)]
 
 
 def test_the_worker_runs_the_pct_lock_every_cycle_from_the_broker_fill():
@@ -243,7 +238,8 @@ def test_the_stop_raise_alert_formats_and_never_raises():
     trade_alerts.alert_stop_raise(None, None, None, None, None, None)  # no raise
 
 
-def test_the_review_prompt_states_the_percent_lock():
+def test_the_review_prompt_states_the_current_daily_rule():
+    """S24b (owner 2026-10-14) replaced the percent lock with the ladder."""
     prompt = review_bot.REVIEW_SYSTEM_PROMPT
-    assert "PERCENT LOCK" in prompt and "daily_pct_lock" in prompt
+    assert "OWNER LADDER" in prompt and "daily_lock" in prompt
     assert "BROKER's average fill" in prompt
