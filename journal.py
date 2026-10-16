@@ -700,6 +700,29 @@ def entry_tier(ticker: str, decision_id=None) -> str:
         return str(row["tier"]).upper() if row and row["tier"] else "A"
 
 
+def _probation_buys_sql(setup_name: str, min_prompt_version: int = None,
+                        exclude_trade_ids=()):
+    """(FROM/WHERE sql, params) selecting the BUY rows that count toward a
+    setup's probation. ONE definition for the floor's n/20 and the review's
+    graded list (S27: they had drifted - the review listed every entry,
+    pre-v5 and excluded rows included)."""
+    excluded = tuple(int(i) for i in (exclude_trade_ids or ()))
+    skip = (f" AND t.id NOT IN ({','.join('?' * len(excluded))})"
+            if excluded else "")
+    if min_prompt_version is None:
+        return ("FROM trades t WHERE t.action='BUY' AND t.reason=?" + skip,
+                (setup_name, *excluded))
+    # Only entries whose GATEKEEPER VERDICT came from that prompt version or
+    # later. A BUY with no linked decision is pre-v5 by construction (v5 is
+    # the first version that stamps it) and is excluded, which is the point:
+    # re-probation must measure the new gate, not inherit credit from the
+    # old one.
+    return ("FROM trades t JOIN decisions d ON d.id = t.decision_id "
+            "WHERE t.action='BUY' AND t.reason=? AND CAST(COALESCE("
+            "json_extract(d.context, '$.prompt_version'), 0) AS INTEGER) >= ?"
+            + skip, (setup_name, int(min_prompt_version), *excluded))
+
+
 def live_entry_count(setup_name: str, min_prompt_version: int = None,
                      exclude_trade_ids=()) -> int:
     """How many LIVE entries this setup has taken. Drives probation sizing.
@@ -712,28 +735,10 @@ def live_entry_count(setup_name: str, min_prompt_version: int = None,
     `exclude_trade_ids` (setup_probation.exclude_trade_ids) drops specific
     BUY rows from the count - an entry the desk closed by hand rather than
     let its rules finish, e.g. PLTR row 37 at the S16 deploy (2026-10-09)."""
-    excluded = tuple(int(i) for i in (exclude_trade_ids or ()))
-    skip = (f" AND t.id NOT IN ({','.join('?' * len(excluded))})"
-            if excluded else "")
+    where, params = _probation_buys_sql(setup_name, min_prompt_version,
+                                        exclude_trade_ids)
     with _lock, _connect() as conn:
-        if min_prompt_version is None:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM trades t WHERE t.action='BUY' "
-                "AND t.reason=?" + skip,
-                (setup_name, *excluded)).fetchone()
-        else:
-            # Only entries whose GATEKEEPER VERDICT came from that prompt
-            # version or later. A BUY with no linked decision is pre-v5 by
-            # construction (v5 is the first version that stamps it) and is
-            # excluded, which is the point: re-probation must measure the
-            # new gate, not inherit credit from the old one.
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM trades t "
-                "JOIN decisions d ON d.id = t.decision_id "
-                "WHERE t.action='BUY' AND t.reason=? AND CAST(COALESCE("
-                "json_extract(d.context, '$.prompt_version'), 0) AS INTEGER) >= ?"
-                + skip,
-                (setup_name, int(min_prompt_version), *excluded)).fetchone()
+        row = conn.execute("SELECT COUNT(*) AS n " + where, params).fetchone()
         return int(row["n"] or 0)
 
 
@@ -823,20 +828,34 @@ def size_zero_report(month: str = None) -> list:
     return out
 
 
-def probation_trades(setup_name: str, limit: int = 20) -> list:
-    """The first `limit` live entries for a setup, oldest first, with their
-    outcome if closed. Drives the review_bot grade lines."""
+def probation_trades(setup_name: str, limit: int = 20,
+                     min_prompt_version: int = None,
+                     exclude_trade_ids=()) -> list:
+    """The probation window's live entries for a setup, oldest first, with
+    their outcome if closed - exactly the rows live_entry_count counts, so
+    the review's #n/20 matches the floor's n/20. A trade's exit is the SELL
+    sharing its decision_id; only a legacy row with no decision link falls
+    back to the next SELL of the ticker."""
+    where, params = _probation_buys_sql(setup_name, min_prompt_version,
+                                        exclude_trade_ids)
     with _lock, _connect() as conn:
         buys = conn.execute(
-            "SELECT id, timestamp, ticker, qty, price, decision_id "
-            "FROM trades WHERE action='BUY' AND reason=? "
-            "ORDER BY id ASC LIMIT ?", (setup_name, limit)).fetchall()
+            "SELECT t.id, t.timestamp, t.ticker, t.qty, t.price, t.decision_id "
+            + where + " ORDER BY t.id ASC LIMIT ?", (*params, limit)).fetchall()
         out = []
         for i, b in enumerate(buys, 1):
-            sell = conn.execute(
-                "SELECT pnl_usd, pnl_pct, reason, timestamp FROM trades "
-                "WHERE action='SELL' AND ticker=? AND id > ? "
-                "ORDER BY id ASC LIMIT 1", (b["ticker"], b["id"])).fetchone()
+            sell = None
+            if b["decision_id"] is not None:
+                sell = conn.execute(
+                    "SELECT pnl_usd, pnl_pct, reason, timestamp FROM trades "
+                    "WHERE action='SELL' AND decision_id=? AND id > ? "
+                    "ORDER BY id ASC LIMIT 1", (b["decision_id"], b["id"])).fetchone()
+            elif sell is None:
+                # legacy BUY rows without a decision link only
+                sell = conn.execute(
+                    "SELECT pnl_usd, pnl_pct, reason, timestamp FROM trades "
+                    "WHERE action='SELL' AND ticker=? AND id > ? "
+                    "ORDER BY id ASC LIMIT 1", (b["ticker"], b["id"])).fetchone()
             out.append({
                 "n": i, "trade_id": b["id"], "date": str(b["timestamp"])[:10],
                 "ticker": b["ticker"], "qty": b["qty"], "entry": b["price"],

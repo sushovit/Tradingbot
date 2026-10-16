@@ -407,7 +407,16 @@ def probation_lines() -> str:
         limit = _risk.probation_limit(cfg)
         out = []
         for name in _risk.probation_setups(cfg):
-            for r in journal.probation_trades(name, limit):
+            # The SAME window the floor counts (S27): prompt_version >=
+            # count_from_prompt_version, exclude_trade_ids dropped.
+            rows = journal.probation_trades(
+                name, limit, _risk.probation_min_prompt_version(name, cfg),
+                exclude_trade_ids=_risk.probation_exclude_trade_ids(cfg))
+            n_live = journal.live_entry_count(
+                name, _risk.probation_min_prompt_version(name, cfg),
+                exclude_trade_ids=_risk.probation_exclude_trade_ids(cfg))
+            out.append(f"{name}: {n_live}/{limit} probation trades so far")
+            for r in rows:
                 if r["closed"]:
                     result = (f"closed {r['pnl_usd']:+.2f} USD "
                               f"({r['pnl_pct']:+.2f}%) via {r['exit_reason']}")
