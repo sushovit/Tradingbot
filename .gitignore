@@ -43,3 +43,6 @@ venv/
 .env.*
 !.env.example
 *.cutover-*
+
+# S28: local LoRA adapters (large, machine-specific)
+adapters/
