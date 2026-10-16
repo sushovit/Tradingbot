@@ -1,4 +1,7 @@
 {
+    "exits": {
+        "target_cap_atr": 3.0
+    },
     "goals": {
         "trades_per_week": 3,
         "monthly_pnl_usd": 100,

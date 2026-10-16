@@ -974,6 +974,33 @@ def _worker_loop():
         if _entry_fixed:
             write_positions(positions)
 
+        # S28 target cap: after the entry reconcile (the real fill), before
+        # any lock/trail math. Once per position; the broker leg moves only
+        # when fill + min(3R, cap x ATR14) is below the current target.
+        _cap = position_mgmt.target_cap_atr(config)
+        for _t, _st in positions.items():
+            if not _st.get("in_position") or _st.get("target_capped") is not None:
+                continue
+            _atr = _st.get("atr14")
+            if not _atr and daily_bars.get(_t) is not None:
+                try:
+                    _ed = journal.trade_timestamp(_st.get("entry_trade_id"))
+                    _atr = position_mgmt.daily_atr(
+                        daily_bars.get(_t), 14,
+                        datetime.fromisoformat(str(_ed)[:10]).date()
+                        if _ed else now_et.date())
+                except Exception:
+                    _atr = None
+            try:
+                position_mgmt.maybe_cap_target(
+                    broker, _t, _st, _atr, _cap,
+                    rr=float(config['risk_profiles'][ticker_profiles.get(_t, 'Moderate')].get("rr_ratio", 3.0)),
+                    persist=lambda: write_positions(positions),
+                    journal_event=journal_ops_once,
+                    alert=lambda m: __import__("alerts").post_async(m))
+            except Exception as e:          # never costs the cycle
+                logger.warning(f"{_t}: target cap not applied this cycle: {e}")
+
         status_updates = []
         for ticker in ticker_list:
             open_positions_count = sum(1 for s in positions.values() if s.get("in_position"))
@@ -1567,6 +1594,8 @@ def _worker_loop():
                 # reference until the per-cycle broker reconcile corrects it.
                 "entry_price": fill_price,
                 "signal_price": signal.entry,
+                # S28: ATR14 as of the entry day - the target cap's yardstick
+                "atr14": signal.extras.get("atr14"),
                 "entry_fill_confirmed": bool(fill_confirmed),
                 "shares_held": qty,
                 # initial_stop is the PLAYBOOK-STRUCTURAL stop (reclaim/

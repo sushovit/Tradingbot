@@ -185,6 +185,9 @@ class SequenceBroker:
     def get_closed_orders_since(self, since):
         return []
 
+    def replace_target(self, order_id, price):          # S28 target cap
+        return Order(order_id, "new", order_type="limit")
+
     def get_latest_price(self, t):
         return 805.0 if t == "REGN" else 278.0
 
