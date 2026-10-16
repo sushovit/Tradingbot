@@ -1,6 +1,7 @@
 """
 finetune_plan.py — QLoRA greenlight: dataset stats, filtering, split, and a
-BASELINE eval of the current qwen3:4b.
+BASELINE eval of the current shadow model (S28: qwen3.5:9b; training via
+mlx-lm on this Mac - see training_command).
 
     python finetune_plan.py            # stats + split + plan, no model calls
     python finetune_plan.py --baseline # also run qwen3:4b over the eval sets
@@ -216,59 +217,38 @@ def run_baseline(rows: list, label_fn) -> dict:
 
 # ============================================================ report
 
+MLX_MODEL = "~/TradingBot-models/Qwen3.5-9B-4bit"     # mlx-community 4-bit
+MLX_VENV = "~/TradingBot-mlvenv"                       # NOT the live venv
+S28_DATA = "data/s28/finetune"                         # finetune_export.py
+
+
 def training_command(n_train: int) -> str:
-    """The exact command for THIS machine: RTX 3060 Laptop, 4GB VRAM."""
-    steps = max(60, n_train * 3)
-    return f"""python -m axolotl.cli.train qlora_qwen3_4b.yml
+    """The exact command for THIS machine (S28): Apple M4, 16 GB unified
+    memory, mlx-lm LoRA on the shadow model chosen in S28 (qwen3.5:9b).
+    Run with the worker STOPPED and Ollama's model unloaded - training and
+    the 7.7 GB shadow model do not fit in 16 GB together."""
+    iters = max(60, n_train * 3)                       # ~3 epochs at batch 1
+    return f"""{MLX_VENV}/bin/python -m mlx_lm lora \\
+    --model {MLX_MODEL} --train --data {S28_DATA} \\
+    --fine-tune-type lora --num-layers 16 --batch-size 1 \\
+    --iters {iters} --learning-rate 1e-5 --max-seq-length 4608 \\
+    --grad-checkpoint --mask-prompt \\
+    --steps-per-report 10 --steps-per-eval 102 --val-batches 6 --save-every 51 \\
+    --adapter-path adapters/qwen3.5-9b-gatekeeper
 
-# qlora_qwen3_4b.yml — RTX 3060 Laptop, 4GB VRAM
-base_model: Qwen/Qwen3-4B
-load_in_4bit: true                  # 4-bit NF4: 4B params ~= 2.3GB weights
-bnb_4bit_compute_dtype: bfloat16
-bnb_4bit_quant_type: nf4
-bnb_4bit_use_double_quant: true
-
-adapter: qlora
-lora_r: 16
-lora_alpha: 32
-lora_dropout: 0.05
-lora_target_modules: [q_proj, k_proj, v_proj, o_proj,
-                      gate_proj, up_proj, down_proj]
-
-datasets:
-  - path: train.jsonl
-    type: chat_template
-    field_messages: messages
-val_set_size: 0.0                   # eval.jsonl is held out by us, not by axolotl
-test_datasets:
-  - path: eval.jsonl
-    type: chat_template
-    field_messages: messages
-
-sequence_len: 1024                  # p90 of our inputs is ~1k chars
-sample_packing: false
-pad_to_sequence_len: true
-
-micro_batch_size: 1                 # 4GB leaves no room for more
-gradient_accumulation_steps: 8      # effective batch 8
-num_epochs: 3
-max_steps: {steps}
-learning_rate: 0.0002
-lr_scheduler: cosine
-warmup_steps: 10
-optimizer: paged_adamw_8bit         # paged: survives a VRAM spike
-gradient_checkpointing: true
-bf16: true
-flash_attention: false              # Ampere laptop + 4GB: not worth the memory
-logging_steps: 5
-save_steps: 50
-output_dir: ./qlora-qwen3-4b-gatekeeper
-
-# After training, to serve it through the existing shadow path:
-#   python -m peft.utils.merge  (or axolotl merge_lora) -> merged/
-#   ollama create qwen3-4b-gatekeeper -f Modelfile
-#   LOCAL_ANALYST_MODEL=qwen3-4b-gatekeeper
-# Shadow mode is unchanged: the tuned model is journaled, never authoritative."""
+# Data: finetune_export.py - outcome-linked Claude gatekeeper decisions, the
+# live shadow prompt rebuilt from bars, Claude's verdict JSON as the answer;
+# chronological 80/20 split (train on the past, validate on the most recent).
+# --mask-prompt trains on the verdict only, not the ~3.6k-token prompt.
+# 4608 tokens: the longest example is 4,183 - at 4096 mlx-lm cut the END of
+# the sequence, i.e. the verdict being trained on (S28 dry run, 2026-10-16).
+# Measured on the M4: ~35 s per 4k-token forward pass, so ~95 s per training
+# step and ~5.5 h for 204 steps. Weekend only.
+#
+# Serving it (a CEO decision, not done here): mlx_lm cannot export Qwen3.5 to
+# GGUF for Ollama, so either run `mlx_lm.server --adapter-path ...` as a
+# second local endpoint, or fuse and convert with llama.cpp. Shadow mode is
+# unchanged either way: the tuned model is journaled, never authoritative."""
 
 
 def build_report(rows, kept, counts, train, evalset, baselines: dict) -> str:
@@ -400,7 +380,7 @@ def build_report(rows, kept, counts, train, evalset, baselines: dict) -> str:
              "which the alternative was not.")
 
     L.append("")
-    L.append("## 5. The training command (RTX 3060 Laptop, 4GB VRAM)")
+    L.append("## 5. The training command (Apple M4, 16 GB, mlx-lm LoRA)")
     L.append("```yaml")
     L.append(training_command(len(train)))
     L.append("```")
