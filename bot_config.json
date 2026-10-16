@@ -31,7 +31,8 @@
     "models": {
         "gatekeeper": "claude-sonnet-5",
         "review": "claude-sonnet-5",
-        "fallback": "claude-sonnet-4-6"
+        "fallback": "claude-sonnet-4-6",
+        "shadow": "qwen3.5:9b"
     },
     "universe": {
         "min_price": 5,

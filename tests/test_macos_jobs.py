@@ -23,6 +23,7 @@ EXPECTED = {
     "outcomes": ["outcomes.py"],
     "intern": ["intern_desk.py", "--trade"],
     "snapshot": ["snapshot.py", "drop.py --discord"],
+    "shadow_warm": ["local_analyst.py", "--warm"],      # S28: 09:20 ET
 }
 
 
