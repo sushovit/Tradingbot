@@ -269,6 +269,13 @@ def refresh_order_ids(broker, positions: dict) -> list:
             side = str(getattr(order, "side", "")).lower()
             if "sell" not in side:
                 continue          # the entry leg is not an exit
+            # A leg being REPLACED is not the working leg: its successor is.
+            # 2026-10-16: REGN's target was replaced (S28 cap) outside market
+            # hours; the old leg sat in pending_replace and this repair
+            # re-pointed the position at it.
+            if _status(order) in ("pending_replace", "replaced") \
+                    or getattr(order, "replaced_by", None):
+                continue
             otype = str(getattr(order, "order_type", None)
                         or getattr(order, "type", "")).lower()
             if "stop" in otype:
