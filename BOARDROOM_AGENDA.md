@@ -1160,3 +1160,33 @@ Result: **-$2.52 (-0.28R) instead of -$6.87 (-0.61R)** - $4.35 kept on one
 
 Related the same day: the "position gone" clear of REGN (entry not yet filled)
 and the TXN exit journaled on a partial fill - both fixed in `877d9e5`.
+
+### Historical impact (S27, 2026-10-15)
+
+Every closed bot trade since the Alpaca migration, R recomputed from the
+real fill and replayed under the exit rule that was live at the time. The
+bug was live throughout - the logged "BOUGHT" price equals the reference on
+every trade the Mac's log covers (SWKS, SPCX, ON, PLTR, TXN, REGN).
+
+| Trade | Fill vs reference | Gap / R | Rule live at the time | Effect |
+|---|---|---|---|---|
+| UBER 08-10, ORCL 08-13, NOK 08-13 | -0.075 / -0.07 / +0.025 | 1-5% | pre-08-13: ATR trail with no +1R gate | none - entry not in the stop math |
+| BMNR 08-20 -> 09-01 | +0.195 (fill above) | 6% | +1R gate, then ATR trail | trail opened 08-24 instead of 08-25; the binding trail level came from the 08-27 peak either way - **$0** |
+| CRCL 08-21 -> 09-09 | +0.11 | 1% | +1R gate / breakeven floor | +1R hit 09-03 under both - **$0** |
+| SLB 08-28 -> 09-08 | +0.115 | 4% | +1R gate / breakeven floor | +1R hit 08-31 under both - **$0** |
+| SWKS 09-11 -> 10-09 | +1.77 | 12% | breakeven floor, then S6 static | +1R never reached (high 92.63 vs 101.24 / 104.78) - **$0** |
+| SPCX 09-17 -> 10-09 | +0.15 | 2% | S6 static bracket; closed by hand | **$0** |
+| ON 10-05 -> 10-07 | -0.73 (fill below) | 41% | S6 static bracket - daily positions did not trail | **$0** |
+| PLTR 10-09 | +1.58 | 22% | S6 static; closed by hand at the cutover | **$0** |
+| **TXN 10-14 -> 10-15** | **-2.565** | **114%** | **S16 lock: breakeven at +1R** | **lock should have fired, did not** |
+
+**TXN under the rule live on 10-14 (S16).** With the real fill the 10:05
+close (282.67 >= +1R 282.50) locks the stop at 280.25; TXN trades back
+through it at 12:30 -> exit 280.25, **$0.00**. As run: +1R sat at 287.63,
+never reached; stop 278.00; filled 278.78 / 277.79 on the 10-15 gap ->
+**-$6.87**. (Under today's R/ATR ladder the same trade would have exited at
+279.62, -$2.52 - the replay above.)
+
+**Total historical cost of the entry bug: $6.87, all on TXN.** The other 12
+closed trades either ran under rules where the entry did not enter the stop
+math, or reached (or missed) +1R on the same day under both entries.
