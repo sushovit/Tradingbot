@@ -1102,3 +1102,61 @@ Defaults chosen where the order was silent: ATR14 = daily ATR as of the last
 completed day; "highest daily close" = completed daily closes since entry;
 time-stop exits at 15:55 ET, earnings exits at 15:50 ET.
 
+
+---
+
+## 18. INCIDENT — positions recorded at the signal price, not the fill (S23, 2026-10-15)
+
+**What happened.** Every worker entry since the Alpaca migration kept the
+signal's reference price as the POSITION's entry. The fill poll compared
+`str(order.status).lower()` to `"filled"`; alpaca-py's `str(OrderStatus.FILLED)`
+is `"OrderStatus.FILLED"`, so the check could never pass, the poll always
+timed out, and `entry_price` stayed at the reference. The journal looked right
+because `orders.sync` later corrected the BUY row from the broker; the position
+record (`positions.json`), the "BOUGHT" log line and the Discord alert never
+were. The same comparison sat in `confirm_fill` (hard-exit / manual closes).
+The CEO order-sheet and intern paths normalised the status and were correct.
+
+| | Signal reference | Broker fill | Position used |
+|---|---|---|---|
+| TXN 10-14 | 282.815 | **280.25** | 282.815 |
+| REGN 10-15 | 806.24 | **802.61** | 806.24 (then cleared by the position-gone bug; re-adopted at 802.61) |
+
+**Consequence (TXN).** R and every lock trigger were computed from the wrong
+entry: R = 4.815 instead of 2.25, so +1R sat at 287.63 instead of **282.50**.
+TXN closed at 282.67 at 10:05 and as high as 283.50 on 10-14 - the ladder's +1R
+step never fired, the stop stayed at the structural 278.00, TXN gapped down on
+10-15 and the stop filled at 278.78 / 277.79: **-$6.87 (-0.61R)**.
+
+**Replay under the fixed code and the live R/ATR ladder** (5-minute IEX bars,
+entry 280.25, original stop 278.00, steps +1R -> -0.25R, +1.5R -> 0, +2R -> +1R,
+qualifying closes from 10:00 ET):
+
+| Time (ET) | Event | Stop |
+|---|---|---|
+| 10-14 09:32 | fill 4 @ 280.25 | 278.00 |
+| 10-14 10:05 | close 282.67 >= +1R (282.50) | **279.69** (+1R step) |
+| 10-14 | highest close 283.50 = +1.44R (BE step at +1.5R = 283.625 not reached) | 279.69 |
+| 10-14 13:55 | bar opens 279.62, through the stop | exit @ 279.62 |
+
+Result: **-$2.52 (-0.28R) instead of -$6.87 (-0.61R)** - $4.35 kept on one
+4-share trade. (Replay on the IEX feed; broker fills come from its own feed.)
+
+**Fix (S23, merged 2026-10-15).**
+1. The entry poll compares the normalised status; on a fill the position takes
+   the broker's `filled_avg_price` and `filled_qty` (partial entries use the
+   partial's avg and qty) and keeps the reference as `signal_price`. "BOUGHT"
+   and the Discord alert show the fill, or say "fill pending" - never a
+   reference price as a fill. `confirm_fill` fixed the same way.
+2. Every cycle, BEFORE any lock/trail math, each open position's entry and qty
+   are reconciled to the broker's `avg_entry_price` / qty; a correction is
+   persisted at once and journaled as an `entry_reconciled` ops event. R is
+   always `entry_price - original_stop`, so triggers recompute. A smaller broker
+   qty while an exit leg has filled anything is a partial EXIT and never shrinks
+   the position (caught by the 10-15 replay test).
+3. Ledger: TXN SELL row 43 corrected to 278.5325 / -$6.87 from the broker's fills
+   (CEO approval); TXN BUY row 41 (280.25) and REGN BUY row 42 (802.61) were
+   already the real fills.
+
+Related the same day: the "position gone" clear of REGN (entry not yet filled)
+and the TXN exit journaled on a partial fill - both fixed in `877d9e5`.

@@ -70,9 +70,15 @@ def holding_time(start: datetime, end: datetime) -> str:
 
 
 def buy_embed(ticker, qty, fill, ts, target=None, stop=None, setup=None,
-              conviction=None) -> dict:
-    fields = [("Qty", f"{qty:g}"), ("Fill", _price(fill)),
+              conviction=None, signal_price=None, fill_confirmed=True) -> dict:
+    # S23: "Fill" is the broker's fill. Unconfirmed, say so - never show a
+    # reference price as if it were a fill.
+    fields = [("Qty", f"{qty:g}"),
+              ("Fill", _price(fill) if fill_confirmed
+               else f"pending (signal {_price(fill)})"),
               ("Time", two_zone(ts))]
+    if signal_price is not None and fill_confirmed:
+        fields.append(("Signal", _price(signal_price)))
     if target is not None:
         fields.append(("Target", f"${target:,.2f} "
                                  f"({(target / fill - 1) * 100:+.1f}%)"))
