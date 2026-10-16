@@ -828,3 +828,73 @@ def stepped_ladder_target(entry, close, highest_close, params):
     raw = hc * (1 - params["cushion_pct"] / 100)
     k = math.floor((raw - entry) / step + 1e-9)
     return _cent_up(max(entry, entry + k * step))
+
+
+# ============================================================ S28 target cap
+# CEO 2026-10-16: target = fill + min(3R, cap x ATR14). The initial stop sits
+# 1.5-2.5 ATR under the entry, so 3R is 4.5-7.5 ATR - out of reach in a
+# 10-session hold (REGN 10-15: 3R = +139 on an ATR of 20). Applied AFTER the
+# fill, to the live target leg, so the entry gates (reward:risk >= 1.5) still
+# judge the setup's own target and no trade is refused because of the cap.
+
+def target_cap_atr(config: dict):
+    try:
+        v = float(((config or {}).get("exits") or {}).get("target_cap_atr"))
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def capped_target(entry, stop, atr, cap_atr, rr: float = 3.0):
+    """fill + min(rr x R, cap x ATR), to the cent; None without geometry."""
+    if entry is None or stop is None or entry <= stop:
+        return None
+    reach = rr * (entry - stop)
+    if atr and cap_atr:
+        reach = min(reach, cap_atr * atr)
+    return round(entry + reach, 2)
+
+
+def maybe_cap_target(broker, ticker: str, state: dict, atr, cap_atr,
+                     rr: float = 3.0, persist=None, journal_event=None,
+                     alert=None) -> bool:
+    """Bring a BOT position's live target leg down to the cap, once.
+    Returns True if the broker leg was replaced. Never raises the target;
+    marks the position so the check is not repeated."""
+    if not is_bot_managed(state) or state.get("target_capped") is not None:
+        return False
+    if not cap_atr or not atr or not state.get("target_order_id"):
+        return False
+    entry = state.get("entry_price")
+    stop = original_stop(state)
+    new = capped_target(entry, stop, atr, cap_atr, rr)
+    old = state.get("profit_target_price")
+    if new is None:
+        return False
+    if old is not None and new >= float(old) - 0.005:
+        state["target_capped"] = False          # cap not binding: 3R is closer
+        if persist:
+            persist()
+        return False
+    order = broker.replace_target(state["target_order_id"], new)
+    state["uncapped_target"] = old
+    state["profit_target_price"] = new
+    state["target_order_id"] = str(getattr(order, "id", state["target_order_id"]))
+    state["target_capped"] = True
+    state["target_cap_atr14"] = round(float(atr), 4)
+    if persist:
+        persist()
+    detail = (f"{ticker}: target {old} -> {new} (fill {entry} + min(3R "
+              f"{rr * (entry - stop):.2f}, {cap_atr:g} x ATR14 {atr:.2f}))")
+    logger.warning(f"TARGET CAPPED - {detail}")
+    if journal_event:
+        try:
+            journal_event("target_capped", detail)
+        except Exception as e:
+            logger.error(f"{ticker}: could not journal target cap: {e}")
+    if alert:
+        try:
+            alert(f"🎯 Target capped - {detail}")
+        except Exception:
+            pass
+    return True

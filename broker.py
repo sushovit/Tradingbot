@@ -203,6 +203,12 @@ class Broker:
         return _retry(self.trading.replace_order_by_id, order_id, req,
                       what=f"replace_stop({order_id})")
 
+    def replace_target(self, order_id: str, new_limit_price: float):
+        """Move a bracket's take-profit (limit) leg - the S28 target cap."""
+        req = ReplaceOrderRequest(limit_price=round(new_limit_price, 2))
+        return _retry(self.trading.replace_order_by_id, order_id, req,
+                      what=f"replace_target({order_id})")
+
     def cancel_order(self, order_id: str):
         return _retry(self.trading.cancel_order_by_id, order_id,
                       what=f"cancel_order({order_id})")
