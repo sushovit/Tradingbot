@@ -273,6 +273,9 @@ class _Broker:
     def get_open_orders(self, symbol):
         return []
 
+    def get_live_orders(self, symbol=None):   # reconcile uses it (HELD legs)
+        return []
+
 
 def test_a_reconciled_position_has_a_null_prompt_version():
     positions = app.reconcile_positions(_Broker(), {})

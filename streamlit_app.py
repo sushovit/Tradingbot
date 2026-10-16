@@ -306,7 +306,11 @@ def reconcile_positions(broker, positions):
             logger.warning(f"Reconcile: adopting broker position {symbol} not tracked locally.")
             stop_id, target_id = None, None
             try:
-                for o in broker.get_open_orders(symbol):
+                # get_live_orders includes HELD bracket legs; get_open_orders
+                # does not, and an adopted position lost its stop id.
+                for o in broker.get_live_orders(symbol):
+                    if "sell" not in str(getattr(o, "side", "")).lower():
+                        continue
                     otype = str(getattr(o, "order_type", None) or getattr(o, "type", "")).lower()
                     if "stop" in otype:
                         stop_id = str(o.id)
@@ -343,10 +347,62 @@ def detect_filled_exit(broker, ticker, state):
             order = broker.get_order(order_id)
         except BrokerError:
             continue
-        status = str(getattr(order, "status", "")).lower()
-        if "filled" in status and getattr(order, "filled_avg_price", None):
+        status = str(getattr(order, "status", "")).lower().split(".")[-1]
+        # FULLY filled only. 2026-10-15: TXN's stop was "partially_filled"
+        # (3 of 4 @ 278.78) and "filled" in that string journaled all 4 at
+        # the partial's price; the last share filled at 277.79 a minute
+        # later. A partial leg is still working - wait for it.
+        if status == "filled" and getattr(order, "filled_avg_price", None):
             return float(order.filled_avg_price), reason, str(order_id)
     return None, None, None
+
+
+# A position missing from the broker's list is cleared only when the bot's
+# own order history agrees AND the absence is confirmed. 2026-10-15 09:33:22:
+# REGN's bracket had been submitted but not yet filled (it filled at
+# 09:34:32), get_positions() correctly did not list it, and one empty read
+# cleared a position the broker then held - unmanaged, outside the probation
+# count. Rules: an entry order that is not FILLED means "not open yet", never
+# "gone"; an entry filled < ENTRY_GRACE_MIN ago is never cleared; otherwise
+# GONE_CONFIRMATIONS consecutive missing reads are required.
+GONE_CONFIRMATIONS = 2
+ENTRY_GRACE_MIN = 15
+
+
+def _status(order) -> str:
+    return str(getattr(order, "status", "")).lower().split(".")[-1]
+
+
+def entry_fill_time(broker, state):
+    """(entry order status, filled_at) from the broker's order history, or
+    (None, None) for a legacy record with no entry order id."""
+    order_id = state.get("entry_order_id")
+    if not order_id:
+        return None, None
+    order = broker.get_order(order_id)
+    return _status(order), getattr(order, "filled_at", None)
+
+
+def confirm_position_gone(broker, ticker, state, now_utc):
+    """(gone, why) for a tracked position the broker did not list this read.
+    Mutates state["gone_reads"] (persisted with positions)."""
+    try:
+        entry_status, filled_at = entry_fill_time(broker, state)
+    except BrokerError as e:
+        return False, f"entry order unreadable ({e})"
+    if entry_status is not None and entry_status != "filled":
+        state.pop("gone_reads", None)
+        return False, f"entry order {entry_status} - not filled yet"
+    if filled_at is not None:
+        age_min = (now_utc - filled_at).total_seconds() / 60.0
+        if age_min < ENTRY_GRACE_MIN:
+            return False, (f"entry filled {age_min:.1f} min ago "
+                           f"(< {ENTRY_GRACE_MIN} min grace)")
+    reads = int(state.get("gone_reads", 0)) + 1
+    state["gone_reads"] = reads
+    if reads < GONE_CONFIRMATIONS:
+        return False, f"missing read {reads}/{GONE_CONFIRMATIONS}"
+    return True, f"missing on {reads} consecutive reads"
 
 
 def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
@@ -378,7 +434,7 @@ def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
     logger.info(f"EXIT {ticker} @ ${fill_price:.2f} ({reason}). PnL: ${pnl_usd:.2f}")
 
 
-def resolve_exit_fill(broker, ticker):
+def resolve_exit_fill(broker, ticker, after_utc=None):
     """The position is gone but no tracked leg reports filled (leg ids lost,
     replaced order, manual dashboard close...). Find the REAL exit fill from
     the broker's closed orders. Returns (fill_price, reason, order_id) or
@@ -389,7 +445,10 @@ def resolve_exit_fill(broker, ticker):
         candidates = [o for o in broker.get_closed_orders_since(since)
                       if o.symbol == ticker
                       and "sell" in str(getattr(o, "side", "")).lower()
-                      and getattr(o, "filled_avg_price", None)]
+                      and getattr(o, "filled_avg_price", None)
+                      # never an older position's exit
+                      and (after_utc is None or getattr(o, "filled_at", None)
+                           is None or o.filled_at >= after_utc)]
         if not candidates:
             return None, None, None
         latest = max(candidates, key=lambda o: o.filled_at)
@@ -842,15 +901,35 @@ def _worker_loop():
                 try:
                     # 1) Did a bracket exit leg fill? (stops live AT THE BROKER)
                     fill_price, reason, exit_order_id = detect_filled_exit(broker, ticker, state)
+                    if broker_symbols is not None and ticker in broker_symbols:
+                        state.pop("gone_reads", None)       # listed: reset
                     if fill_price is None and broker_symbols is not None \
                             and ticker not in broker_symbols:
-                        # Position gone but no tracked leg marked filled.
-                        # NEVER journal a phantom at last price — resolve the
-                        # real fill, or clear state and let sync() journal it.
-                        fill_price, reason, exit_order_id = resolve_exit_fill(broker, ticker)
+                        # Not listed this read. Order history first: an entry
+                        # that has not FILLED is not open yet, never gone.
+                        try:
+                            entry_status, entry_filled_at = entry_fill_time(broker, state)
+                        except BrokerError:
+                            entry_status, entry_filled_at = None, None
+                        if entry_status is not None and entry_status != "filled":
+                            logger.info(f"{ticker}: not at the broker yet - entry "
+                                        f"order {entry_status}; kept.")
+                            status_updates.append(f"{ticker}: Entry pending ({entry_status})")
+                            continue
+                        # A real exit fill (after THIS entry) wins - journal it.
+                        fill_price, reason, exit_order_id = resolve_exit_fill(
+                            broker, ticker, after_utc=entry_filled_at)
                         if fill_price is None:
-                            logger.warning(f"{ticker}: position gone, fill unresolved — "
-                                           "state cleared; sync() will journal the real fill.")
+                            gone, why = confirm_position_gone(
+                                broker, ticker, state, datetime.now(pytz.utc))
+                            if not gone:
+                                logger.info(f"{ticker}: not listed by the broker - "
+                                            f"kept ({why}).")
+                                status_updates.append(f"{ticker}: In Pos (unconfirmed: {why})")
+                                continue
+                            logger.warning(f"{ticker}: position gone ({why}), fill "
+                                           "unresolved — state cleared; sync() will "
+                                           "journal the real fill.")
                             positions[ticker] = {"in_position": False}
                             status_updates.append(f"{ticker}: Exited (fill pending sync)")
                             continue

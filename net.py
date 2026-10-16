@@ -32,7 +32,10 @@ READ_TIMEOUT_S = 30
 DEFAULT_TIMEOUT = (CONNECT_TIMEOUT_S, READ_TIMEOUT_S)
 DISCORD_TIMEOUT_S = 10
 YFINANCE_TIMEOUT_S = 30
-ANTHROPIC_TIMEOUT_S = 60
+ANTHROPIC_TIMEOUT_S = 60            # gatekeeper and every other call
+# The daily review is one long, thinking-heavy generation: its own client,
+# streaming, 600 s read (2026-10-14/15 both died at the shared 60 s).
+REVIEW_READ_TIMEOUT_S = 600
 
 _installed = False
 

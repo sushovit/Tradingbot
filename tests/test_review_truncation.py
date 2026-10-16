@@ -36,7 +36,7 @@ def test_thinking_is_bounded_by_effort_not_budget_tokens():
     review fails at the API and the desk loses its memo silently."""
     with open("review_bot.py", encoding="utf-8") as f:
         src = f.read()
-    call = src[src.index("resp = client.messages.create("):][:600]
+    call = src[src.index("client.messages.stream("):][:600]
     # Comment lines are stripped: the file explains WHY budget_tokens is not
     # used, and that prose must not be mistaken for the parameter itself.
     code = " ".join(line for line in call.splitlines()
@@ -111,13 +111,30 @@ class FakeMessages:
                 else FakeResponse("truncated", "max_tokens"))
 
 
+    def stream(self, **kwargs):
+        """S-fix: review_bot now streams; delegate to create()."""
+        outer = self
+
+        class _S:
+            def __enter__(self_inner):
+                self_inner.msg = outer.create(**kwargs)
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def get_final_message(self_inner):
+                return self_inner.msg
+        return _S()
+
+
 class FakeClient:
     def __init__(self, *responses):
         self.messages = FakeMessages(responses)
 
 
 def patch_client(monkeypatch, client):
-    monkeypatch.setattr(review_bot.claude_integration, "_get_client",
+    monkeypatch.setattr(review_bot.claude_integration, "_get_review_client",
                         lambda: client)
     monkeypatch.setattr(review_bot.time, "sleep", lambda *_: None)
     monkeypatch.setattr(review_bot, "build_user_prompt",

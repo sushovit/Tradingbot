@@ -156,10 +156,14 @@ def test_retries_capped_at_two(monkeypatch):
     class Client:
         class messages:
             @staticmethod
+            def stream(**kw):
+                return _StreamOf(Client.messages.create(**kw))
+
+            @staticmethod
             def create(**kw):
                 calls.append(kw)
                 raise RuntimeError("overloaded_error")
-    monkeypatch.setattr(claude_integration, "_get_client", lambda: Client())
+    monkeypatch.setattr(claude_integration, "_get_review_client", lambda: Client())
     monkeypatch.setattr(review_bot.time, "sleep", lambda s: None)
     out = review_bot.request_review({"date": "d", "clock": "c",
                                      "positions": [], "trades": []})
@@ -173,10 +177,29 @@ def test_prompt_caching_declared(monkeypatch):
     class Client:
         class messages:
             @staticmethod
+            def stream(**kw):
+                return _StreamOf(Client.messages.create(**kw))
+
+            @staticmethod
             def create(**kw):
                 captured.update(kw)
                 return FakeResp("ok")
-    monkeypatch.setattr(claude_integration, "_get_client", lambda: Client())
+    monkeypatch.setattr(claude_integration, "_get_review_client", lambda: Client())
     review_bot.request_review({"date": "d", "clock": "c", "positions": [],
                                "trades": []})
     assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+class _StreamOf:
+    """review_bot streams now; wrap a canned create() result."""
+    def __init__(self, msg):
+        self.msg = msg
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get_final_message(self):
+        return self.msg
