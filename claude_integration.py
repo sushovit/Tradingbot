@@ -61,6 +61,24 @@ def _get_client():
     return _claude_client
 
 
+_review_client = None
+
+
+def _get_review_client():
+    """The daily review's own client: connect 5 s, read 600 s (streamed).
+    The gatekeeper keeps the shared 60 s client - a review must never
+    widen it. Retries are the caller's (one), so the SDK's are off."""
+    global _review_client
+    if _review_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if api_key:
+            _review_client = anthropic.Anthropic(
+                api_key=api_key, max_retries=0,
+                timeout=anthropic.Timeout(net.REVIEW_READ_TIMEOUT_S,
+                                          connect=net.CONNECT_TIMEOUT_S))
+    return _review_client
+
+
 def credit_preflight(client=None) -> dict:
     """One cheap Anthropic call, to learn at STARTUP whether the gatekeeper
     can actually be asked.

@@ -35,7 +35,7 @@ import claude_integration  # noqa: E402
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-MAX_RETRIES = 2
+MAX_RETRIES = 1          # one retry (CEO 2026-10-15)
 DISCORD_MSG_LIMIT = 2000
 POSITION_AGE_REVIEW = 10        # sessions
 HEARTBEAT_STALE_SECS = 900
@@ -495,7 +495,7 @@ Remember: you are read-only — no orders, no order sheets."""
 def request_review(bundle: dict) -> dict:
     """One API call (max 2 retries) with prompt caching on the static system
     prompt. Returns {'text': ...} or {'error': ...}."""
-    client = claude_integration._get_client()
+    client = claude_integration._get_review_client()     # 600 s, streamed
     if client is None:
         return {"error": "ANTHROPIC_API_KEY not configured"}
     model = claude_integration.get_model("review")
@@ -506,7 +506,9 @@ def request_review(bundle: dict) -> dict:
     last_diag = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            resp = client.messages.create(
+            # Streamed: a long thinking-heavy memo keeps the connection
+            # busy instead of idling into a read timeout.
+            with client.messages.stream(
                 model=model,
                 max_tokens=max_tokens,
                 # Thinking and answer share max_tokens. `effort` bounds the
@@ -516,7 +518,8 @@ def request_review(bundle: dict) -> dict:
                 system=[{"type": "text", "text": REVIEW_SYSTEM_PROMPT,
                          "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_prompt}],
-            )
+            ) as stream:
+                resp = stream.get_final_message()
             text = claude_integration.extract_text(resp)
             diag = call_diagnostics(resp, max_tokens, text)
             print(f"review call: model={model} " +

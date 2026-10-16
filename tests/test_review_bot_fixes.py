@@ -52,13 +52,30 @@ class FakeMessages:
         return self.responses.pop(0) if self.responses else FakeResponse()
 
 
+    def stream(self, **kwargs):
+        """S-fix: review_bot now streams; delegate to create()."""
+        outer = self
+
+        class _S:
+            def __enter__(self_inner):
+                self_inner.msg = outer.create(**kwargs)
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def get_final_message(self_inner):
+                return self_inner.msg
+        return _S()
+
+
 class FakeClient:
     def __init__(self, *responses):
         self.messages = FakeMessages(responses)
 
 
 def patch_client(monkeypatch, client):
-    monkeypatch.setattr(review_bot.claude_integration, "_get_client",
+    monkeypatch.setattr(review_bot.claude_integration, "_get_review_client",
                         lambda: client)
     monkeypatch.setattr(review_bot.time, "sleep", lambda *_: None)
     # These tests exercise how an empty RESPONSE is handled, not how the
