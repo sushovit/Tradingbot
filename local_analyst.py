@@ -20,6 +20,7 @@ import time
 import logging
 
 import requests
+import threading
 
 from prompts import (
     GATEKEEPER_REQUIRED_KEYS,
@@ -36,8 +37,33 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 # Chosen for this machine: RTX 3060 Laptop 4GB VRAM -> qwen3:4b is the largest
 # model in the fallback chain (14b -> 8b -> 4b) that fits on GPU and returns a
 # full gatekeeper JSON in well under 20 seconds.
-LOCAL_MODEL = os.getenv("LOCAL_ANALYST_MODEL", "qwen3:4b")
-REQUEST_TIMEOUT = 30  # seconds per attempt
+LOCAL_MODEL = os.getenv("LOCAL_ANALYST_MODEL", "qwen3:4b")   # legacy default
+REQUEST_TIMEOUT = 45  # seconds per attempt (S28: was 30)
+# S28: never unload the model. Ollama's default keep_alive (5 min) unloaded
+# it between the 09:25 warm-up and the first 09:31 signals, so the first
+# calls of the day paid a cold load inside their timeout.
+KEEP_ALIVE = -1
+# S28: bounded memory for the 9B shadow. Prompts are ~3.6k tokens; 8k leaves
+# room for the verdict. One request in flight per process: five concurrent
+# opening-burst calls made Ollama allocate five context slots (16.2 GB
+# resident on a 16 GB Mac) - a shadow must never push the worker into swap.
+NUM_CTX = 8192
+_OLLAMA_LOCK = threading.Lock()
+
+
+def shadow_model(config: dict = None) -> str:
+    """The shadow model: LOCAL_ANALYST_MODEL env > bot_config.json
+    models.shadow > the legacy default."""
+    env = os.getenv("LOCAL_ANALYST_MODEL")
+    if env:
+        return env
+    if config is None:
+        try:
+            with open("bot_config.json", encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            config = {}
+    return ((config or {}).get("models") or {}).get("shadow") or "qwen3:4b"
 
 
 def classify_error(err: Exception) -> str:
@@ -129,8 +155,8 @@ def ensure_ollama(warm: bool = True, wait_secs: int = 60) -> dict:
         # start racing a 30s timeout.
         try:
             requests.post(f"{OLLAMA_URL}/api/chat",
-                          json={"model": LOCAL_MODEL, "think": False,
-                                "stream": False,
+                          json={"model": shadow_model(), "think": False,
+                                "stream": False, "keep_alive": KEEP_ALIVE,
                                 "messages": [{"role": "user", "content": "OK"}]},
                           timeout=120)
             result["warmed"] = True
@@ -143,14 +169,27 @@ def ensure_ollama(warm: bool = True, wait_secs: int = 60) -> dict:
 
 
 def _call_ollama(system_prompt: str, user_prompt: str,
-                 timeout: int = None) -> dict:
+                 timeout: int = None, model: str = None) -> dict:
     """One Ollama chat call in JSON mode with thinking disabled.
     Raises on transport errors."""
     timeout = timeout or REQUEST_TIMEOUT
+    # Wait for the single slot at most this call's own budget. A call the
+    # worker has already given up on must never reach Ollama later and hold
+    # it while the next real signals queue behind it.
+    if not _OLLAMA_LOCK.acquire(timeout=timeout):
+        raise requests.Timeout(f"shadow queue: no slot within {timeout}s")
+    try:
+        return _post_chat(system_prompt, user_prompt, timeout, model)
+    finally:
+        _OLLAMA_LOCK.release()
+
+
+def _post_chat(system_prompt, user_prompt, timeout, model):
     resp = requests.post(
         f"{OLLAMA_URL}/api/chat",
         json={
-            "model": LOCAL_MODEL,
+            "model": model or shadow_model(),
+            "keep_alive": KEEP_ALIVE,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -158,7 +197,7 @@ def _call_ollama(system_prompt: str, user_prompt: str,
             "format": "json",      # Ollama JSON mode: forces valid JSON output
             "think": False,        # disable Qwen3 thinking for fast verdicts
             "stream": False,
-            "options": {"temperature": 0.2},
+            "options": {"temperature": 0.2, "num_ctx": NUM_CTX},
         },
         timeout=timeout,
     )
@@ -178,40 +217,22 @@ def _validate_verdict(result: dict) -> dict:
     return result
 
 
-def get_gatekeeper_decision(
-    ticker: str,
-    df20,
-    ema_spread_pct: float,
-    volume_trend: str,
-    crossover_count: int,
-    dist_to_resistance_pct: float,
-    entry_price: float,
-    stop_price: float,
-    target_price: float,
-    rr_ratio: float,
-    interval_mins: int,
-    fast_ema: int,
-    slow_ema: int,
-    news_headlines: list,
-    setup_name: str = "trend_continuation",
-    setup_description: str = None,
-) -> dict:
-    """Same contract as claude_integration.get_gatekeeper_decision."""
-    if df20 is None or df20.empty:
-        return {"approved": False, "conviction_score": 0,
-                "rejection_reason": "No candle data provided."}
-
+def build_user_prompt(ticker, df20, ema_spread_pct, volume_trend,
+                      crossover_count, dist_to_resistance_pct, entry_price,
+                      stop_price, target_price, rr_ratio, interval_mins,
+                      fast_ema, slow_ema, news_headlines,
+                      setup_name="trend_continuation", setup_description=None):
+    """The exact gatekeeper user prompt the shadow model sees - one place,
+    shared by the live call and the S28 fine-tune export."""
     required_cols = ['open', 'high', 'low', 'close', 'volume',
                      'ema_fast', 'ema_slow', 'rsi_14', 'adx_14']
     available_cols = [c for c in required_cols if c in df20.columns]
     candle_data_str = df20[available_cols].round(4).to_string()
-
     last = df20.iloc[-1]
     adx_val = last['adx_14'] if 'adx_14' in df20.columns else 0
     rsi_val = last['rsi_14'] if 'rsi_14' in df20.columns else 50
     news_str = ("\n".join(f"- {h}" for h in news_headlines)
                 if news_headlines else "No recent news available.")
-
     user_prompt = build_gatekeeper_user_prompt(
         ticker=ticker,
         candle_data_str=candle_data_str,
@@ -232,12 +253,48 @@ def get_gatekeeper_decision(
         setup_name=setup_name,
         setup_description=setup_description,
     )
+    return user_prompt
 
-    max_retries = 3
+
+def get_gatekeeper_decision(
+    ticker: str,
+    df20,
+    ema_spread_pct: float,
+    volume_trend: str,
+    crossover_count: int,
+    dist_to_resistance_pct: float,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    rr_ratio: float,
+    interval_mins: int,
+    fast_ema: int,
+    slow_ema: int,
+    news_headlines: list,
+    setup_name: str = "trend_continuation",
+    setup_description: str = None,
+    model: str = None,
+    max_retries: int = 3,
+) -> dict:
+    """Same contract as claude_integration.get_gatekeeper_decision.
+    `model` overrides the shadow model (the S28 replay compares two)."""
+    if df20 is None or df20.empty:
+        return {"approved": False, "conviction_score": 0,
+                "rejection_reason": "No candle data provided."}
+
+    user_prompt = build_user_prompt(
+        ticker=ticker, df20=df20, ema_spread_pct=ema_spread_pct,
+        volume_trend=volume_trend, crossover_count=crossover_count,
+        dist_to_resistance_pct=dist_to_resistance_pct, entry_price=entry_price,
+        stop_price=stop_price, target_price=target_price, rr_ratio=rr_ratio,
+        interval_mins=interval_mins, fast_ema=fast_ema, slow_ema=slow_ema,
+        news_headlines=news_headlines, setup_name=setup_name,
+        setup_description=setup_description)
+
     last_err = None
     for attempt in range(max_retries):
         try:
-            raw = _call_ollama(SYSTEM_PROMPT, user_prompt)
+            raw = _call_ollama(SYSTEM_PROMPT, user_prompt, model=model)
             return _validate_verdict(raw)
         except (requests.ConnectionError, requests.Timeout,
                 json.JSONDecodeError, KeyError, IndexError, Exception) as e:
@@ -249,3 +306,14 @@ def get_gatekeeper_decision(
                            f"retrying in {wait}s: {last_err}")
             time.sleep(wait)
     return {"error": f"Local analyst failed after {max_retries} attempts: {last_err}"}
+
+
+if __name__ == "__main__":
+    # S28: `python local_analyst.py --warm` - the 09:20 ET launchd job loads
+    # the shadow model (keep_alive -1) before the worker's 09:25 start.
+    pass  # sys already imported
+    if "--warm" in sys.argv:
+        state = ensure_ollama(warm=True)
+        print(f"shadow model {shadow_model()}: {state['detail']} "
+              f"(started={state['started']}, warmed={state['warmed']})")
+        sys.exit(0 if state["warmed"] else 1)

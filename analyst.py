@@ -23,7 +23,7 @@ import local_analyst
 
 logger = logging.getLogger(__name__)
 
-SHADOW_TIMEOUT_SECS = 30
+SHADOW_TIMEOUT_SECS = 45      # S28 (was 30)
 
 
 def _shadow_worker(gk_kwargs: dict, ticker: str, setup_name: str,
