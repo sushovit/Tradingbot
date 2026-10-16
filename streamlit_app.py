@@ -462,6 +462,79 @@ def resolve_exit_fill(broker, ticker, after_utc=None):
         return None, None, None
 
 
+def poll_entry_fill(broker, order, reference: float, qty: int,
+                    tries: int = 10, sleep=None):
+    """(price, filled_qty, confirmed, status, legs) for a just-submitted
+    entry. FILLED -> the broker's filled_avg_price and filled_qty;
+    PARTIALLY_FILLED when the poll ends -> the partial's avg and qty;
+    otherwise the reference, unconfirmed (the per-cycle broker reconcile
+    corrects it once the broker holds the position). S23."""
+    sleep = sleep or a_time.sleep
+    legs, status, o = {}, "unknown", None
+    for i in range(tries):
+        o = broker.get_order(order.id)
+        status = _status(o)
+        for leg in (getattr(o, "legs", None) or []):
+            ltype = str(getattr(leg, "order_type", None)
+                        or getattr(leg, "type", "")).lower()
+            if "stop" in ltype:
+                legs.setdefault("stop", str(leg.id))
+            elif "limit" in ltype:
+                legs.setdefault("target", str(leg.id))
+        if status == "filled" and getattr(o, "filled_avg_price", None):
+            fq = getattr(o, "filled_qty", None)
+            return (float(o.filled_avg_price),
+                    float(fq) if fq not in (None, "") else qty, True, status, legs)
+        if i < tries - 1:
+            sleep(1)
+    if status == "partially_filled" and getattr(o, "filled_avg_price", None):
+        return (float(o.filled_avg_price), float(o.filled_qty), True, status,
+                legs)
+    return reference, qty, False, status, legs
+
+
+def exit_in_progress(broker, state) -> bool:
+    """True if a tracked exit leg has filled ANY quantity. Then a smaller
+    broker qty is a partial EXIT, not a partial entry, and must not shrink
+    the position (the completed exit has to journal every share)."""
+    for key in ("stop_order_id", "target_order_id"):
+        oid = state.get(key)
+        if not oid:
+            continue
+        try:
+            if _status(broker.get_order(oid)) in ("filled", "partially_filled"):
+                return True
+        except BrokerError:
+            return True                      # unknown: never shrink on doubt
+    return False
+
+
+def reconcile_entry_with_broker(state: dict, broker_avg: float,
+                                broker_qty: float, allow_qty: bool = True):
+    """S23: the broker's average fill and quantity ARE the position. Returns
+    a description of what changed, or None. R (= entry - original_stop) and
+    every lock trigger derive from entry_price at use time, so correcting it
+    here, before any lock/trail math, recomputes them."""
+    changes = []
+    old_entry, old_qty = state.get("entry_price"), state.get("shares_held")
+    if broker_avg and (old_entry is None or abs(float(old_entry) - broker_avg) > 0.004):
+        state.setdefault("signal_price", old_entry)
+        state["entry_price"] = broker_avg
+        changes.append(f"entry {old_entry} -> {broker_avg}")
+    if allow_qty and broker_qty and (old_qty is None
+                                     or abs(float(old_qty) - broker_qty) > 1e-9):
+        state["shares_held"] = broker_qty
+        changes.append(f"qty {old_qty} -> {broker_qty:g}")
+    if changes:
+        state["entry_fill_confirmed"] = True
+        if state.get("original_stop") is None:
+            orig = position_mgmt.original_stop(state)
+            if orig is not None:
+                state["original_stop"] = orig
+        return "; ".join(changes)
+    return None
+
+
 def confirm_fill(broker, order, fallback: float, tries: int = 10):
     """Poll an order for its ACTUAL average fill, falling back to `fallback`.
 
@@ -476,7 +549,9 @@ def confirm_fill(broker, order, fallback: float, tries: int = 10):
         for _ in range(tries):
             fetched = broker.get_order(order_id)
             filled = getattr(fetched, "filled_avg_price", None)
-            if str(getattr(fetched, "status", "")).lower() == "filled" and filled:
+            # alpaca-py's str(OrderStatus.FILLED) is "OrderStatus.FILLED":
+            # compare the normalized value, or this never matches (S23).
+            if _status(fetched) == "filled" and filled:
                 return float(filled), True
             a_time.sleep(1)
     except BrokerError as e:
@@ -844,9 +919,10 @@ def _worker_loop():
             broker_symbols = {p.symbol for p in _held_now}
             broker_entries = {p.symbol: float(p.avg_entry_price)
                               for p in _held_now}
+            broker_qtys = {p.symbol: abs(float(p.qty)) for p in _held_now}
         except BrokerError:
             broker_symbols = None  # unknown — don't infer exits this cycle
-            broker_entries = {}
+            broker_entries, broker_qtys = {}, {}
 
         def journal_pass_once(t, setup_name, filter_name, details="", bar_key=None):
             """Journal a rules pass ONCE per (ticker, setup, filter, bar/day).
@@ -877,6 +953,26 @@ def _worker_loop():
                 journal.log_integrity_event(kind, details)
             except Exception as e:
                 logger.error(f"Failed to journal ops event {kind}: {e}")
+
+        # S23: before ANY lock/trail math, every open position's entry and
+        # qty are the broker's. A correction is persisted at once (W8) and
+        # journaled as an ops event.
+        _entry_fixed = False
+        for _t, _st in positions.items():
+            if not _st.get("in_position") or _t not in broker_entries:
+                continue
+            _bq = broker_qtys.get(_t)
+            _qty_differs = _bq is not None and _st.get("shares_held") is not None \
+                and abs(float(_st["shares_held"]) - _bq) > 1e-9
+            _what = reconcile_entry_with_broker(
+                _st, broker_entries[_t], _bq,
+                allow_qty=not (_qty_differs and exit_in_progress(broker, _st)))
+            if _what:
+                _entry_fixed = True
+                logger.warning(f"{_t}: position corrected from the broker - {_what}")
+                journal_ops_once("entry_reconciled", f"{_t}: {_what}")
+        if _entry_fixed:
+            write_positions(positions)
 
         status_updates = []
         for ticker in ticker_list:
@@ -1435,26 +1531,24 @@ def _worker_loop():
                 elif "limit" in ltype:
                     target_order_id = str(leg.id)
 
-            # Wait briefly for the market entry to fill so we journal real prices.
-            fill_price = signal.entry
+            # Wait briefly for the market entry to fill so we record the REAL
+            # fill. S23 (2026-10-15): the old poll compared str(status) to
+            # "filled", which alpaca-py never returns ("OrderStatus.FILLED"),
+            # so every entry kept the signal's reference price - TXN 282.815
+            # vs a 280.25 fill - and R and every lock trigger were wrong.
             try:
-                for _ in range(10):
-                    o = broker.get_order(order.id)
-                    if str(getattr(o, "status", "")).lower() == "filled" \
-                            and getattr(o, "filled_avg_price", None):
-                        fill_price = float(o.filled_avg_price)
-                        # nested get_order also carries legs — fill any gaps.
-                        for leg in (getattr(o, "legs", None) or []):
-                            ltype = str(getattr(leg, "order_type", None)
-                                        or getattr(leg, "type", "")).lower()
-                            if "stop" in ltype and not stop_order_id:
-                                stop_order_id = str(leg.id)
-                            elif "limit" in ltype and not target_order_id:
-                                target_order_id = str(leg.id)
-                        break
-                    a_time.sleep(1)
+                fill_price, filled_qty, fill_confirmed, entry_status, legs = \
+                    poll_entry_fill(broker, order, signal.entry, qty)
             except BrokerError as e:
                 logger.warning(f"{ticker}: could not confirm entry fill yet: {e}")
+                fill_price, filled_qty, fill_confirmed, entry_status, legs = \
+                    signal.entry, qty, False, "unknown", {}
+            stop_order_id = stop_order_id or legs.get("stop")
+            target_order_id = target_order_id or legs.get("target")
+            if filled_qty and filled_qty != qty:
+                logger.warning(f"{ticker}: partial entry - {filled_qty:g} of "
+                               f"{qty} filled @ {fill_price:.4f}")
+                qty = filled_qty
 
             # Journal the ORDER ID with the entry. Without it sync had to
             # guess which BUY row an Alpaca fill belonged to by matching
@@ -1469,7 +1563,11 @@ def _worker_loop():
             positions[ticker] = {
                 "in_position": True,
                 "source": "bot",   # ownership: the bot manages ONLY its own entries
+                # S23: the broker's fill when confirmed; otherwise the
+                # reference until the per-cycle broker reconcile corrects it.
                 "entry_price": fill_price,
+                "signal_price": signal.entry,
+                "entry_fill_confirmed": bool(fill_confirmed),
                 "shares_held": qty,
                 # initial_stop is the PLAYBOOK-STRUCTURAL stop (reclaim/
                 # breakout bar low). It never moves, so the R distance
@@ -1516,9 +1614,17 @@ def _worker_loop():
             trade_alerts.alert_buy(                     # S19: background
                 ticker=ticker, qty=qty, fill=fill_price, ts=now_et,
                 target=signal.target, stop=signal.stop,
-                setup=signal.setup_name, conviction=conviction)
-            logger.info(f"BOUGHT {qty} {ticker} @ ${fill_price:.2f} "
-                        f"(bracket: stop {signal.stop:.2f} / target {signal.target:.2f})")
+                setup=signal.setup_name, conviction=conviction,
+                signal_price=signal.entry, fill_confirmed=fill_confirmed)
+            if fill_confirmed:
+                logger.info(f"BOUGHT {qty:g} {ticker} @ ${fill_price:.4f} fill "
+                            f"(signal {signal.entry:.2f}; bracket: stop "
+                            f"{signal.stop:.2f} / target {signal.target:.2f})")
+            else:
+                logger.warning(f"BUY {qty:g} {ticker} submitted - fill PENDING "
+                               f"(entry order {entry_status}); recorded at the "
+                               f"signal reference {signal.entry:.2f} until the "
+                               f"broker reconcile corrects it")
             status_updates.append(f"{ticker}: BOUGHT ({signal.setup_name})")
 
         write_positions(positions)
