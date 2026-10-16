@@ -314,12 +314,14 @@ def test_plan_reports_not_trainable_at_tiny_n():
     assert "qlora" in report.lower()
 
 
-def test_training_command_targets_the_4gb_card():
+def test_training_command_targets_this_mac():
+    """S28: the desk moved to an Apple M4 (16 GB) - the axolotl / 4 GB RTX
+    recipe is retired; training is mlx-lm LoRA on the S28 shadow model, in a
+    separate venv, batch 1 with gradient checkpointing."""
     cmd = finetune_plan.training_command(300)
-    assert "load_in_4bit: true" in cmd
-    assert "micro_batch_size: 1" in cmd
-    assert "Qwen/Qwen3-4B" in cmd
-    assert "paged_adamw_8bit" in cmd
+    assert "mlx_lm lora" in cmd and "--fine-tune-type lora" in cmd
+    assert "--batch-size 1" in cmd and "--grad-checkpoint" in cmd
+    assert "Qwen3.5-9B-4bit" in cmd and "TradingBot-mlvenv" in cmd
 
 
 def test_plan_module_never_trains():
