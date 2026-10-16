@@ -102,3 +102,23 @@ def test_a_cap_failure_never_costs_the_cycle():
     src = open(os.path.join(ROOT, "streamlit_app.py"), encoding="utf-8").read()
     block = src[src.index("position_mgmt.maybe_cap_target("):]
     assert block.index("except Exception as e:") < block.index("status_updates = []")
+
+
+def test_startup_repair_never_points_at_a_leg_being_replaced():
+    import streamlit_app as app
+
+    class L:
+        def __init__(self, id, status, otype, replaced_by=None):
+            self.id, self.status, self.order_type = id, status, otype
+            self.side, self.replaced_by = "OrderSide.SELL", replaced_by
+
+    class B:
+        def get_live_orders(self, t):
+            return [L("new-tgt", "OrderStatus.NEW", "OrderType.LIMIT"),
+                    L("old-tgt", "OrderStatus.PENDING_REPLACE", "OrderType.LIMIT",
+                      replaced_by="new-tgt"),
+                    L("stop", "OrderStatus.HELD", "OrderType.STOP")]
+    book = {"REGN": {"in_position": True, "target_order_id": "new-tgt",
+                     "stop_order_id": "stop"}}
+    assert app.refresh_order_ids(B(), book) == []
+    assert book["REGN"]["target_order_id"] == "new-tgt"
