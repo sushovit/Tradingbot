@@ -75,6 +75,7 @@ def simulate(bars, daily, entry_day, struct_stop, params, exits, early):
     dcl = {str(t)[:10]: float(c) for t, c in zip(daily.index, daily["close"])}
     stop, hc, mfe_high = stop0, None, entry
     exit_px, why, steps = None, None, []
+    day_cache = {}          # per session: (ATR14 as of the day, highest prior close)
     for n, (t, bar) in enumerate(zip(sidx, seg.itertuples())):
         o, h, l, c = bar.open, bar.high, bar.low, bar.close
         day = t.strftime("%Y-%m-%d")
@@ -91,10 +92,12 @@ def simulate(bars, daily, entry_day, struct_stop, params, exits, early):
         hhmm = t.strftime("%H:%M")
         if hhmm >= params["not_before_et"]:
             hc = c if hc is None else max(hc, c)
-            prior = [v for d, v in dcl.items() if entry_day <= d < day]
-            hdc = max(prior) if prior else None
-            atr_t = pm.daily_atr(daily, int(params["atr_length"]),
-                                 today=pd.Timestamp(day).date())
+            if day not in day_cache:
+                prior = [v for d, v in dcl.items() if entry_day <= d < day]
+                day_cache[day] = (pm.daily_atr(daily, int(params["atr_length"]),
+                                               today=pd.Timestamp(day).date()),
+                                  max(prior) if prior else None)
+            atr_t, hdc = day_cache[day]
             cand, step = pm.r_atr_target(entry, stop0, hc, hdc, atr_t, c, params)
             cand = cand or 0.0
             if early:
@@ -178,16 +181,24 @@ def report():
         if cur and ear:
             rows.append((s, cur, ear))
 
+    pickle.dump(rows, open(f"{CACHE}/rows.pkl", "wb"))
     L = []
     P = L.append
-    wide = [(s, c, e) for s, c, e in rows if c["r_atr"] > 1.5 + 1e-6]
+    # Cent rounding puts trades pinned at the 1.5-ATR clamp floor at
+    # 1.50-1.51, so "wide" starts above 1.55.
+    floor = [(s, c, e) for s, c, e in rows if c["r_atr"] <= 1.55]
+    wide = [(s, c, e) for s, c, e in rows if c["r_atr"] > 1.55]
+    regn = [(s, c, e) for s, c, e in rows if c["r_atr"] >= 2.0]
     P(f"Signals 2025-10-14..2026-10-14: {len(sigs)} raw, {len(kept)} after the "
       f"5-session de-duplication, {len(rows)} resolved trades simulated "
-      f"(both rules). R > 1.5 ATR (not pinned at the clamp floor): "
-      f"{len(wide)}; median R/ATR there "
-      f"{sorted(c['r_atr'] for _, c, _ in wide)[len(wide) // 2]:.2f}.")
+      f"(both rules). R/ATR: {len(floor)} at the 1.5-ATR clamp floor "
+      f"(<= 1.55), {len(wide)} wider (> 1.55), of which {len(regn)} >= 2.0 "
+      f"(REGN 10-15 was 2.32).")
     P("")
-    for label, pop in (("R > 1.5 ATR (REGN-type)", wide), ("All trades", rows)):
+    for label, pop in (("R > 1.55 ATR - wide-R trades", wide),
+                       ("R >= 2.0 ATR - REGN-like", regn),
+                       ("R at the 1.5-ATR floor", floor),
+                       ("All trades", rows)):
         a, b = summary([c for _, c, _ in pop]), summary([e for _, _, e in pop])
         P(f"### {label} — n = {a['n']}")
         P("")
