@@ -180,10 +180,29 @@ def is_daily_setup(setup_name: str, config: dict = None) -> bool:
     return daily_eval.strategy_timeframe(setup_name, config, default) == "daily"
 
 
+def conviction_threshold(config: dict = None) -> float:
+    if config is None:
+        try:
+            with open("bot_config.json", encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            config = {}
+    try:
+        return float((config or {}).get("claude_conviction_threshold", 70))
+    except (TypeError, ValueError):
+        return 70.0
+
+
 def pending_decisions(date_str: str = None, db_file: str = None,
-                      include_unresolved: bool = True) -> list:
+                      include_unresolved: bool = True,
+                      threshold: float = None) -> list:
     """Rejections to evaluate: those decided on `date_str`, plus any row
-    still unresolved from an earlier run."""
+    still unresolved from an earlier run.
+
+    CEO 2026-10-17 (A): a gatekeeper APPROVAL below the conviction threshold
+    is a block too - the worker never trades it - so it is graded alongside
+    the rejections (reason key gatekeeper_low_conviction), at the entry /
+    stop / target the gatekeeper was shown."""
     db_file = db_file or journal.DB_FILE
     conn = sqlite3.connect(db_file)
     conn.row_factory = sqlite3.Row
@@ -196,9 +215,14 @@ def pending_decisions(date_str: str = None, db_file: str = None,
             seen.add(r["id"])
             rows.append(dict(r))
 
+    threshold = conviction_threshold() if threshold is None else threshold
     base = ("SELECT d.id, d.timestamp, d.ticker, d.setup_name, d.source, "
-            "d.context, json_extract(d.verdict,'$.rejection_reason') AS reason "
-            "FROM decisions d WHERE d.approved=0 AND d.source IN ('rules','claude') ")
+            "d.context, d.approved, d.conviction_score, "
+            "json_extract(d.verdict,'$.rejection_reason') AS reason "
+            "FROM decisions d WHERE ((d.approved=0 AND d.source IN "
+            "('rules','claude')) OR (d.source='claude' AND d.approved=1 "
+            f"AND d.conviction_score IS NOT NULL AND d.conviction_score < "
+            f"{float(threshold)})) ")
     if date_str:
         collect(base + "AND substr(d.timestamp,1,10)=?", (date_str,))
     if include_unresolved:
@@ -357,6 +381,11 @@ def evaluate(date_str: str = None, bars_by_ticker=None, db_file: str = None,
                 target, horizon)
         counts[outcome] = counts.get(outcome, 0) + 1
         resolved_n += 1 if resolved else 0
+        low_conv = bool(row.get("approved")) and row["source"] == "claude"
+        key = ("gatekeeper_low_conviction" if low_conv
+               else reason_key(row["source"], row["reason"]))
+        raw = (f"approved at conviction {row.get('conviction_score')} - below "
+               f"the threshold, not traded" if low_conv else row["reason"])
         conn.execute("""
             INSERT INTO rejection_outcomes
               (decision_id, decided_date, ticker, setup_name, source,
@@ -368,8 +397,8 @@ def evaluate(date_str: str = None, bars_by_ticker=None, db_file: str = None,
                sessions_used=excluded.sessions_used,
                resolved=excluded.resolved, updated_at=excluded.updated_at
         """, (row["id"], decided, row["ticker"], row["setup_name"],
-              row["source"], reason_key(row["source"], row["reason"]),
-              str(row["reason"] or "")[:300], entry, stop, target, outcome,
+              row["source"], key, str(raw or "")[:300], entry, stop, target,
+              outcome,
               r_val, used, 1 if resolved else 0,
               datetime.now(EASTERN_TZ).strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
@@ -479,3 +508,25 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def class_summary(reason: str, since: str, db_file: str = None) -> dict:
+    """n, resolved, win % (r > 0) and avg R for one reason class since a
+    date - the A report for gatekeeper_low_conviction."""
+    db_file = db_file or journal.DB_FILE
+    init_table(db_file)
+    conn = sqlite3.connect(db_file)
+    rows = conn.execute(
+        "SELECT outcome, r_achieved, resolved FROM rejection_outcomes "
+        "WHERE reason_key=? AND decided_date>=?", (reason, since)).fetchall()
+    conn.close()
+    graded = [r for r in rows if r[1] is not None]
+    wins = sum(1 for r in graded if r[1] > 0)
+    return {"n": len(rows), "graded": len(graded),
+            "resolved": sum(1 for r in rows if r[2]),
+            "win_pct": round(100 * wins / len(graded), 1) if graded else None,
+            "avg_r": round(sum(r[1] for r in graded) / len(graded), 3)
+            if graded else None,
+            "by_outcome": {o: sum(1 for r in rows if r[0] == o)
+                           for o in sorted({r[0] for r in rows})}}
+
