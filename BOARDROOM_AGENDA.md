@@ -1241,3 +1241,16 @@ The full S29 grid (trail 2.0/2.5/3.0 ATR, target 1.5R/2R/3R, half-at-1R,
 time stops) is defined in the research report, which is still not in this
 repository.
 
+
+### Decision (CEO 2026-10-17): adopt +1R -> breakeven
+
+**Adopted.** The daily R/ATR ladder's first step is now **+1R -> stop to
+entry (breakeven)**, replacing entry - 0.25R: `daily_r_atr.steps` =
+`[[1.0, 0.0], [1.5, 0.0], [2.0, 1.0]]` in both risk profiles (and the code
+default). Basis: the S29 replay above - expectancy +0.321R vs +0.315R, PF
+1.91 vs 1.84, give-back 2.1% vs 8.7%, capture unchanged. The +1.5R step now
+asks for the same level and is a no-op; kept so the ladder's shape stays in
+config. The stop-clamp and skip-R:R<1.5 variants are **not** adopted.
+Existing positions are not moved: the ladder only acts when a position's
+qualifying close reaches +1R - REGN (entry 802.61, stop 756.25, +1R 848.97,
+highest close so far 808.37) keeps its stop until then.

@@ -133,7 +133,7 @@
             "trailing_stop_value": 2.0,
             "daily_trailing": "r_atr",
             "daily_r_atr": {
-                "steps": [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]],
+                "steps": [[1.0, 0.0], [1.5, 0.0], [2.0, 1.0]],
                 "trail_atr": 2.5,
                 "atr_length": 14,
                 "not_before_et": "10:00",
@@ -169,7 +169,7 @@
             "trailing_stop_value": 2.5,
             "daily_trailing": "r_atr",
             "daily_r_atr": {
-                "steps": [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]],
+                "steps": [[1.0, 0.0], [1.5, 0.0], [2.0, 1.0]],
                 "trail_atr": 2.5,
                 "atr_length": 14,
                 "not_before_et": "10:00",

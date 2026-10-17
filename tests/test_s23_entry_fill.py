@@ -113,12 +113,12 @@ def test_at_the_reference_entry_the_283_05_close_moved_nothing():
 
 def test_at_the_fill_the_283_05_close_raises_the_stop_per_the_live_ladder():
     """Fixed: entry 280.25, R 2.25, +1R = 282.50; the r_atr ladder's +1R
-    step is entry - 0.25R = 279.6875 -> 279.69."""
+    step is breakeven (S29 adopted) = 280.25."""
     s = txn(entry_price=282.815)
     app.reconcile_entry_with_broker(s, 280.25, 4.0)
     changed, broker, journaled, _ = run(s, m5([283.05]), 283.10)
-    assert changed is True and broker.replaced == [("stop-0", 279.69)]
-    assert s["trailing_stop_price"] == 279.69
+    assert changed is True and broker.replaced == [("stop-0", 280.25)]
+    assert s["trailing_stop_price"] == 280.25
 
 
 def test_the_reconcile_runs_before_any_lock_or_trail_math():

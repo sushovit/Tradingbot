@@ -26,8 +26,8 @@ PROFILE = {"trailing_stop_type": "ATR", "trailing_stop_value": 2.5,
 
 @pytest.mark.parametrize("hc, stop, step", [
     (282.49, None, None),
-    (282.50, 279.69, "+1R"),          # entry - 0.25R = 279.6875, up
-    (283.625, 280.25, "+1.5R"),       # entry
+    (282.50, 280.25, "+1R"),          # S29 adopted: breakeven (entry)
+    (283.625, 280.25, "+1R"),         # +1.5R asks for entry too: same level
     (284.75, 282.50, "+2R"),          # entry + 1R
 ])
 def test_txn_steps(hc, stop, step):
@@ -124,8 +124,8 @@ def run(state, df, last, now=NOW, daily_df=None):
 
 def test_steps_raise_in_order_and_never_lower():
     s = txn()
-    assert run(s, m5([282.6]), 282.7)[1].replaced == [("stop-0", 279.69)]
-    assert run(s, m5([283.7]), 283.8)[1].replaced == [("stop-1", 280.25)]
+    assert run(s, m5([282.6]), 282.7)[1].replaced == [("stop-0", 280.25)]
+    assert run(s, m5([283.7]), 283.8)[1].replaced == []         # +1.5R: same level
     assert run(s, m5([284.8]), 284.9)[1].replaced == [("stop-1", 282.50)]
     changed, broker, _, _ = run(s, m5([281.0]), 281.1)          # pullback
     assert changed is False and broker.replaced == []
@@ -145,7 +145,7 @@ def test_opening_range_closes_do_not_count():
                                  pd.Timestamp("2026-10-15 10:05", tz=ET)]).tz_convert("UTC")
     s = txn()
     run(s, df, 282.7)
-    assert s["highest_close"] == 282.6 and s["trailing_stop_price"] == 279.69
+    assert s["highest_close"] == 282.6 and s["trailing_stop_price"] == 280.25
 
 
 def test_restart_is_a_no_op():
@@ -252,7 +252,8 @@ def test_shipped_config():
     for name in ("Aggressive", "Moderate"):
         prof = cfg["risk_profiles"][name]
         assert prof["daily_trailing"] == "r_atr"
-        assert pm.r_atr_params(prof)["steps"] == [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]]
+        # S29 adopted (CEO 2026-10-17, agenda 19): +1R -> breakeven
+        assert pm.r_atr_params(prof)["steps"] == [[1.0, 0.0], [1.5, 0.0], [2.0, 1.0]]
         assert pm.r_atr_params(prof)["trail_atr"] == 2.5
         assert pm.daily_exit_params(prof)["time_stop_day"] == 5
         assert pm.daily_exit_params(prof)["max_hold_days"] == 10
@@ -307,3 +308,11 @@ def test_weekly_live_vs_shadow_line():
     assert "Live   -$1.00  win 0%  capture -25%" in text
     assert "Shadow +$3.25  win 100%  capture 81%" in text
     assert max(len(l) for l in lines) <= 50
+
+
+def test_s29_regn_keeps_its_stop_until_plus_1r_then_breakeven():
+    """CEO 2026-10-17: do not move REGN's stop until it actually reaches +1R
+    (entry 802.61, stop 756.25 -> +1R = 848.97); then breakeven."""
+    assert pm.r_atr_target(802.61, 756.25, 808.37, None, None, 1e9, P) == (None, None)
+    assert pm.r_atr_target(802.61, 756.25, 848.96, None, None, 1e9, P) == (None, None)
+    assert pm.r_atr_target(802.61, 756.25, 848.97, None, None, 1e9, P) == (802.61, "+1R")
