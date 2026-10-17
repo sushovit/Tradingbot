@@ -427,7 +427,8 @@ def handle_position_exit(broker, positions, ticker, state, fill_price, reason,
         decision_id=state.get("decision_id"),
         broker_order_id=broker_order_id,
         entry_price=entry_price,
-        sector=state.get("sector"))
+        sector=state.get("sector"),
+        **journal.exit_levels(state))   # S31: the levels it exited against
     positions[ticker] = {"in_position": False}
     write_positions(positions)          # W8: a close is a broker mutation
     if trade_id is None:
