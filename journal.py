@@ -148,6 +148,12 @@ def init_db():
             # risk, but the class must be MEASURABLE. Every fill carries the
             # sector so per-class expectancy is a query, not an argument.
             conn.execute("ALTER TABLE trades ADD COLUMN sector TEXT")
+        if "exit_target" not in tcols:
+            # S31 (CEO 2026-10-17): the target and stop the bracket held AT
+            # EXIT, so a closed trade's row shows the levels it actually
+            # traded against, not the gatekeeper's uncapped proposal.
+            conn.execute("ALTER TABLE trades ADD COLUMN exit_target REAL")
+            conn.execute("ALTER TABLE trades ADD COLUMN exit_stop REAL")
         conn.commit()
     run_data_migrations()
 
@@ -549,13 +555,30 @@ def chop_reclaim_report() -> dict:
     }
 
 
+def _level(x):
+    try:
+        return float(x) if x is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def exit_levels(state) -> dict:
+    """{exit_target, exit_stop} from a position's state (positions.json):
+    the levels its bracket held at the moment it exited."""
+    state = state or {}
+    return {"exit_target": state.get("profit_target_price"),
+            "exit_stop": state.get("trailing_stop_price")}
+
+
 def log_trade(ticker: str, action: str, qty: float, price: float,
               pnl_usd: float = 0.0, pnl_pct: float = 0.0,
               reason: str = "", decision_id=None,
               broker_order_id: str = None, tier: str = "A",
               sector: str = None, risk_pct_actual: float = None,
-              size_mult: float = None) -> int:
-    """Journal one fill (BUY or SELL). Returns the trade id."""
+              size_mult: float = None, exit_target: float = None,
+              exit_stop: float = None) -> int:
+    """Journal one fill (BUY or SELL). Returns the trade id. A SELL may carry
+    the live target/stop the position held when it exited (S31)."""
     if sector is None:
         try:
             import sectors as _sectors
@@ -567,11 +590,12 @@ def log_trade(ticker: str, action: str, qty: float, price: float,
             """INSERT INTO trades
                (timestamp, ticker, action, qty, price, pnl_usd, pnl_pct, reason,
                 decision_id, broker_order_id, tier, sector, risk_pct_actual,
-                size_mult)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                size_mult, exit_target, exit_stop)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now_et(), ticker, action.upper(), qty, price, pnl_usd, pnl_pct,
              reason, decision_id, broker_order_id, str(tier).upper(), sector,
-             risk_pct_actual, size_mult),
+             risk_pct_actual, size_mult, _level(exit_target),
+             _level(exit_stop)),
         )
         conn.commit()
         return cur.lastrowid
@@ -992,7 +1016,8 @@ def sector_expectancy(tier: str = None) -> list:
 def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
                 decision_id=None, broker_order_id: str = None,
                 entry_price: float = None, tier: str = None,
-                sector: str = None):
+                sector: str = None, exit_target: float = None,
+                exit_stop: float = None):
     """SINGLE-AUTHORITY exit journaling. Every path that sees a fill (bot
     loop, orders.py sync, report startup sync) must come through here or
     respect the same rule: idempotence keys on the BROKER's order id.
@@ -1013,7 +1038,8 @@ def record_exit(ticker: str, qty: float, fill_price: float, reason: str,
                          decision_id=decision_id,
                          broker_order_id=broker_order_id,
                          tier=resolved_tier,
-                         sector=sector or entry_sector(ticker, decision_id))
+                         sector=sector or entry_sector(ticker, decision_id),
+                         exit_target=exit_target, exit_stop=exit_stop)
     link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
     return trade_id, pnl_usd, pnl_pct
 

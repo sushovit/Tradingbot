@@ -297,7 +297,7 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
             ticker, qty, price, f"CEO {action}",
             decision_id=state.get("decision_id") or decision_id,
             broker_order_id=oid, entry_price=entry,
-            sector=state.get("sector"))
+            sector=state.get("sector"), **journal.exit_levels(state))
         positions[ticker] = {"in_position": False}
         if trade_id is None:
             return f"{action} {ticker}: closed (exit already journaled)."
@@ -342,7 +342,8 @@ def execute_order(order: dict, broker, decision_id: int, positions: dict) -> str
         pnl_pct = ((price / entry) - 1) * 100 if entry else 0.0
         journal.log_trade(ticker, "SELL", qty_to_sell, price, pnl_usd, pnl_pct,
                           reason="CEO TAKE_PARTIAL", decision_id=decision_id,
-                          broker_order_id=str(getattr(partial_order, "id", "")) or None)
+                          broker_order_id=str(getattr(partial_order, "id", "")) or None,
+                          **journal.exit_levels(state))
         state["shares_held"] = qty_held - qty_to_sell
         positions[ticker] = state
         return f"TAKE_PARTIAL {ticker}: sold {qty_to_sell} of {qty_held}."
@@ -724,7 +725,9 @@ def sync(broker=None, desk: str = "main") -> int:
         trade_id = journal.log_trade(ticker, "SELL", qty, price,
                                      pnl_usd=pnl_usd, pnl_pct=pnl_pct,
                                      reason=reason, decision_id=decision_id,
-                                     broker_order_id=oid)
+                                     broker_order_id=oid,
+                                     **({} if is_intern else
+                                        journal.exit_levels(positions.get(ticker))))
         journal.link_outcome(decision_id, trade_id, pnl_usd, pnl_pct)
         if not is_intern:
             import trade_alerts                      # S19

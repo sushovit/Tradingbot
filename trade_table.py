@@ -42,6 +42,12 @@ def result_for(reason: str, pnl: float) -> str:
 
 # ============================================================ data
 
+def _sold_level(sell, key, fallback):
+    if sell is not None and key in sell.keys() and sell[key] is not None:
+        return float(sell[key])
+    return fallback
+
+
 def load_trades(conn):
     """[{ticker, qty, buy, buy_ts, sell, sell_ts, pnl, reason, target, stop}]
     - one per BUY, sell fields None while nothing has been sold.
@@ -91,7 +97,11 @@ def load_trades(conn):
             if matched else None,
             "reason": "partial" if partial else (last["reason"] if last
                                                  else None),
-            "target": ctx.get("target"), "stop": ctx.get("stop"),
+            # S31: a sold trade shows the levels its bracket held at exit
+            # (journaled on the SELL); older rows and open trades fall back
+            # to the proposal here and are replaced by live levels below.
+            "target": _sold_level(last, "exit_target", ctx.get("target")),
+            "stop": _sold_level(last, "exit_stop", ctx.get("stop")),
             "setup": b["reason"],
         })
     return out
@@ -116,6 +126,13 @@ def account_trades(conn, since: str = ACCOUNT_START, open_positions=None):
             live = open_positions.get(t["ticker"]) or {}
             pnl = live.get("unrealized")
             result = "part" if t["reason"] == "partial" else "open"
+            if t["reason"] != "partial":
+                # S31: an open trade shows the bracket's LIVE target/stop
+                # (S28 cap, ladder raises), not the uncapped proposal.
+                if live.get("target") is not None:
+                    t = dict(t, target=live["target"])
+                if live.get("stop") is not None:
+                    t = dict(t, stop=live["stop"])
         cost = t["buy"] * t["qty"]
         rows.append({
             "Opened (ET)": t["buy_ts"][:16], "Ticker": t["ticker"],
