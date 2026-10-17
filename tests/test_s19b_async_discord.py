@@ -17,6 +17,8 @@ import pytest
 import alerts
 import orders
 
+pytestmark = pytest.mark.real_post_async   # tests post_async itself
+
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 FAST = 5.0            # seconds: "normal time" for anything below
 

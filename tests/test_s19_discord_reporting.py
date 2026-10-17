@@ -15,6 +15,8 @@ import pytest
 import trade_alerts as ta
 import trade_table as tt
 
+pytestmark = pytest.mark.real_post_async   # tests post_async itself
+
 ET = ZoneInfo("America/New_York")
 TS = datetime(2026, 10, 9, 11, 28, tzinfo=ET)
 
