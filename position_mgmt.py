@@ -626,7 +626,8 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
 
 # --- R/ATR ladder for daily positions (S25, CEO 2026-10-14) ----------------
 # After the stop-loss research. R = entry - original stop.
-#   +1.0R -> stop = entry - 0.25R;  +1.5R -> entry;  +2R -> entry + 1R;
+#   +1.0R -> stop = entry (S29 adopted 2026-10-17; was entry - 0.25R);
+#   +1.5R -> entry;  +2R -> entry + 1R;
 #   beyond +2R: stop = max(stop, highest completed DAILY close - 2.5 x ATR14).
 # Steps are decided on completed 5-minute closes of bars starting at/after
 # 10:00 ET (the opening range is ignored) and only ratchet after 10:00 ET.
@@ -634,7 +635,7 @@ def maybe_pct_lock(broker, positions: dict, ticker: str, state: dict, df,
 # the cent. New entries get an ATR-aware initial stop (initial_stop below);
 # existing positions keep theirs.
 
-R_ATR_DEFAULTS = {"steps": [[1.0, -0.25], [1.5, 0.0], [2.0, 1.0]],
+R_ATR_DEFAULTS = {"steps": [[1.0, 0.0], [1.5, 0.0], [2.0, 1.0]],
                   "trail_atr": 2.5, "atr_length": 14, "not_before_et": "10:00",
                   "market_gap_pct": 0.1, "initial_stop_atr_buffer": 0.25,
                   "initial_stop_min_atr": 1.5, "initial_stop_max_atr": 2.5}

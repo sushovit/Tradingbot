@@ -20,7 +20,7 @@ def test_profit_to_loss_threshold_is_one_r():
 def test_exit_rule_text_tracks_the_config():
     cfg = json.load(open("bot_config.json", encoding="utf-8"))
     text = goals.exit_rule_text(cfg)
-    assert text.startswith("R/ATR ladder: +1R -> entry -0.25R, +1.5R -> entry, "
+    assert text.startswith("R/ATR ladder: +1R -> entry, +1.5R -> entry, "
                            "+2R -> entry +1R")
     assert "2.5xATR14" in text and "day 5" in text and "day 10" in text
     ladder = {"risk_profiles": {"Moderate": {"daily_trailing": "ladder",
@@ -88,7 +88,7 @@ def test_capped_targets_are_examined_before_the_exit_rule():
 
 def test_without_ops_events_the_rule_fix_names_the_live_rule():
     _, fix = goals.why_and_fix("capture_ratio_pct", ev({}), {})
-    assert "R/ATR ladder: +1R -> entry -0.25R" in fix
+    assert "R/ATR ladder: +1R -> entry," in fix
     _, fix = goals.why_and_fix("max_profit_to_loss_trades", ev({}), {})
     assert "live exit rule (R/ATR ladder" in fix
     assert "+0.5R" not in fix.split("(")[0]
