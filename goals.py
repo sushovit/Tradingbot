@@ -20,7 +20,7 @@ Definitions (also printed in every report):
   on time      a session whose worker started by 09:30 ET (logs/worker.log)
                or was already journaling decisions by 09:35 ET - the log on
                this Mac does not hold the laptop-era mornings
-  giveback     a closed trade that was up >= +0.5R open and closed at a loss
+  giveback     a closed trade that was up >= +1R open and closed at a loss
 
 A period still in progress is judged against the target pro-rated to the
 sessions elapsed so far, and says so.
@@ -44,7 +44,7 @@ DEFAULT_GOALS = {
     "max_profit_to_loss_trades": 0,
 }
 GOAL_KEYS = tuple(DEFAULT_GOALS)
-GIVEBACK_MIN_R = 0.5
+GIVEBACK_MIN_R = 1.0     # CEO 2026-10-17 (D): was +0.5R
 ON_TIME = "09:30:00"            # a logged worker start at or before this
 ON_TIME_ACTIVITY = "09:35:00"   # ...or worker decisions journaled by this
 # Goals belong to the $5,000 account: no period starts before it took over.
@@ -276,7 +276,7 @@ def evaluate(conn, start: date, end: date, asof: date, goals: dict,
             "captured": captured, "peak_total": peak_total,
             "givebacks": givebacks, "late": late, "missed": missed,
             "starts": seen_at, "exits": exits, "actual": actual,
-            "funnel": funnel(conn, s, e)}
+            "funnel": funnel(conn, s, e), "ops": ops_events(conn, s, e)}
 
 
 def judge(key: str, target, actual, frac: float, monthly: bool):
@@ -375,8 +375,100 @@ def guard(fix, conn) -> str:
             f"{ev['win_pct']:.0f}%, avg R {ev['avg_r']:+.2f}")
 
 
+# Ops events the cause analysis reads BEFORE proposing a rule change
+# (CEO 2026-10-17, D). The S23 entry-fill fix journals corrected fills as
+# entry_reconciled; fill_corrected is read too, in case a later path uses
+# that name.
+OPS_KINDS = ("fill_corrected", "entry_reconciled", "target_capped",
+             "process_suspended", "network_unavailable")
+
+
+def ops_events(conn, start: str, end: str) -> Counter:
+    """Counter of the OPS_KINDS journaled in [start, end]."""
+    if conn is None:
+        return Counter()
+    marks = ",".join("?" * len(OPS_KINDS))
+    try:
+        rows = conn.execute(
+            f"SELECT setup_name, COUNT(*) FROM decisions WHERE source='ops' "
+            f"AND setup_name IN ({marks}) AND substr(timestamp,1,10) BETWEEN ? AND ? "
+            f"GROUP BY setup_name", (*OPS_KINDS, start, end)).fetchall()
+    except sqlite3.Error:
+        return Counter()
+    return Counter({k: n for k, n in rows})
+
+
+def exit_rule_text(config: dict = None) -> str:
+    """The daily exit rule IN FORCE, written from bot_config.json - so a
+    proposal never describes a rule the desk no longer runs."""
+    import position_mgmt as pm
+    if config is None:
+        try:
+            with open("bot_config.json", encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            config = {}
+    profile = ((config or {}).get("risk_profiles") or {}).get("Moderate") or {}
+    ttype = pm.trailing_type_for({"timeframe": "daily"}, profile)
+    if ttype == pm.R_ATR:
+        p = pm.r_atr_params(profile)
+        steps = ", ".join(f"+{a:g}R -> " + ("entry" if b == 0 else
+                                            f"entry {b:+g}R")
+                          for a, b in p["steps"])
+        x = pm.daily_exit_params(profile)
+        return (f"R/ATR ladder: {steps}; then highest daily close - "
+                f"{p['trail_atr']:g}xATR{int(p['atr_length'])}; time stop day "
+                f"{x['time_stop_day']:g} if MFE < +{x['time_stop_min_mfe_r']:g}R, "
+                f"day {x['max_hold_days']:g} always")
+    if ttype == pm.LADDER:
+        p = pm.ladder_params(profile)
+        return (f"owner ladder: breakeven at +{p['start_pct']:g}%, trail "
+                f"{p['cushion_pct']:g}% under the high close")
+    if ttype == pm.PCT_LOCK:
+        return "percent lock (step1 +0.75%, step2 +1.25%, trail from +2%)"
+    return f"daily rule '{ttype}'"
+
+
+def _ops_note(ops: Counter, kinds) -> str:
+    hits = [f"{k} {ops[k]}" for k in kinds if ops.get(k)]
+    return f" Ops: {', '.join(hits)}." if hits else ""
+
+
 def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
-    """(why with numbers, one proposed fix) for a goal."""
+    """(why with numbers, one proposed fix) for a goal. Ops events are read
+    first: when the journal shows an operational cause for the miss, the
+    fix addresses it before any rule change is proposed."""
+    why, fix = _why_and_fix(key, ev, goals)
+    ops = ev.get("ops") or Counter()
+    if key == "on_time_sessions_pct":
+        why += _ops_note(ops, ("process_suspended", "network_unavailable"))
+        if ops.get("network_unavailable") or ops.get("process_suspended"):
+            fix = (f"operational first: {ops.get('network_unavailable', 0)} "
+                   f"network failure(s) and {ops.get('process_suspended', 0)} "
+                   f"machine-sleep suspension(s) in the period - fix the "
+                   f"network / sleep cause before anything else")
+    elif key in ("monthly_pnl_usd", "capture_ratio_pct",
+                 "max_profit_to_loss_trades", "win_rate_pct"):
+        why += _ops_note(ops, ("fill_corrected", "entry_reconciled",
+                               "target_capped", "process_suspended"))
+        fills = ops.get("fill_corrected", 0) + ops.get("entry_reconciled", 0)
+        if fills and key in ("monthly_pnl_usd", "win_rate_pct"):
+            fix = (f"check fill accuracy first: {fills} entry fill(s) were "
+                   f"corrected in the period - confirm the journal P&L "
+                   f"before reading it as a strategy result")
+        elif ops.get("target_capped") and key in ("capture_ratio_pct",
+                                                  "max_profit_to_loss_trades"):
+            fix = (f"{ops['target_capped']} target(s) were capped at the ATR "
+                   f"cap - measure whether the cap, not the exit rule "
+                   f"({exit_rule_text()}), cut these trades before changing it")
+        elif ops.get("process_suspended"):
+            fix = (f"{ops['process_suspended']} suspension(s): the worker was "
+                   f"asleep for part of the period - fix uptime before "
+                   f"judging the exit rule")
+    return why, fix
+
+
+def _why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
     f = ev["funnel"]
     top = lambda c, n=3: ", ".join(f"{k} {v}" for k, v in c.most_common(n)) or "none"
     skipped = f["skipped_after_approval"]
@@ -422,8 +514,9 @@ def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
     elif key == "capture_ratio_pct":
         why = (f"captured ${ev['captured']:+,.2f} of ${ev['peak_total']:,.2f} "
                f"peak open profit on trades that went green.")
-        fix = ("study the S25 R/ATR ladder step that triggers first, against "
-               "S15's lock variants, for capture vs give-back")
+        fix = (f"study the first step of the live exit rule "
+               f"({exit_rule_text()}) against its S29 variants, for capture "
+               f"vs give-back")
     elif key == "on_time_sessions_pct":
         late = ", ".join(f"{d} {ev['starts'][d]}" for d in ev["late"]) or "none"
         why = (f"{sessions - len(ev['late']) - len(ev['missed'])} of "
@@ -436,8 +529,8 @@ def why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
                           f"${t['pnl']:+,.2f}" for t in ev["givebacks"]) or "none"
         why = (f"{len(ev['givebacks'])} trade(s) went >= +{GIVEBACK_MIN_R}R "
                f"open and closed red: {names}.")
-        fix = ("study moving the breakeven lock from +1.0R to +0.5R "
-               "(S15 variants)")
+        fix = (f"study the step that should have protected these trades in "
+               f"the live exit rule ({exit_rule_text()}) - S29 variants")
     return why, fix
 
 
@@ -494,7 +587,7 @@ DEFINITIONS = (
     "_Definitions: trades = BUYs opened on the $5,000 account; P&L = "
     "realized on trades closed in the period; capture = realized / peak "
     "open profit (5-minute highs); on time = worker started by 09:30 ET "
-    "(logs/worker.log); profit->loss = up >= +0.5R open, closed red. "
+    f"(logs/worker.log); profit->loss = up >= +{GIVEBACK_MIN_R:g}R open, closed red. "
     "A fix that increases exposure needs >= 10 outcome-tracker replays of "
     "the signals it would admit, else no change is proposed. "
     "Reporting only - goals never reach the gatekeeper, prompts, filters, "

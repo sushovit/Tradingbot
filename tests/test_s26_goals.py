@@ -401,8 +401,10 @@ def test_every_fix_why_and_fix_can_emit_is_classified_correctly():
     """The two exposure proposals are flagged with evidence keys; every
     plain-string fix in why_and_fix is non-exposure by the keyword net."""
     import inspect
-    src = inspect.getsource(goals.why_and_fix)
+    # CEO 2026-10-17 (D): why_and_fix wraps _why_and_fix with the ops-first
+    # cause analysis; both are checked, f-string fixes included.
+    src = inspect.getsource(goals._why_and_fix) + inspect.getsource(goals.why_and_fix)
     assert src.count("exposure(") == 2
     assert '("probation_position_open",)' in src and '("conviction < 70",)' in src
-    plain = re.findall(r'fix = \(?"([^"]+)', src)
+    plain = re.findall(r'fix = \(?f?"([^"]+)', src)
     assert plain and not any(goals.EXPOSURE_PATTERN.search(t) for t in plain)
