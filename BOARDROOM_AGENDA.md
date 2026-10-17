@@ -1190,3 +1190,54 @@ never reached; stop 278.00; filled 278.78 / 277.79 on the 10-15 gap ->
 **Total historical cost of the entry bug: $6.87, all on TXN.** The other 12
 closed trades either ran under rules where the entry did not enter the stop
 math, or reached (or missed) +1R on the same day under both entries.
+---
+
+## 19. Study: S29 exit variants - +1R step and reward:risk after the target cap (order C, 2026-10-17)
+
+**CEO 2026-10-17, order C. Study only - no config change.** The live daily rule (S25 R/ATR ladder, S28 target cap at min(3R, 3.0 x ATR14), time stops) replayed on 5-minute bars, against: the +1R step at breakeven instead of entry - 0.25R; and, after the cap, the initial stop clamped at 2.0 ATR, or skipping trades whose capped reward:risk is under 1.5. Reproduce with `python study_exit_grid.py`.
+
+**S29 (order C) - 5-minute replay of the live daily rule, 342 backtest signals in the bar window.** Study only.
+
+| Setup | Variant | Trades | Skipped | Win % | Expectancy (R) | PF | MaxDD (R) | Capture | Give-back (+1R then loss) |
+|---|---|---|---|---|---|---|---|---|---|
+| all | +1R->-0.25R / current | 287 | 0 | 46.3% | +0.315 | 1.84 | 13.99 | 30% | 8.7% |
+| all | +1R->-0.25R / stop<=2.0ATR | 287 | 0 | 45.3% | +0.314 | 1.82 | 13.53 | 30% | 9.1% |
+| all | +1R->-0.25R / skip R:R<1.5 | 244 | 57 | 43.9% | +0.305 | 1.77 | 15.62 | 29% | 9.0% |
+| all | +1R->BE / current | 287 | 0 | 46.3% | +0.321 | 1.91 | 14.16 | 31% | 2.1% |
+| all | +1R->BE / stop<=2.0ATR | 287 | 0 | 46.0% | +0.322 | 1.89 | 14.33 | 31% | 2.1% |
+| all | +1R->BE / skip R:R<1.5 | 244 | 57 | 44.3% | +0.310 | 1.82 | 14.7 | 29% | 2.5% |
+| momentum_continuation | +1R->-0.25R / current | 67 |  | 34.3% | +0.086 | 1.17 | 15.43 | 9% | 14.9% |
+| momentum_continuation | +1R->-0.25R / stop<=2.0ATR | 67 |  | 32.8% | +0.066 | 1.13 | 15.48 | 6% | 16.4% |
+| momentum_continuation | +1R->-0.25R / skip R:R<1.5 | 53 |  | 35.8% | +0.180 | 1.36 | 12.25 | 16% | 17.0% |
+| momentum_continuation | +1R->BE / current | 67 |  | 38.8% | +0.114 | 1.24 | 15.19 | 11% | 4.5% |
+| momentum_continuation | +1R->BE / stop<=2.0ATR | 67 |  | 38.8% | +0.098 | 1.2 | 15.23 | 10% | 4.5% |
+| momentum_continuation | +1R->BE / skip R:R<1.5 | 53 |  | 41.5% | +0.212 | 1.45 | 12.0 | 19% | 5.7% |
+| mean_reversion_reclaim | +1R->-0.25R / current | 220 |  | 50.0% | +0.385 | 2.15 | 9.29 | 36% | 6.8% |
+| mean_reversion_reclaim | +1R->-0.25R / stop<=2.0ATR | 220 |  | 49.1% | +0.390 | 2.14 | 8.99 | 36% | 6.8% |
+| mean_reversion_reclaim | +1R->-0.25R / skip R:R<1.5 | 191 |  | 46.1% | +0.340 | 1.92 | 11.55 | 32% | 6.8% |
+| mean_reversion_reclaim | +1R->BE / current | 220 |  | 48.6% | +0.384 | 2.21 | 9.29 | 36% | 1.4% |
+| mean_reversion_reclaim | +1R->BE / stop<=2.0ATR | 220 |  | 48.2% | +0.390 | 2.2 | 9.1 | 36% | 1.4% |
+| mean_reversion_reclaim | +1R->BE / skip R:R<1.5 | 191 |  | 45.0% | +0.337 | 1.96 | 11.38 | 32% | 1.6% |
+
+### Reading
+
+- **+1R step: breakeven vs entry - 0.25R.** Breakeven is at least as good on
+  every measure: expectancy +0.321R vs +0.315R (all), PF 1.91 vs 1.84, and it
+  cuts the give-back (trades that reached +1R and still lost) from 8.7% to
+  2.1%. Momentum gains most (+0.114R vs +0.086R, give-back 4.5% vs 14.9%);
+  on reclaim the expectancy is unchanged (+0.384R vs +0.385R) while the
+  give-back falls 6.8% -> 1.4%. Capture is the same (~30-31%).
+- **Stop clamp at most 2.0 ATR** changes almost nothing (+0.314R vs +0.315R):
+  the clamp rarely binds, because few structural stops sit beyond 2 ATR.
+- **Skip capped R:R < 1.5** removes 57 of 301 candidate trades. It helps
+  momentum (+0.180R / +0.212R vs +0.086R / +0.114R on 53 vs 67 trades) but
+  hurts reclaim (+0.340R vs +0.385R), so overall expectancy falls
+  (+0.305R / +0.310R vs +0.315R / +0.321R).
+
+**Limits.** One ~6-month window of 5-minute bars (no held-out year - the
+cache does not reach back a year); earnings exits are not modelled (no
+historical calendar); backtest signals, not trades the gatekeeper approved.
+The full S29 grid (trail 2.0/2.5/3.0 ATR, target 1.5R/2R/3R, half-at-1R,
+time stops) is defined in the research report, which is still not in this
+repository.
+
