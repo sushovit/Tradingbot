@@ -250,6 +250,18 @@ def main() -> int:
         print("(dry run — no action taken)")
         return 0
 
+    # CEO 2026-10-17 (B): a relaunch into a network that cannot resolve the
+    # broker achieves nothing. Record it and try again on the next run
+    # (every 15 minutes).
+    import net_wait
+    net_ok, net_err = net_wait.dns_ok()
+    if not net_ok:
+        from datetime import datetime as _dt
+        net_wait.journal_failure("watchdog", 1, _dt.now(net_wait.ET), net_err)
+        print(f"watchdog: network unavailable ({net_err}) - not relaunching; "
+              f"next try on the next watchdog run.")
+        return 0
+
     # KILL-THEN-LAUNCH, never launch-beside (2026-07-29 duplicate-worker
     # incident): every existing worker dies and the kill is CONFIRMED before
     # a new one starts.
