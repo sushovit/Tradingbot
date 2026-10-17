@@ -12,6 +12,16 @@ PY=venv/bin/python
 export PYTHONUTF8=1
 echo "==== $(date '+%Y-%m-%d %H:%M:%S %Z') ===="
 
+# CEO 2026-10-17 (B): a DNS/network failure no longer starts the worker into
+# a dead network or silently loses the session - retry every 5 min until
+# 09:30 ET, then every 15 min, journaling each failed attempt; give up at
+# the 16:15 session end.
+"$PY" net_wait.py
+if [ $? -ne 0 ]; then
+    echo "network unavailable until the session end - worker not started"
+    exit 0
+fi
+
 "$PY" -c '
 import sys
 try:

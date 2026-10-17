@@ -164,6 +164,7 @@ FAKE_PYTHON = """#!/bin/bash
 # Fake venv python: answers the calendar check with $GATE_RC and records a
 # spawn instead of launching anything.
 case "$*" in
+    *net_wait.py*)   [ -n "$NET_RC" ] && { echo "NETWAIT"; exit "$NET_RC"; }; exit 0 ;;
     *is_open_today*) [ -n "$GATE_MSG" ] && echo "$GATE_MSG"; exit "$GATE_RC" ;;
     *spawn_worker*)  echo "SPAWNED"; exit 0 ;;
 esac
@@ -220,3 +221,14 @@ def test_the_gate_maps_an_exception_to_exit_two():
     gate = src[src.index("\"$PY\" -c '"):src.index("rc=$?")]
     assert "except Exception" in gate and "sys.exit(2)" in gate
     assert "is_open_today()" in gate
+
+
+
+@POSIX_ONLY
+def test_no_network_until_session_end_means_no_start(fake_repo):
+    import os, subprocess
+    env = dict(os.environ, GATE_RC="0", GATE_MSG="", NET_RC="3")
+    r = subprocess.run(["bash", str(fake_repo / "jobs" / "macos" / "start_if_open.sh")],
+                       capture_output=True, text=True, env=env, timeout=30)
+    assert "network unavailable until the session end - worker not started" in r.stdout
+    assert "SPAWNED" not in r.stdout and r.returncode == 0
