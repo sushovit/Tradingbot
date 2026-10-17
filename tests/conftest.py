@@ -101,3 +101,92 @@ def temp_journal(tmp_path, monkeypatch):
     monkeypatch.setattr(journal, "DB_FILE", str(tmp_path / "test_journal.db"))
     journal.init_db()
     return journal
+
+
+# ------------------------------------------------------------ Discord guard
+# INCIDENT 2026-10-17 02:36 ET: test_price_freshness drove orders.ingest to a
+# BUY, whose trade_alerts.alert_buy posted "BUY MRVL 3 @ $100" to the REAL
+# channel - orders.py loads .env, so the live webhook was in the
+# environment. Every test now runs with the webhooks blanked, the async
+# sender replaced by a recorder, and any HTTP request to Discord raising.
+
+def _webhook_env_names():
+    names = {k for k in os.environ if k.startswith("DISCORD_WEBHOOK")}
+    env_file = os.path.join(REPO_ROOT, ".env")
+    try:
+        with open(env_file, encoding="utf-8") as f:
+            for line in f:
+                key = line.split("=", 1)[0].strip().removeprefix("export ").strip()
+                if key.startswith("DISCORD_WEBHOOK"):
+                    names.add(key)
+    except OSError:
+        pass
+    return names | {"DISCORD_WEBHOOK_URL"}
+
+
+_WEBHOOK_ENV = _webhook_env_names()
+# Blank at import too: modules call load_dotenv() during collection, and
+# load_dotenv never overrides a variable that is already set.
+for _k in _WEBHOOK_ENV:
+    os.environ[_k] = ""
+
+
+class DiscordLeak(RuntimeError):
+    pass
+
+
+def _is_discord(url) -> bool:
+    u = str(url or "").lower()
+    return "discord.com" in u or "discordapp.com" in u
+
+
+class _Done:
+    """Stands in for the alert thread post_async returns."""
+    def join(self, timeout=None):
+        return None
+
+    def is_alive(self):
+        return False
+
+
+@pytest.fixture
+def discord_posts():
+    """The payloads tests sent through alerts.post_async (never delivered)."""
+    return _DISCORD_POSTS
+
+
+_DISCORD_POSTS = []
+
+
+@pytest.fixture(autouse=True)
+def _no_real_discord(request, monkeypatch):
+    for k in _WEBHOOK_ENV:
+        monkeypatch.setenv(k, "")
+    import requests.adapters
+    real_send = requests.adapters.HTTPAdapter.send
+
+    def guarded_send(self, req, **kw):
+        # At the adapter: tests that capture requests stub this on top.
+        if _is_discord(getattr(req, "url", "")):
+            raise DiscordLeak(f"test tried to post to Discord: {request.node.nodeid}")
+        return real_send(self, req, **kw)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", guarded_send)
+
+    import alerts
+    _DISCORD_POSTS.clear()
+    if request.node.get_closest_marker("real_post_async") is None:
+        def recorder(payload, url=None, sender=None):
+            _DISCORD_POSTS.append({"payload": payload, "url": url,
+                                   "sender": sender})
+            return _Done()
+        monkeypatch.setattr(alerts, "post_async", recorder)
+    yield
+    # A real alert thread must finish while the guards are still in place:
+    # the 10-17 leak was a thread that outlived its test's monkeypatch.
+    alerts.drain(timeout=5)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_post_async: run alerts.post_async for real (its "
+        "own tests); the webhooks stay blank and Discord HTTP still raises")
