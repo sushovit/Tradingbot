@@ -7,14 +7,18 @@ Modes (bot_config.json "analyst_mode"):
             Switching to this is a MANUAL config decision; nothing in code
             ever promotes the local model to trade authority.
   shadow  — DEFAULT. Claude decides and is AUTHORITATIVE; the local model is
-            called in a background thread (30s timeout) purely for comparison.
+            queued FIFO and answered one at a time (S31: 45 s per
+            inference from its start; items older than 10 min dropped),
+            purely for comparison.
             Its verdict is journaled with source="local_shadow" plus an
             agreement flag. The shadow call can never delay or block the
             trade path, and shadow errors never crash the loop.
 """
 
 import logging
+import queue
 import threading
+import time
 
 import journal
 import prompts
@@ -23,38 +27,24 @@ import local_analyst
 
 logger = logging.getLogger(__name__)
 
-SHADOW_TIMEOUT_SECS = 45      # S28 (was 30)
+SHADOW_TIMEOUT_SECS = 45      # per inference, counted from its start (S31)
+SHADOW_MAX_AGE_SECS = 600     # a signal older than this is dropped, not run
 
 
-def _shadow_worker(gk_kwargs: dict, ticker: str, setup_name: str,
-                   context: dict, claude_verdict: dict):
-    """Runs in a daemon thread: local verdict -> journal with agreement flag."""
-    result_holder = {}
-
-    def _call():
-        try:
-            result_holder["verdict"] = local_analyst.get_gatekeeper_decision(**gk_kwargs)
-        except Exception as e:
-            result_holder["verdict"] = {"error": f"shadow call crashed: {e}"}
-
-    inner = threading.Thread(target=_call, daemon=True)
-    inner.start()
-    inner.join(timeout=SHADOW_TIMEOUT_SECS)
-
-    if inner.is_alive() or "verdict" not in result_holder:
-        verdict = {"error": "timeout", "source": "local_shadow"}
-    else:
-        verdict = result_holder["verdict"]
-
+def _journal_shadow(job: dict, verdict: dict):
+    """Journal one shadow verdict (or error) with the agreement flag and the
+    dissent ledger. Never raises."""
+    ticker, setup_name = job["ticker"], job["setup_name"]
+    context, claude_verdict = job["context"], job["claude_verdict"]
     claude_approved = bool(claude_verdict.get("approved", False))
     if "error" in verdict:
         agreement = None
     else:
         agreement = bool(verdict.get("approved", False)) == claude_approved
-
     shadow_context = dict(context)
     shadow_context["claude_approved"] = claude_approved
     shadow_context["claude_conviction"] = claude_verdict.get("conviction_score")
+    shadow_context["shadow_queue_wait_s"] = job.get("waited_s")
     try:
         journal.log_decision(ticker, setup_name, shadow_context, verdict,
                              source="local_shadow", agreement=agreement)
@@ -71,6 +61,96 @@ def _shadow_worker(gk_kwargs: dict, ticker: str, setup_name: str,
                         f"{verdict.get('conviction_score')}")
     except Exception as e:
         logger.error(f"Failed to journal shadow verdict for {ticker}: {e}")
+
+
+def _infer(job: dict) -> dict:
+    """One shadow inference, single attempt. Its 45 s starts when the
+    inference starts - time spent waiting in the queue is never counted
+    (S31). The HTTP call carries the same 45 s; the join is the watchdog
+    that keeps the queue moving if a call hangs anyway."""
+    holder = {}
+
+    def _call():
+        try:
+            holder["v"] = local_analyst.get_gatekeeper_decision(
+                **job["gk_kwargs"], max_retries=1)
+        except Exception as e:
+            holder["v"] = {"error": f"shadow call crashed: {e}"}
+
+    inner = threading.Thread(target=_call, daemon=True)
+    inner.start()
+    inner.join(timeout=SHADOW_TIMEOUT_SECS)
+    if inner.is_alive() or "v" not in holder:
+        return {"error": "timeout", "source": "local_shadow"}
+    v = holder["v"]
+    if "error" in v:
+        err = str(v["error"]).lower()
+        if "timed out" in err or "timeout" in err:
+            return {"error": "timeout", "source": "local_shadow"}
+    return v
+
+
+def _shadow_worker(gk_kwargs, ticker, setup_name, context, claude_verdict):
+    """Run one shadow comparison inline (tests and one-off tools)."""
+    job = {"gk_kwargs": gk_kwargs, "ticker": ticker, "setup_name": setup_name,
+           "context": context, "claude_verdict": claude_verdict}
+    _journal_shadow(job, _infer(job))
+
+
+class ShadowQueue:
+    """CEO 2026-10-17 (S31). FIFO; ONE inference at a time (the 8.35 GB
+    memory cap of S28 is unchanged); each inference gets its full 45 s from
+    the moment it starts; an item that waited longer than max_age is
+    journaled as dropped_stale and never sent to the model. The trade path
+    only ever calls submit(), which returns at once."""
+
+    def __init__(self, infer=_infer, record=_journal_shadow,
+                 max_age_s=SHADOW_MAX_AGE_SECS, clock=time.monotonic):
+        self._q = queue.Queue()
+        self._infer, self._record = infer, record
+        self.max_age_s, self._clock = max_age_s, clock
+        self._worker = None
+        self._lock = threading.Lock()
+
+    def submit(self, job: dict):
+        job = dict(job, enqueued=self._clock())
+        self._q.put(job)
+        with self._lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(target=self._run,
+                                                name="shadow-queue", daemon=True)
+                self._worker.start()
+
+    def pending(self) -> int:
+        return self._q.qsize()
+
+    def run_one(self, block: bool = True, timeout=None) -> bool:
+        """Process one item. Returns False if the queue was empty."""
+        try:
+            job = self._q.get(block=block, timeout=timeout)
+        except queue.Empty:
+            return False
+        try:
+            job["waited_s"] = round(self._clock() - job["enqueued"], 1)
+            if job["waited_s"] > self.max_age_s:
+                self._record(job, {"error": "dropped_stale",
+                                   "source": "local_shadow"})
+                logger.info(f"shadow: dropped {job['ticker']} after "
+                            f"{job['waited_s']:.0f}s in the queue")
+            else:
+                self._record(job, self._infer(job))
+        except Exception as e:
+            logger.error(f"shadow queue item failed: {e}")
+        finally:
+            self._q.task_done()
+        return True
+
+    def _run(self):
+        while True:
+            self.run_one(block=True)
+
+
+SHADOW_QUEUE = ShadowQueue()
 
 
 def get_verdict(mode: str, ticker: str, setup_name: str, context: dict,
@@ -101,12 +181,9 @@ def get_verdict(mode: str, ticker: str, setup_name: str, context: dict,
                                        source="claude")
 
     if mode == "shadow":
-        # Fire-and-forget: the main path returns immediately.
-        t = threading.Thread(
-            target=_shadow_worker,
-            args=(gk_kwargs, ticker, setup_name, context, verdict),
-            daemon=True,
-        )
-        t.start()
+        # Fire-and-forget into the S31 FIFO: the main path returns at once.
+        SHADOW_QUEUE.submit({"gk_kwargs": gk_kwargs, "ticker": ticker,
+                             "setup_name": setup_name, "context": context,
+                             "claude_verdict": verdict})
 
     return verdict, decision_id
