@@ -1254,3 +1254,44 @@ config. The stop-clamp and skip-R:R<1.5 variants are **not** adopted.
 Existing positions are not moved: the ladder only acts when a position's
 qualifying close reaches +1R - REGN (entry 802.61, stop 756.25, +1R 848.97,
 highest close so far 808.37) keeps its stop until then.
+---
+
+## 20. Study: S33 ADX threshold band - trend_continuation, 5-minute replay 2025-10-14..2026-10-19
+
+**S33 (CEO 2026-10-19), study only.** trend_continuation, the only setup with an ADX gate, replayed on 5-minute IEX bars 2025-10-14..2026-10-19 (53 weeks, 173 universe symbols) through the live filter chain and the CURRENT intraday exit rule, at four ADX thresholds. "adx_low only" = the signals the live threshold blocks, admitted by the lower one.
+
+| Threshold | Population | Trades | Trades/week | Win % | Expectancy (R) | Total R | MaxDD (R) |
+|---|---|---|---|---|---|---|---|
+| current (30) | all admitted | 582 | 11.0 | 40.9% | +0.133 | +77.15 | 28.97 |
+| -5 (25) | all admitted | 1342 | 25.4 | 38.1% | +0.088 | +118.12 | 73.5 |
+| -5 (25) | adx_low only | 760 | 14.4 | 35.9% | +0.054 | +40.98 | 55.48 |
+| -10 (20) | all admitted | 2696 | 51.0 | 37.6% | +0.066 | +176.97 | 47.76 |
+| -10 (20) | adx_low only | 2114 | 40.0 | 36.7% | +0.047 | +99.82 | 45.97 |
+| regime (SPY ADX) | all admitted | 1231 | 23.3 | 38.7% | +0.074 | +91.27 | 57.14 |
+| regime (SPY ADX) | adx_low only | 649 | 12.3 | 36.8% | +0.022 | +14.12 | 36.12 |
+
+**No threshold recommended.** None of the lower thresholds reaches expectancy >= +0.15R while raising the trade count; the current threshold stands.
+
+**Method.** Filters in live order (cross on the last completed bar, ADX, RSI >= 55, confirmation, volume >= 20-bar EMA), SPY above its 20-day EMA, entries 09:30-11:30 / 14:00-15:00 ET at the close of the bar after the cross; stop 2.0 x ATR14(5m), target 3R capped at fill + 3 x daily ATR14 (S28), initial stop until +1R then a 2.5 x ATR14(5m) trail floored at entry; no end-of-day exit. Regime rule: SPY daily ADX14 >= 25 -> 20, 20-25 -> 25, < 20 -> 30. One position per symbol; the max-positions cap is not modelled. Reproduce with `python study_adx_band.py --s33 --fetch` (fetch after the close).
+
+**Limits.** Today's universe (survivorship); IEX volume, as live; the gatekeeper is not modelled.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+
+### Reading
+
+- **Lowering the threshold adds trades but dilutes the edge.** The signals
+  the live ADX 30 gate blocks are worse than the ones it admits: +0.054R at
+  ADX 25-30, +0.047R at 20-30, +0.022R under the regime rule, against
+  +0.133R for the ADX >= 30 population. Total R rises with volume (+77R ->
+  +118R / +177R), but so does drawdown (29R -> 74R / 48R), and every lower
+  threshold falls below the +0.15R bar.
+- **The regime-dependent rule is no better than a flat -5** (+0.074R vs
+  +0.088R; its extra trades +0.022R): a strongly trending SPY does not make
+  weak single-name ADX signals pay.
+- **The current threshold itself is under the bar** (+0.133R) on this
+  replay. Not a question this order asked; noted for the trend_continuation
+  review, not acted on.
+
+**No change proposed** - the live threshold stays at 30. Study only.

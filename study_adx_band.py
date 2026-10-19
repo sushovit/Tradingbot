@@ -416,9 +416,22 @@ def s33_render(rows, n_symbols, weeks, missing):
     return lines
 
 
+def study_universe(path):
+    """The universe's symbols from universe_today.json, whatever its date
+    (the live loader returns [] for a stale file; a study must not)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [c["symbol"] for c in json.load(f).get("candidates", [])]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 def s33_main(args):
-    import universe
-    symbols = [s for s in universe.load_universe_tickers() if s != "SPY"]
+    symbols = [s for s in study_universe(args.universe_file) if s != "SPY"]
+    if not symbols:
+        print(f"No universe symbols in {args.universe_file} - refusing to "
+              f"report an empty study.")
+        return 2
     if args.fetch:
         print(f"fetched {fetch_m5_year(symbols + ['SPY'])} symbols")
     spy = load_m5("SPY")
@@ -451,6 +464,8 @@ def main():
     p.add_argument("--years", type=int, default=sc.YEARS)
     p.add_argument("--s33", action="store_true",
                    help="S33: 5-minute replay of adx_low-blocked signals")
+    p.add_argument("--universe-file", default="universe_today.json",
+                   help="S33: universe file (default: the live one in cwd)")
     p.add_argument("--fetch", action="store_true",
                    help="S33: fetch missing 5-minute bars (after the close)")
     args = p.parse_args()

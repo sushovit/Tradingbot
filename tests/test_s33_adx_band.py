@@ -108,3 +108,13 @@ def test_replay_admits_lower_adx_only_at_lower_thresholds(monkeypatch):
 def test_the_study_never_touches_the_live_config():
     src = open("study_adx_band.py", encoding="utf-8").read()
     assert "json.dump" not in src and 'open("bot_config.json", "w"' not in src
+
+
+def test_universe_reads_a_stale_file_and_refuses_an_empty_one(tmp_path, capsys):
+    import json, argparse
+    f = tmp_path / "u.json"
+    f.write_text(json.dumps({"date": "2020-01-01", "candidates": [{"symbol": "AAA"}]}))
+    assert s.study_universe(str(f)) == ["AAA"]
+    args = argparse.Namespace(universe_file=str(tmp_path / "none.json"),
+                              fetch=False, append=False)
+    assert s.s33_main(args) == 2 and "refusing" in capsys.readouterr().out
