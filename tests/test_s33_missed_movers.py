@@ -119,6 +119,12 @@ def test_top_gainers_sorts_descending_and_caps():
     assert len(top) == 10 and top[0] == ("T14", 14.0) and top[-1][0] == "T5"
 
 
+def test_only_gainers_are_listed_on_a_down_day():
+    moves = {"UP": 1.2, "FLAT": 0.0, "DOWN": -3.0, "DOWN2": -0.5}
+    assert mm.top_gainers(moves) == [("UP", 1.2)]
+    assert mm.top_gainers({"DOWN": -3.0}) == []
+
+
 def test_another_days_universe_file_is_not_used(tmp_path, temp_journal):
     _universe(tmp_path, {"AAA": 5.0}, day="2026-10-19")
     report = _report(tmp_path)
@@ -142,7 +148,7 @@ def test_past_day_falls_back_to_the_scan_report_universe_table(tmp_path,
     assert report["source"]["partial"] is True
     assert "1800" in report["source"]["file"]           # latest scan wins
     assert [(r["ticker"], r["pct"]) for r in report["rows"]] == [
-        ("BRK.B", 1.2), ("MU", -5.8)]
+        ("BRK.B", 1.2)]                                 # gainers only
 
 
 # ============================================================ stage / reason

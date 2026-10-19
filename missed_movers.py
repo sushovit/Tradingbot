@@ -173,8 +173,10 @@ def load_moves(root, day):
 
 
 def top_gainers(moves, n=TOP_N):
-    """[(ticker, pct)] - the n largest % changes, ties by ticker."""
-    return sorted(moves.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+    """[(ticker, pct)] - the n largest GAINS (% change > 0), ties by
+    ticker. On a down day there may be fewer than n - or none."""
+    up = [kv for kv in moves.items() if kv[1] > 0]
+    return sorted(up, key=lambda kv: (-kv[1], kv[0]))[:n]
 
 
 # ============================================================ cycle status
@@ -401,7 +403,7 @@ def table_lines(report):
                 f"{stage:<13} {r['reason']}")
         lines.append(line[:WIDTH])
     if not report["rows"]:
-        lines.append("(no tickers with a % change)")
+        lines.append("(no universe name was up on the day)")
     lines.append("-" * WIDTH)
     counts = {}
     for r in report["rows"]:
