@@ -24,6 +24,7 @@ EXPECTED = {
     "intern": ["intern_desk.py", "--trade"],
     "snapshot": ["snapshot.py", "drop.py --discord"],
     "shadow_warm": ["local_analyst.py", "--warm"],      # S28: 09:20 ET
+    "missed_movers": ["missed_movers.py"],              # S33: 16:20 ET
 }
 
 
@@ -60,7 +61,7 @@ def test_every_job_has_the_shared_environment(name):
 
 
 @pytest.mark.parametrize("name", ["watchdog", "floor", "review", "outcomes",
-                                  "intern"])
+                                  "intern", "missed_movers"])
 def test_python_jobs_run_through_the_venv_wrapper(name):
     args = load(name)["ProgramArguments"]
     assert args[:2] == ["/bin/bash", "__REPO__/jobs/macos/run_job.sh"]
@@ -81,6 +82,7 @@ def test_schedules_match_the_work_order():
                                             for h, m in floor]
     assert weekday_times(load("review")) == [(d, 16, 30) for d in weekdays]
     assert weekday_times(load("outcomes")) == [(d, 16, 45) for d in weekdays]
+    assert weekday_times(load("missed_movers")) == [(d, 16, 20) for d in weekdays]
     assert weekday_times(load("intern")) == [(d, 8, 0) for d in weekdays]
     # Intraday snapshots at 10:00 and 15:00 (the laptop's 19:45 / 00:45
     # Nepal), Mon-Fri, plus the daily 18:00.
