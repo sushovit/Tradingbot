@@ -15,7 +15,8 @@
     },
     "discord": {
         "trade_alerts": true,
-        "daily_table": true
+        "daily_table": true,
+        "missed_movers": true
     },
     "interval": 5,
     "capital_cap_usd": 5000,

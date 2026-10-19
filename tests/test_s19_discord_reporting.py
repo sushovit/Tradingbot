@@ -154,9 +154,10 @@ def test_alerts_respect_the_config_switch():
     assert sent == []
 
 
-def test_shipped_config_has_both_switches_on():
+def test_shipped_config_has_every_switch_on():
     cfg = json.load(open("bot_config.json", encoding="utf-8"))
-    assert cfg["discord"] == {"trade_alerts": True, "daily_table": True}
+    assert cfg["discord"] == {"trade_alerts": True, "daily_table": True,
+                              "missed_movers": True}      # S33
 
 
 def test_the_worker_fires_alerts_in_the_background():
