@@ -63,6 +63,25 @@ def _assert_paper_only():
             )
 
 
+def _is_validation_error(e) -> bool:
+    """A pydantic model-validation failure inside the SDK (not a network or
+    API error)."""
+    return (type(e).__name__ == "ValidationError"
+            or "validation error" in str(e).lower())
+
+
+def _field(a, key):
+    return a.get(key) if isinstance(a, dict) else getattr(a, key, None)
+
+
+def _enum_text(v) -> str:
+    """'NASDAQ' from AssetExchange.NASDAQ or a raw 'NASDAQ' string."""
+    if v is None:
+        return ""
+    v = getattr(v, "value", v)
+    return str(v)
+
+
 def _retry(fn, *args, attempts: int = 3, what: str = "broker call", **kwargs):
     """Run fn with retries (1s/2s/4s backoff). Raises BrokerError at the end."""
     last_err = None
@@ -273,14 +292,32 @@ class Broker:
         wanted = set(symbols)
         req = GetAssetsRequest(status=AssetStatus.ACTIVE,
                                asset_class=AssetClass.US_EQUITY)
-        assets = _retry(self.trading.get_all_assets, req, what="get_assets_map")
+        try:
+            assets = self.trading.get_all_assets(req)
+        except Exception as e:
+            # 2026-10-20: alpaca-py 0.44's Asset model rejects records the
+            # API now returns ("5 validation errors for list[Asset]"), so the
+            # whole list fails to parse. Fall back to the same endpoint's raw
+            # JSON and read only the three fields used here.
+            if not _is_validation_error(e):         # network/API: retry as before
+                assets = _retry(self.trading.get_all_assets, req,
+                                what="get_assets_map")
+            else:
+                assets = None
+        if assets is None:
+            logger.warning("get_assets_map: SDK could not parse the asset "
+                           "list; using raw JSON")
+            assets = _retry(self.trading.get, "/assets",
+                            req.to_request_fields(),
+                            what="get_assets_map (raw)")
         out = {}
-        for a in assets:
-            if a.symbol in wanted:
-                out[a.symbol] = {
-                    "tradable": bool(getattr(a, "tradable", False)),
-                    "exchange": str(getattr(a, "exchange", "") or ""),
-                    "name": str(getattr(a, "name", "") or ""),
+        for a in assets or []:
+            sym = _field(a, "symbol")
+            if sym in wanted:
+                out[sym] = {
+                    "tradable": bool(_field(a, "tradable") or False),
+                    "exchange": _enum_text(_field(a, "exchange")),
+                    "name": str(_field(a, "name") or ""),
                 }
         return out
 
