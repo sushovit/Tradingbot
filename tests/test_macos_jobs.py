@@ -25,6 +25,7 @@ EXPECTED = {
     "snapshot": ["snapshot.py", "drop.py --discord"],
     "shadow_warm": ["local_analyst.py", "--warm"],      # S28: 09:20 ET
     "missed_movers": ["missed_movers.py"],              # S33: 16:20 ET
+    "keepawake": ["caffeinate", "-i", "-t 26700"],      # CEO 10-20: 09:05 ET
 }
 
 
@@ -234,3 +235,23 @@ def test_no_network_until_session_end_means_no_start(fake_repo):
                        capture_output=True, text=True, env=env, timeout=30)
     assert "network unavailable until the session end - worker not started" in r.stdout
     assert "SPAWNED" not in r.stdout and r.returncode == 0
+
+
+def test_keepawake_holds_the_mac_awake_0905_to_1630_on_weekdays():
+    p = load("keepawake")
+    assert p["ProgramArguments"] == ["/usr/bin/caffeinate", "-i", "-t", "26700"]
+    assert weekday_times(p) == [(d, 9, 5) for d in range(1, 6)]
+    assert 9 * 3600 + 5 * 60 + 26700 == 16 * 3600 + 30 * 60   # until 16:30 ET
+
+
+def test_run_worker_calls_keep_awake_first(monkeypatch):
+    import run_worker
+    import session_clock
+    calls = []
+    monkeypatch.setattr(session_clock, "keep_awake", lambda on=True: calls.append(on) or True)
+    monkeypatch.setattr(run_worker, "live_heartbeat_age", lambda: calls.append("lock") or None)
+    monkeypatch.setattr(run_worker, "running_owner_pid", lambda: 1)
+    monkeypatch.setattr(run_worker, "another_worker_is_alive", lambda: True)
+    monkeypatch.setattr(run_worker, "read_lock_pid", lambda: 1)
+    assert run_worker.main([]) == 1                     # refused: another worker
+    assert calls[:2] == [True, "lock"]

@@ -303,6 +303,14 @@ def spawn_worker(args, **popen_kwargs):
 # ----------------------------------------------------------- entry point
 
 def main(argv=None) -> int:
+    # CEO 2026-10-20: hold off idle sleep FIRST, before the lock checks and
+    # the slow import - the Mac slept through the open on 10-16 and 10-19.
+    # caffeinate -w <this pid> ends with this process, refused start or not.
+    try:
+        import session_clock
+        session_clock.keep_awake(True)
+    except Exception:
+        pass
     argv = sys.argv[1:] if argv is None else argv
     takeover = "--force-takeover" in argv
 
