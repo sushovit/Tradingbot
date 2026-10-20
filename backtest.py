@@ -238,7 +238,28 @@ def simulate_bracket(df: pd.DataFrame, entry_i: int, entry: float,
     return None, None, "open"
 
 
-DETECT_WINDOW = 60   # bars of context per detection (indicators need ~40)
+# S35 (CEO 2026-10-20): was 60, which is below pullback_in_uptrend's own
+# minimum (EMA_SLOW 50 + PULLBACK_LOOKBACK 12 = 62), so that setup never
+# produced a single backtest signal. 70 covers every setup's minimum
+# (SETUP_MIN_BARS) with margin; tests/test_s35_bar_window.py asserts it.
+DETECT_WINDOW = 70   # bars of context per detection
+
+
+def setup_min_bars() -> dict:
+    """{setup: the fewest bars its detector accepts}, read from the
+    detectors' own constants so a change there shows up here."""
+    from strategies import (momentum_continuation as mc,
+                            mean_reversion_reclaim as mr,
+                            pullback_in_uptrend as pu,
+                            post_earnings_continuation as pe)
+    return {
+        "momentum_continuation": mc.LOOKBACK + 2,
+        "mean_reversion_reclaim": mr.LOOKBACK + 2,
+        "pullback_in_uptrend": pu.EMA_SLOW + pu.PULLBACK_LOOKBACK,
+        "post_earnings_continuation": pe.LOOKBACK + pe.GAP_WINDOW + 4,
+        # EMA21 + ADX14 + a 20-bar volume EMA, then dropna, then 3 rows.
+        "trend_continuation": 2 * 14 + 3,
+    }
 
 
 def collect_signals(symbol: str, df: pd.DataFrame, strat_name: str,

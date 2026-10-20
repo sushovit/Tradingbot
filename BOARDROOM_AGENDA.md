@@ -1353,4 +1353,37 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - pullback_in_uptrend shows 0 trades: its detector needs 62 daily bars and the backtest passes a 60-bar window (backtest.DETECT_WINDOW), so it never fires in any backtest. Pre-existing; not changed here.
 
 **Decision under the adopt rule (all setups, >= 200 trades): no variant qualifies. No config change.**
+---
 
+## 22. Study: S35 pullback_in_uptrend - bar window fixed, first replay (2026-10-20)
+
+**S35 (CEO 2026-10-20) - pullback_in_uptrend, first replay.** 5-minute replay of the live daily exit rule, 156 signals on 169 universe symbols, entries 2025-11-11..2026-10-19.
+
+| Setup | Trades | Win % | Expectancy (R) | PF | MaxDD (R) | Capture | Exits at target |
+|---|---|---|---|---|---|---|---|
+| pullback_in_uptrend | 155 | 36.8% | -0.096 | 0.77 | 21.77 | -12% | 14.8% |
+
+**Bar not met** (>= +0.1R over >= 30 trades): the setup stays on probation, max 1 concurrent.
+
+**Method.** As S34 (agenda 21): daily bars resampled from the S33 5-minute IEX cache; live ladder, time stops and S28 target cap; SPY above its 20-day EMA. The detector needs 62 daily bars, so the first possible entry is ~62 sessions into the cache (2025-08-15), not 2025-10-14. Reproduce with `python study_exit_grid.py --s35`.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+
+### Reading and decision
+
+- **The backtest window is fixed** (`backtest.DETECT_WINDOW` 60 -> 70; every
+  setup's minimum is asserted in tests/test_s35_bar_window.py). This also
+  shifts other setups' backtest numbers slightly (longer indicator history).
+- **pullback_in_uptrend replays at -0.096R over 155 trades** (PF 0.77, win
+  36.8%): below the +0.10R / 30-trade bar. **It stays in setup_probation
+  with max 1 concurrent** (`setup_probation.max_concurrent_by_setup`), the
+  other probation setups keep the shared 2 (agenda 14).
+- **It has not traded live since 10-09 - and cannot.** No journal row
+  (decision, rules pass or trade) for the setup since 10-09. The worker
+  fetches daily bars with `lookback_days=60` (calendar days, ~41 sessions),
+  below the detector's 62-bar minimum, so the live detector returns None
+  before looking. Fixing it means a longer daily fetch for every daily
+  setup (slightly different indicator values for reclaim and momentum too) -
+  a trading-path change. **Not made; CEO decision.** Given the replay, the
+  case for enabling it is weak.
