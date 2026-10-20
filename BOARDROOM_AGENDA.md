@@ -1295,3 +1295,62 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
   review, not acted on.
 
 **No change proposed** - the live threshold stays at 30. Study only.
+---
+
+## 21. Study: S34 target grid - 1.5R/2R/2.5R/3R, with and without half at +1R (2026-10-20)
+
+**S34 (CEO 2026-10-20) - target grid, study only.** 5-minute replay of the live daily rule, 2025-10-14..2026-10-19, 2305 signals on 171 universe symbols; current = 3R target (S28-capped), no partial.
+
+| Setup | Target | Trades | Win % | Expectancy (R) | PF | MaxDD (R) | Capture | Exits at target |
+|---|---|---|---|---|---|---|---|---|
+| all | 1.5R | 2064 | 45.3% | +0.207 | 1.52 | 43.71 | 23% | 28.0% |
+| all | 1.5R + half@1R | 2064 | 52.2% | +0.175 | 1.46 | 41.37 | 19% | 28.0% |
+| all | 2R | 2059 | 43.2% | +0.215 | 1.53 | 44.08 | 22% | 20.4% |
+| all | 2R + half@1R | 2059 | 52.0% | +0.179 | 1.47 | 41.49 | 18% | 20.4% |
+| all | 2.5R | 2059 | 43.2% | +0.215 | 1.53 | 44.08 | 22% | 20.4% |
+| all | 2.5R + half@1R | 2059 | 52.0% | +0.179 | 1.47 | 41.49 | 18% | 20.4% |
+| all | 3R (current) | 2059 | 43.2% | +0.215 | 1.53 | 44.08 | 22% | 20.4% |
+| all | 3R + half@1R | 2059 | 52.0% | +0.179 | 1.47 | 41.49 | 18% | 20.4% |
+| momentum_continuation | 1.5R | 301 | 47.5% | +0.137 | 1.36 | 13.27 | 17% | 27.2% |
+| momentum_continuation | 1.5R + half@1R | 301 | 53.5% | +0.148 | 1.42 | 12.02 | 18% | 27.2% |
+| momentum_continuation | 2R | 301 | 45.8% | +0.136 | 1.34 | 14.93 | 16% | 21.9% |
+| momentum_continuation | 2R + half@1R | 301 | 53.2% | +0.147 | 1.42 | 11.83 | 17% | 21.9% |
+| momentum_continuation | 2.5R | 301 | 45.8% | +0.136 | 1.34 | 14.93 | 16% | 21.9% |
+| momentum_continuation | 2.5R + half@1R | 301 | 53.2% | +0.147 | 1.42 | 11.83 | 17% | 21.9% |
+| momentum_continuation | 3R (current) | 301 | 45.8% | +0.136 | 1.34 | 14.93 | 16% | 21.9% |
+| momentum_continuation | 3R + half@1R | 301 | 53.2% | +0.147 | 1.42 | 11.83 | 17% | 21.9% |
+| mean_reversion_reclaim | 1.5R | 1763 | 44.9% | +0.219 | 1.54 | 37.59 | 23% | 28.1% |
+| mean_reversion_reclaim | 1.5R + half@1R | 1763 | 52.0% | +0.180 | 1.47 | 36.17 | 19% | 28.1% |
+| mean_reversion_reclaim | 2R | 1758 | 42.7% | +0.229 | 1.57 | 39.12 | 22% | 20.2% |
+| mean_reversion_reclaim | 2R + half@1R | 1758 | 51.8% | +0.184 | 1.47 | 36.94 | 18% | 20.2% |
+| mean_reversion_reclaim | 2.5R | 1758 | 42.7% | +0.229 | 1.57 | 39.12 | 22% | 20.2% |
+| mean_reversion_reclaim | 2.5R + half@1R | 1758 | 51.8% | +0.184 | 1.47 | 36.94 | 18% | 20.2% |
+| mean_reversion_reclaim | 3R (current) | 1758 | 42.7% | +0.229 | 1.57 | 39.12 | 22% | 20.2% |
+| mean_reversion_reclaim | 3R + half@1R | 1758 | 51.8% | +0.184 | 1.47 | 36.94 | 18% | 20.2% |
+| pullback_in_uptrend | 1.5R | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 1.5R + half@1R | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 2R | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 2R + half@1R | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 2.5R | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 2.5R + half@1R | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 3R (current) | 0 | - | - | - | - | - | - |
+| pullback_in_uptrend | 3R + half@1R | 0 | - | - | - | - | - | - |
+
+**Adopt rule not met** - no variant has expectancy >= current AND higher capture over >= 200 trades. No change.
+
+**Method.** Live ladder (+1R -> entry, +1.5R -> entry, +2R -> entry + 1R, then highest daily close - 2.5 x ATR14) on completed 5-minute closes from 10:00 ET; time stop day 5 if MFE < +0.5R, day 10 regardless; target = fill + min(kR, 3 x ATR14). Half at +1R: half exits at entry + 1R on the first touch. Fills: a bar opening through a level fills at its open; a bar spanning stop and target takes the stop. Capture = realized R / MFE R over trades that went green. Reproduce with `python study_exit_grid.py --s34`.
+
+**Limits.** Today's universe (survivorship); IEX bars, daily resampled from them; earnings exits not modelled; post_earnings_continuation excluded (no historical calendar); signals, not gatekeeper-approved trades.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- **2R, 2.5R and 3R are the same trade.** The S28 cap sets target = fill + min(kR, 3 x ATR14), and the initial stop is clamped to at least 1.5 ATR, so R >= 1.5 ATR and any k >= 2 reaches the 3-ATR cap first. Under the cap the only target that differs from today's is 1.5R.
+- **1.5R:** more exits at target (28.0% vs 20.4%) and capture 23% vs 22%, but expectancy +0.207R vs +0.215R (all) - fails the 'expectancy >= current' leg.
+- **Half at +1R** raises the win rate (52% vs 43%) and trims drawdown (41.5R vs 44.1R) but costs expectancy (+0.179R vs +0.215R) and capture (18% vs 22%) overall; on mean_reversion_reclaim (1,758 trades) it costs 0.045R per trade.
+- **Per setup, one cell passes the rule:** momentum_continuation 1.5R + half@1R, +0.148R vs +0.136R, capture 18% vs 16%, 301 trades. The edge is 0.012R; the config has no per-setup target or partial-exit setting, so adopting it would be new exit code, not a config change. **Not adopted - CEO decision.**
+- pullback_in_uptrend shows 0 trades: its detector needs 62 daily bars and the backtest passes a 60-bar window (backtest.DETECT_WINDOW), so it never fires in any backtest. Pre-existing; not changed here.
+
+**Decision under the adopt rule (all setups, >= 200 trades): no variant qualifies. No config change.**
+
