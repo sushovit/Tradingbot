@@ -289,7 +289,7 @@ def probation_section() -> list:
                 exclude_trade_ids=_risk.probation_exclude_trade_ids(cfg))
             mark = "⏳" if _risk.on_probation(name, n, cfg) else "✅"
             open_n = _risk.probation_open_count(name, _positions, cfg)
-            slots = _risk.probation_max_concurrent(cfg)
+            slots = _risk.probation_max_concurrent(cfg, name)
             lines.append(f"- {mark} {name}: {n}/{limit} probation "
                          f"({open_n}/{slots} slot in use)")
         return lines

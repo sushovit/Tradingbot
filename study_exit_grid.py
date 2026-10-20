@@ -309,7 +309,7 @@ def simulate_half(m5, daily_close, atr_day, entry_day, entry, stop, target,
     return None
 
 
-def s34_signals(symbols, cache=S34_CACHE, start=S34_START):
+def s34_signals(symbols, cache=S34_CACHE, start=S34_START, setups=S34_SETUPS):
     """[(setup, sym, entry day, entry, structural stop)] plus the per-symbol
     frames, with the live SPY gate applied."""
     import backtest
@@ -327,7 +327,7 @@ def s34_signals(symbols, cache=S34_CACHE, start=S34_START):
         daily = daily_from_m5(m5)
         daily.index = pd.DatetimeIndex([pd.Timestamp(i).tz_localize(None) for i in daily.index])
         frames[sym] = (m5, daily)
-        for setup in S34_SETUPS:
+        for setup in setups:
             sigs, _ = backtest.collect_signals(sym, daily, setup, regime, profile, config)
             for sig in sigs:
                 day = pd.Timestamp(daily.index[sig["entry_i"]]).tz_localize(ET)
@@ -339,12 +339,12 @@ def s34_signals(symbols, cache=S34_CACHE, start=S34_START):
     return signals, frames
 
 
-def s34_run(signals, frames, steps=None):
+def s34_run(signals, frames, steps=None, variants=None):
     params = dict(pm.r_atr_params(_live_profile()))
     steps = [tuple(x) for x in (steps or params["steps"])]
     cap = pm.target_cap_atr(_live_config())
     results = {}
-    for label, k, half in s34_variants():
+    for label, k, half in (variants or s34_variants()):
         trades, busy = [], {}
         for setup, sym, day, entry, structural in sorted(signals, key=lambda x: x[2]):
             if sym in busy and day.date() <= busy[sym]:
@@ -467,15 +467,76 @@ def s34_main(append=False, universe_file="universe_today.json"):
     return 0
 
 
+# =========================================================== S35 (2026-10-20)
+# pullback_in_uptrend, never replayed before (the 60-bar window starved it;
+# backtest.DETECT_WINDOW is now 70). Same data and LIVE daily exit rule as
+# S34, current target (3R, S28-capped), no partial; SPY-gated (the setup is
+# trending-only). The probation bar: >= +0.10R over >= 30 trades.
+
+S35_BAR_R, S35_BAR_TRADES = 0.10, 30
+
+
+def s35_verdict(st):
+    ok = (st["trades"] >= S35_BAR_TRADES and st["expectancy_r"] is not None
+          and st["expectancy_r"] >= S35_BAR_R)
+    return ok
+
+
+def s35_main(append=False, universe_file="universe_today.json"):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols, setups=("pullback_in_uptrend",))
+    cur = [(s34_label(*S34_CURRENT), *S34_CURRENT)]
+    trades = s34_run(signals, frames, variants=cur)[cur[0][0]]
+    st, cap, tgt = s34_metrics(trades)
+    first = min((x[2] for x in signals), default=None)
+    ok = s35_verdict(st)
+    lines = [f"**S35 (CEO 2026-10-20) - pullback_in_uptrend, first replay.** "
+             f"5-minute replay of the live daily exit rule, {len(signals)} "
+             f"signals on {len(frames)} universe symbols, entries "
+             f"{first.date() if first is not None else '-'}..2026-10-19.", ""]
+    lines += sc.table(["Setup", "Trades", "Win %", "Expectancy (R)", "PF",
+                       "MaxDD (R)", "Capture", "Exits at target"],
+                      [["pullback_in_uptrend", st["trades"],
+                        f"{st['win_rate']}%" if st["trades"] else "-",
+                        f"{st['expectancy_r']:+.3f}" if st["trades"] else "-",
+                        st["profit_factor"] if st["trades"] else "-",
+                        st["max_drawdown_r"] if st["trades"] else "-",
+                        f"{cap * 100:.0f}%" if cap is not None else "-",
+                        f"{tgt:.1f}%" if tgt is not None else "-"]])
+    lines += ["", (f"**Bar met** (>= +{S35_BAR_R}R over >= {S35_BAR_TRADES} trades)."
+                   if ok else
+                   f"**Bar not met** (>= +{S35_BAR_R}R over >= {S35_BAR_TRADES} "
+                   f"trades): the setup stays on probation, max 1 concurrent.")]
+    lines += ["", "**Method.** As S34 (agenda 21): daily bars resampled from the "
+              "S33 5-minute IEX cache; live ladder, time stops and S28 target cap; "
+              "SPY above its 20-day EMA. The detector needs 62 daily bars, so the "
+              "first possible entry is ~62 sessions into the cache (2025-08-15), "
+              "not 2025-10-14. Reproduce with `python study_exit_grid.py --s35`.",
+              "", sc.UPPER_BOUND]
+    print("\n".join(lines))
+    if append:
+        n = sc.append_agenda("Study: S35 pullback_in_uptrend - bar window fixed, "
+                             "first replay (2026-10-20)", lines)
+        print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+    return st, ok
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--s34", action="store_true")
+    ap.add_argument("--s35", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
     a = ap.parse_args()
     if a.s34:
         return s34_main(a.append, a.universe_file)
+    if a.s35:
+        s35_main(a.append, a.universe_file)
+        return 0
     results, n = run()
     print("\n".join(render(results, n)))
     return 0

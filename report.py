@@ -307,8 +307,8 @@ def build_report() -> str:
                     _positions = json.load(_pf)
             except (FileNotFoundError, ValueError):
                 _positions = {}
-            slots = _risk.probation_max_concurrent(_cfg)
             for name in setups:
+                slots = _risk.probation_max_concurrent(_cfg, name)
                 n = journal.live_entry_count(
                     name, _risk.probation_min_prompt_version(name, _cfg),
                     exclude_trade_ids=_risk.probation_exclude_trade_ids(_cfg))

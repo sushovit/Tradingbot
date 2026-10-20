@@ -225,9 +225,14 @@ def probation_limit(config: dict = None) -> int:
         return PROBATION_TRADES
 
 
-def probation_max_concurrent(config: dict = None) -> int:
+def probation_max_concurrent(config: dict = None, setup_name: str = None) -> int:
+    """Open positions a probation setup may hold at once. S35 (CEO
+    2026-10-20): `max_concurrent_by_setup` overrides the shared
+    `max_concurrent` for one setup (pullback_in_uptrend: 1)."""
     cfg = ((config or {}).get("setup_probation") or {})
     try:
+        if setup_name and setup_name in (cfg.get("max_concurrent_by_setup") or {}):
+            return int(cfg["max_concurrent_by_setup"][setup_name])
         return int(cfg.get("max_concurrent", PROBATION_MAX_CONCURRENT))
     except (TypeError, ValueError):
         return PROBATION_MAX_CONCURRENT
@@ -381,7 +386,7 @@ def check_setup_probation(setup_name: str, open_for_setup: int,
         open_n = int(open_for_setup)
     except (TypeError, ValueError):
         open_n = 0
-    if open_n >= probation_max_concurrent(config):
+    if open_n >= probation_max_concurrent(config, setup_name):
         return False, "probation_position_open"
     return True, None
 
