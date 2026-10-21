@@ -28,6 +28,7 @@ EXPECTED = {
     "keepawake": ["caffeinate", "-i", "-t 26700"],      # CEO 10-20: 09:05 ET
     "catalysts": ["catalysts.py"],                      # S36: 09:00 ET scan
     "catalysts_post": ["catalysts.py", "--post"],       # S36: 09:20 ET post
+    "awake_week": ["jobs/awake_week.py"],               # CEO 10-21: Sun 20:00
 }
 
 
@@ -57,7 +58,9 @@ def test_every_job_has_the_shared_environment(name):
     assert p["WorkingDirectory"] == "__REPO__"
     assert p["StandardOutPath"] == f"__REPO__/logs/{name}.log"
     assert p["StandardErrorPath"] == f"__REPO__/logs/{name}.log"
-    assert p["RunAtLoad"] is False          # installing never runs a job
+    # installing never runs a job - except the always-awake hold, which must
+    # restart itself after a reboot (CEO 2026-10-21) and only runs caffeinate
+    assert p["RunAtLoad"] is (name == "awake_week")
     joined = " ".join(p["ProgramArguments"])
     for part in EXPECTED[name]:
         assert part in joined
@@ -257,3 +260,26 @@ def test_run_worker_calls_keep_awake_first(monkeypatch):
     monkeypatch.setattr(run_worker, "read_lock_pid", lambda: 1)
     assert run_worker.main([]) == 1                     # refused: another worker
     assert calls[:2] == [True, "lock"]
+
+
+def test_awake_week_holds_sun_2000_to_fri_1630_and_survives_a_reboot():
+    import importlib.util
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    p = load("awake_week")
+    assert p["RunAtLoad"] is True                       # a reboot restarts it
+    assert p["KeepAlive"] == {"SuccessfulExit": False}  # restart only if killed
+    assert weekday_times(p) == [(0, 20, 0)]             # Sunday 20:00 ET
+    assert p["ProgramArguments"][-1].endswith("jobs/awake_week.py")
+    assert "run_job.sh" not in " ".join(p["ProgramArguments"])   # no wall-clock kill
+    spec = importlib.util.spec_from_file_location("awake_week", os.path.join("jobs", "awake_week.py"))
+    a = importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+    et = ZoneInfo("America/New_York")
+    at = lambda s: datetime.fromisoformat(s).replace(tzinfo=et)
+    assert a.seconds_left(at("2026-10-25 20:00")) == 419400      # Sun 20:00 -> Fri 16:30
+    assert a.seconds_left(at("2026-10-21 05:50")) == 211200      # mid-week reboot
+    assert a.seconds_left(at("2026-10-23 16:30")) == 0           # Fri close: done
+    assert a.seconds_left(at("2026-10-24 12:00")) == 0           # Saturday
+    assert a.seconds_left(at("2026-10-25 19:59")) == 0           # before Sun 20:00
+    # the window across the 2026-11-01 DST change is still exact wall-clock
+    assert a.seconds_left(at("2026-11-01 20:00")) == 419400
