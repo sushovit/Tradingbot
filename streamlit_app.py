@@ -543,6 +543,50 @@ def reconcile_entry_with_broker(state: dict, broker_avg: float,
     return None
 
 
+OWNER_CLOSE = "Owner close"
+SELL_COMMAND = "sell_{}.command"
+
+
+def owner_close(broker, positions, ticker, now_et, current_price=None):
+    """The owner's SELL (CEO 2026-10-21: the owner's only control). Cancels
+    the stop and target legs, sells the whole position at market, journals
+    the exit as "Owner close" from the actual fill, clears the state and
+    alerts Discord. Used by the worker (sell_<T>.command) and by the
+    dashboard when no worker is running. Returns (fill price, confirmed)."""
+    state = dict(positions.get(ticker) or {})
+    close_order = broker.close_position(ticker)
+    fallback = current_price
+    if fallback is None:
+        try:
+            fallback = broker.get_latest_price(ticker)
+        except Exception:
+            fallback = state.get("entry_price")
+    exit_px, confirmed = confirm_fill(broker, close_order, fallback)
+    handle_position_exit(broker, positions, ticker, state, exit_px,
+                         OWNER_CLOSE, now_et,
+                         broker_order_id=str(getattr(close_order, "id", "")) or None)
+    logger.info(f"{ticker}: owner close - sold at ${exit_px:.2f}"
+                + ("" if confirmed else " (fill not confirmed yet)"))
+    return exit_px, confirmed
+
+
+def queue_owner_sell(ticker: str) -> str:
+    """Ask the running worker to sell `ticker` at its next cycle."""
+    path = SELL_COMMAND.format(ticker)
+    safe_io.atomic_write_text(path, datetime.now(EASTERN_TZ).isoformat())
+    return path
+
+
+def sell_route(worker_alive: bool, market_open: bool) -> str:
+    """How the dashboard executes a SELL: 'queue' (the running worker does
+    it next cycle), 'direct' (no worker, market open: the dashboard does it
+    now), or 'queue_closed' (no worker, market closed: queued for the
+    worker's first cycle after the open)."""
+    if worker_alive:
+        return "queue"
+    return "direct" if market_open else "queue_closed"
+
+
 def confirm_fill(broker, order, fallback: float, tries: int = 10):
     """Poll an order for its ACTUAL average fill, falling back to `fallback`.
 
@@ -1093,17 +1137,13 @@ def _worker_loop():
                             status_updates.append(f"{ticker}: CLOSED (hard exit date)")
                             continue
 
-                    # 3) Manual override
-                    manual_sell_command_file = f"sell_{ticker}.command"
+                    # 3) Owner SELL (dashboard button -> sell_<T>.command)
+                    manual_sell_command_file = SELL_COMMAND.format(ticker)
                     if os.path.exists(manual_sell_command_file):
                         os.remove(manual_sell_command_file)
-                        close_order = broker.close_position(ticker)
-                        exit_px, _ = confirm_fill(broker, close_order,
-                                                  current_price)
-                        handle_position_exit(broker, positions, ticker, state,
-                                             exit_px, "Manual Override", now_et,
-                                             broker_order_id=str(getattr(close_order, "id", "")) or None)
-                        status_updates.append(f"{ticker}: SOLD (manual)")
+                        owner_close(broker, positions, ticker, now_et,
+                                    current_price)
+                        status_updates.append(f"{ticker}: SOLD (owner)")
                         continue
 
                     # 4) Trailing stop: BOT positions only, and only past
@@ -1756,6 +1796,79 @@ def _cached_intraday(_broker, tickers, minute_key):
     return _broker.get_bars(list(tickers), timeframe_minutes=5, lookback_days=4)
 
 
+def _render_owner_sell(broker, open_rows, desk):
+    """The owner's one control (CEO 2026-10-21): SELL a position at market.
+    Two clicks - choose and confirm - then the stop and target legs are
+    cancelled, the shares sold at market and the exit journaled as "Owner
+    close". With the worker running it does this at its next cycle (so the
+    two never act on one position at once); with no worker and the market
+    open the dashboard does it now."""
+    tickers = [r["Ticker"] for r in open_rows]
+    qty = {r["Ticker"]: r["Qty"] for r in open_rows}
+    with st.container(border=True):
+        st.markdown("**Sell a position**")
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            pick = st.selectbox("Position to sell", tickers, key="owner_sell_pick",
+                                label_visibility="collapsed")
+        with c2:
+            if st.button(f"Sell {pick} at market", key="owner_sell_btn",
+                         type="primary", width='stretch'):
+                st.session_state["owner_sell_confirm"] = pick
+        armed = st.session_state.get("owner_sell_confirm")
+        if armed and armed in qty:
+            st.warning(f"Sell all {qty[armed]:g} {armed} shares at market? This "
+                       f"cancels its stop and target orders first.")
+            k1, k2 = st.columns(2)
+            go = k1.button(f"Yes, sell {armed}", key="owner_sell_yes",
+                           type="primary", width='stretch')
+            if k2.button("Cancel", key="owner_sell_no", width='stretch'):
+                st.session_state.pop("owner_sell_confirm", None)
+                st.rerun()
+            if go:
+                st.session_state.pop("owner_sell_confirm", None)
+                _execute_owner_sell(broker, armed, desk)
+
+
+def _execute_owner_sell(broker, ticker, desk):
+    try:
+        with open(POSITIONS_STATE_FILE, encoding="utf-8") as f:
+            positions = json.load(f)
+    except (OSError, ValueError):
+        positions = {}
+    tracked = bool((positions.get(ticker) or {}).get("in_position"))
+    hb = desk.get("heartbeat_age")
+    worker_alive = bool(desk.get("running")) and hb is not None and hb < 300
+    try:
+        market_open = bool(broker.trading.get_clock().is_open)
+    except Exception:
+        market_open = False
+    route = sell_route(worker_alive and tracked, market_open)
+    try:
+        if route == "direct":
+            now_et = datetime.now(EASTERN_TZ)
+            px, ok = owner_close(broker, positions, ticker, now_et)
+            st.success(f"Sold {ticker} at ${px:,.2f}"
+                       + ("" if ok else " (fill price still settling)")
+                       + ". Stop and target cancelled; journaled as Owner close.")
+        else:
+            queue_owner_sell(ticker)
+            if route == "queue":
+                st.success(f"Sell queued: the worker cancels {ticker}'s stop and "
+                           f"target and sells at market at its next cycle "
+                           f"(about a minute). It shows as SOLD (owner) in the "
+                           f"Watchlist and Owner close in the trade table.")
+            else:
+                st.info(f"The market is closed, so {ticker} is queued: the "
+                        f"worker sells it at market in its first cycle after "
+                        f"the 09:25 ET start. Its stop and target stay in place "
+                        f"until then.")
+    except Exception as e:
+        st.error(f"Could not complete the sell of {ticker}: {e}. Check its "
+                 f"row above: if 'Stop (live)' is empty the stop was already "
+                 f"cancelled and the position is unprotected - press Sell again.")
+
+
 WATCH_FILTERS = ("All", "Position", "Gatekeeper", "Watch-only", "Filtered",
                  "Waiting", "Catalysts")
 
@@ -2026,6 +2139,8 @@ with tab1:
             })
         st.caption("Stop and target are the orders live at the broker; they "
                    "protect the position even when the worker is stopped.")
+        if not desk_config.in_worker():
+            _render_owner_sell(broker, _open_rows, desk)
 
     # --- Live status line (below the open positions, owner 2026-10-14) ---
     st.subheader("Live Status")
