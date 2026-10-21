@@ -201,18 +201,94 @@ def finnhub_client():
     return finnhub.Client(api_key=key)
 
 
-def market_news_tickers(client) -> list:
-    """Tickers Finnhub's general market news names (its `related` field)."""
+_TICKER_IN_TEXT = re.compile(r"\(([A-Z]{1,5}(?:\.[A-Z])?)\)|\$([A-Z]{1,5})\b")
+
+
+def tickers_in_text(text: str) -> list:
+    """'3M (MMM) jumps', '$TSLA rallies' -> ['MMM', 'TSLA']."""
+    return [a or b for a, b in _TICKER_IN_TEXT.findall(text or "")]
+
+
+_SUFFIXES = {"INC", "INCORPORATED", "CORP", "CORPORATION", "CO", "COMPANY",
+             "LTD", "LIMITED", "PLC", "HOLDINGS", "HOLDING", "GROUP", "SA", "NV",
+             "AG", "LP", "LLC", "THE", "CLASS", "A", "B", "C", "COMMON", "STOCK",
+             "SHARES", "ORDINARY", "ADR", "ADS", "DEPOSITARY", "AMERICAN",
+             "SPONSORED", "NEW", "DE", "CL"}
+
+
+def clean_company(name: str) -> str:
+    """'United Airlines Holdings, Inc. Common Stock' -> 'UNITED AIRLINES'."""
+    words = re.sub(r"[^A-Za-z0-9&' ]", " ", name or "").upper().split()
+    while words and words[-1] in _SUFFIXES:
+        words.pop()
+    if words and words[0] == "THE":
+        words = words[1:]
+    return " ".join(words)
+
+
+def name_index(assets) -> dict:
+    """{cleaned company name: symbol} for names distinctive enough to match
+    in a headline: two or more words, or one word of 6+ letters. A
+    same-name collision keeps neither."""
+    idx, clash = {}, set()
+    for a in assets or []:
+        sym, nm = a.get("symbol"), clean_company(a.get("name", ""))
+        if not sym or not nm or "." in sym and not sym.endswith((".A", ".B")):
+            continue
+        if len(nm.split()) < 2 and len(nm) < 6:
+            continue
+        if nm in idx and idx[nm] != sym:
+            clash.add(nm)
+        idx[nm] = sym
+    for nm in clash:
+        idx.pop(nm, None)
+    return idx
+
+
+def tickers_by_name(text: str, index: dict) -> list:
+    t = " " + re.sub(r"[^A-Za-z0-9&' ]", " ", text or "").upper() + " "
+    t = re.sub(r"'S ", " ", t)
+    return [sym for nm, sym in index.items() if f" {nm} " in t]
+
+
+def active_assets(broker):
+    """Every active US equity's {symbol, name}: one raw /assets call (the
+    SDK cannot parse the list since 2026-10-20)."""
+    try:
+        rows = broker.trading.get("/assets", {"status": "active",
+                                              "asset_class": "us_equity"})
+        return [{"symbol": r.get("symbol"), "name": r.get("name")}
+                for r in rows or [] if r.get("tradable")
+                and r.get("exchange") in ("NYSE", "NASDAQ", "ARCA", "AMEX", "BATS")]
+    except Exception as e:
+        logger.warning(f"asset names unavailable: {e}")
+        return []
+
+
+def market_news_tickers(client, broker=None) -> list:
+    """Tickers Finnhub's general market news names: its `related` field
+    (empty on the free feed, 2026-10-21: 0 of 100 items) plus tickers
+    written in the headline/summary. Kept only if Alpaca knows the symbol,
+    so an invalid one cannot break a snapshot batch."""
     out = []
+    index = name_index(active_assets(broker)) if broker is not None else {}
     try:
         for n in client.general_news("general", min_id=0) or []:
-            for t in str(n.get("related") or "").split(","):
-                t = t.strip().upper()
-                if t and t.isascii() and len(t) <= 6:
-                    out.append(t)
+            text = f"{n.get('headline', '')} {n.get('summary', '')}"
+            out += [t.strip().upper() for t in str(n.get("related") or "").split(",")]
+            out += tickers_in_text(text)
+            out += tickers_by_name(text, index)
     except Exception as e:
         logger.warning(f"market news unavailable: {e}")
-    return list(dict.fromkeys(out))
+    out = [t for t in dict.fromkeys(out) if t and t.isascii() and len(t) <= 6]
+    if out and broker is not None:
+        try:
+            known = broker.get_assets_map(out)
+            out = [t for t in out if t in known]
+        except Exception as e:
+            logger.warning(f"news tickers not validated ({e}); dropped")
+            out = []
+    return out
 
 
 def snapshots(broker, symbols) -> dict:
@@ -274,16 +350,31 @@ def company_news(client, symbol, since_date: str, to_date: str) -> list:
         return []
 
 
-def candidate_pool(broker, client, config) -> list:
+def candidate_pool(broker, client, config, origins: dict = None) -> list:
+    """Pool symbols. `origins` (if given) is filled {symbol: set of 'pool' /
+    'movers' / 'news'} so each scan can say which names ONLY Finnhub's market
+    news surfaced - the evidence for (or against) a news-first scan."""
     import universe
-    pool = list(universe.scan_pool(config))
+    origins = origins if origins is not None else {}
+
+    def add(syms, tag):
+        for s in syms:
+            if s:
+                origins.setdefault(s, set()).add(tag)
+    add(universe.scan_pool(config), "pool")
     try:
-        pool += [m["symbol"] for m in broker.get_market_movers(top=50)]
+        add([m["symbol"] for m in broker.get_market_movers(top=50)], "movers")
     except Exception as e:
         logger.warning(f"market movers unavailable: {e}")
     if client is not None:
-        pool += market_news_tickers(client)
-    return [s for s in dict.fromkeys(pool) if s]
+        add(market_news_tickers(client, broker), "news")
+    return list(origins)
+
+
+def news_only(origins: dict, symbols) -> list:
+    """Of `symbols`, those that came ONLY from Finnhub market-news tickers
+    (not in our scan pool, not an Alpaca mover)."""
+    return [s for s in symbols if origins.get(s) == {"news"}]
 
 
 def scan(broker=None, client=None, config=None, now=None, tagger=None) -> dict:
@@ -299,7 +390,8 @@ def scan(broker=None, client=None, config=None, now=None, tagger=None) -> dict:
         client = finnhub_client()
     tagger = tagger or (lambda h, t: tag_headline(h, t, config))
 
-    pool = candidate_pool(broker, client, config)
+    origins = {}
+    pool = candidate_pool(broker, client, config, origins)
     snaps = snapshots(broker, pool)
     gapped = []
     for sym, (px, pc) in snaps.items():
@@ -344,9 +436,17 @@ def scan(broker=None, client=None, config=None, now=None, tagger=None) -> dict:
             "news_time": datetime.fromtimestamp(float(top["datetime"]), ET)
                          .strftime("%Y-%m-%d %H:%M"),
             "tag": tagger(top.get("headline", ""), r["symbol"]),
+            "origin": sorted(origins.get(r["symbol"], ())),
         })
+    found = [n["symbol"] for n in names]
+    only_news = news_only(origins, found)
+    logger.info(f"catalyst scan: {len(found)} names; {len(only_news)} only from "
+                f"Finnhub market-news tickers {only_news}, "
+                f"{len(found) - len(only_news)} from our pool/movers")
     return {"date": today_et(now), "generated_at": now.isoformat(),
             "pool": len(pool), "snapshots": len(snaps), "gapped": len(gapped),
+            "pool_news_only": len(news_only(origins, pool)),
+            "names_news_only": news_only(origins, [n["symbol"] for n in names]),
             "liquid": len(liquid), "finnhub": client is not None,
             "names": names}
 

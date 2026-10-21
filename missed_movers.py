@@ -376,7 +376,30 @@ def build(day, root=".", db_file=None, config=None):
         rows.append(dict(classify(tk, facts, bought, held, cycle, bool(cycle)),
                          ticker=tk, pct=pct))
     return {"day": day, "source": src, "rows": rows, "cycle_at": cycle_at,
-            "worker_ran": ran}
+            "worker_ran": ran, "news_only": catalyst_news_only(root, day)}
+
+
+def catalyst_news_only(root, day):
+    """S36: names the 09:00 catalyst scan kept (gapped >= 3% on news) that
+    came ONLY from Finnhub market-news tickers - i.e. not in our scanner
+    pool or Alpaca's movers. None when there was no scan that day. This is
+    the running evidence for a news-first scan."""
+    try:
+        with open(os.path.join(root, "catalysts_today.json"), encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if payload.get("date") != day:
+        return None
+    return list(payload.get("names_news_only") or [])
+
+
+def news_only_line(report):
+    names = report.get("news_only")
+    if names is None:
+        return "Gapped on news but not in scanner pool: no scan today"
+    return (f"Gapped on news but not in scanner pool: {len(names)}"
+            + (f" ({', '.join(names)})" if names else ""))
 
 
 # ============================================================ formatting
@@ -411,6 +434,7 @@ def table_lines(report):
         counts[k] = counts.get(k, 0) + 1
     lines += trade_table._wrap([f"{k} {v}" for k, v in
                                 sorted(counts.items(), key=lambda kv: -kv[1])])
+    lines += __import__("textwrap").wrap(news_only_line(report), WIDTH)
     return [line[:WIDTH] for line in lines]
 
 
@@ -449,6 +473,7 @@ def markdown(report):
                    f"{_md_cell(r['stage'])} | {_md_cell(r['reason'])} | "
                    f"{_md_cell(r['setup'])} | {_md_cell(r['details'][:160])} | "
                    f"{_md_cell(r['status'][:120])} | {r['rows']} |")
+    out += ["", f"- {news_only_line(report)}"]
     out += ["", "Stages follow study_trade_funnel.STAGES (the worker's "
             "pipeline order); a ticker with several journal rows shows the "
             "furthest stage it reached that day.", ""]

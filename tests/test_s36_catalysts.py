@@ -231,3 +231,64 @@ def test_prefers_a_headline_that_names_the_company():
     assert cat.best_headline(news, "REGN", "Regeneron Pharmaceuticals")["headline"] \
         == "Regeneron's Dupixent wins EU nod"
     assert cat.best_headline(news[:1], "REGN", "")["headline"].startswith("Why")
+
+
+def test_scan_logs_names_that_came_only_from_market_news(monkeypatch, caplog):
+    """AAA is in our pool; BBB is a mover; a news-only ticker is tracked."""
+    import logging
+    monkeypatch.setattr(universe, "scan_pool", lambda config: ["AAA"])
+
+    class NewsBroker(FakeBroker):
+        def get_market_movers(self, top=50):
+            return [{"symbol": "CCC"}]
+
+    class NewsHub(FakeFinnhub):
+        def general_news(self, c, min_id=0):
+            return [{"related": "BBB,FFF"}]
+    with caplog.at_level(logging.INFO, logger="catalysts"):
+        p = cat.scan(broker=NewsBroker(), client=NewsHub(), config=CFG, now=NOW,
+                     tagger=lambda h, t: "other")
+    assert [n["symbol"] for n in p["names"]] == ["BBB", "AAA"]
+    assert p["names_news_only"] == ["BBB"] and p["names"][0]["origin"] == ["news"]
+    assert p["names"][1]["origin"] == ["pool"]
+    assert "1 only from Finnhub market-news tickers ['BBB'], 1 from our pool/movers" \
+        in caplog.text
+
+
+def test_missed_movers_reports_news_only_gappers(tmp_path):
+    import missed_movers as mm
+    day = "2026-10-21"
+    (tmp_path / "catalysts_today.json").write_text(json.dumps(
+        {"date": day, "names_news_only": ["BBB"], "names": []}))
+    assert mm.catalyst_news_only(str(tmp_path), day) == ["BBB"]
+    assert mm.catalyst_news_only(str(tmp_path), "2026-10-22") is None
+    rep = {"news_only": ["BBB"]}
+    assert mm.news_only_line(rep) == "Gapped on news but not in scanner pool: 1 (BBB)"
+    assert mm.news_only_line({"news_only": None}).endswith("no scan today")
+
+
+def test_tickers_are_read_from_headline_text_and_validated():
+    assert cat.tickers_in_text("Why Is 3M (MMM) Stock Rocketing; $TSLA and (BRK.B) too") \
+        == ["MMM", "TSLA", "BRK.B"]
+
+    class Hub:
+        def general_news(self, c, min_id=0):
+            return [{"related": "", "headline": "3M (MMM) jumps", "summary": "(FAKEX) and $AAPL"}]
+
+    class B:
+        def get_assets_map(self, syms):
+            return {s: {} for s in syms if s != "FAKEX"}
+    assert cat.market_news_tickers(Hub(), B()) == ["MMM", "AAPL"]
+
+
+def test_company_names_in_headlines_map_to_tickers():
+    idx = cat.name_index([
+        {"symbol": "UAL", "name": "United Airlines Holdings, Inc. Common Stock"},
+        {"symbol": "CRWV", "name": "CoreWeave, Inc. Class A Common Stock"},
+        {"symbol": "T", "name": "AT&T Inc."},                 # too short: skipped
+        {"symbol": "X1", "name": "Bank Corp"}, {"symbol": "X2", "name": "Bank Corp."},
+    ])
+    assert idx == {"UNITED AIRLINES": "UAL", "COREWEAVE": "CRWV"}
+    text = "United Airlines slashes 2026 outlook; obsessed with CoreWeave's AI trade?"
+    assert sorted(cat.tickers_by_name(text, idx)) == ["CRWV", "UAL"]
+    assert cat.tickers_by_name("Bank of England warns", idx) == []
