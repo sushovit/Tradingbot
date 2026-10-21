@@ -32,6 +32,11 @@ REGISTRY = {
 DEFAULT_STRATEGIES = ["trend_continuation"]
 
 
+# CEO 2026-10-21: retired from live trading. The detector stays in REGISTRY
+# for backtests and studies (agenda 22: -0.096R over 155 replayed trades).
+RETIRED = frozenset({"pullback_in_uptrend"})
+
+
 def enabled_strategies(ticker: str, config: dict) -> list:
     """Instantiate the strategies enabled for a ticker.
 
@@ -44,6 +49,8 @@ def enabled_strategies(ticker: str, config: dict) -> list:
         names = config.get("default_strategies", DEFAULT_STRATEGIES)
     instances = []
     for name in names:
+        if name in RETIRED:
+            continue              # never live, whatever a config says
         cls = REGISTRY.get(name)
         if cls is not None:
             instances.append(cls())

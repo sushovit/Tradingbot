@@ -25,7 +25,9 @@ import finetune_plan
 # the research record — both implementations are checked against the same
 # fixtures below so they cannot silently diverge.
 
-def test_both_setups_are_registered_live():
+def test_post_earnings_is_live_and_pullback_is_retired():
+    """CEO 2026-10-21 (agenda 22): pullback_in_uptrend is retired from live
+    trading; its detector stays registered for backtests."""
     from strategies import REGISTRY, enabled_strategies
     for name in ("pullback_in_uptrend", "post_earnings_continuation"):
         assert name in REGISTRY
@@ -33,8 +35,11 @@ def test_both_setups_are_registered_live():
     with open("bot_config.json", encoding="utf-8") as f:
         config = json.load(f)
     names = [s.name for s in enabled_strategies("ANY_UNIVERSE_TICKER", config)]
-    assert "pullback_in_uptrend" in names
+    assert "pullback_in_uptrend" not in names
     assert "post_earnings_continuation" in names
+    # a stale config that still lists it cannot bring it back
+    stale = dict(config, default_strategies=config["default_strategies"] + ["pullback_in_uptrend"])
+    assert "pullback_in_uptrend" not in [s.name for s in enabled_strategies("X", stale)]
 
 
 def test_both_setups_are_trending_only():
