@@ -190,8 +190,16 @@ HEADER = (f"{'TICK':<5} {'QTY':>3} {'BUY':>6} {'SELL':>6} {'TGT':>6} "
           f"{'STOP':>6} {'P&L':>6} RES")
 
 
-def row_line(ticker, qty, buy, sell, target, stop, pnl, result) -> str:
-    sell_cell = "open" if sell is None else _px(sell)
+def row_line(ticker, qty, buy, sell, target, stop, pnl, result,
+             now=None) -> str:
+    """`now` (open rows): the current price, shown in the SELL column with
+    a '*' so an open position's P&L has its price beside it."""
+    if sell is not None:
+        sell_cell = _px(sell)
+    elif now is not None:
+        sell_cell = _px(now) + "*"
+    else:
+        sell_cell = "open"
     line = (f"{ticker[:5]:<5} {qty:>3g} {_px(buy):>6} {sell_cell:>6} "
             f"{_px(target):>6} {_px(stop):>6} {_pnl(pnl):>6} {result[:5]}")
     return line[:WIDTH]
@@ -254,9 +262,11 @@ def day_table(trades, day: date, open_positions=None, equity=None):
         open_pnl += p.get("unrealized") or 0.0
         lines.append(row_line(tk, p["qty"], p.get("entry"), None,
                               p.get("target"), p.get("stop"),
-                              p.get("unrealized"), "open"))
+                              p.get("unrealized"), "open", now=p.get("last")))
     if len(lines) == 2:
         lines.append("(no trades and no open positions)")
+    if any(p.get("last") for p in open_positions.values()):
+        lines.append("* SELL = price now; position still open")
     lines.append("-" * len(HEADER))
     lines += summary_lines(closed_today, count=count, open_pnl=open_pnl,
                            equity=equity)
@@ -341,6 +351,7 @@ def live_open_positions(broker, positions_file="positions.json"):
             "target": s.get("profit_target_price"),
             "stop": s.get("trailing_stop_price"),
             "unrealized": float(getattr(p, "unrealized_pl", 0) or 0),
+            "last": (float(getattr(p, "current_price", 0) or 0) or None),
         }
     return out
 
