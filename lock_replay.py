@@ -154,3 +154,52 @@ def shadow_vs_live(trades, bars_for, params=None):
         v["capture"] = v["pnl"] / v["best"] if v["best"] > 0 else None
     return side
 
+
+
+# ============================================================ live R/ATR rule (scoreboard)
+
+def replay_r_atr(bars, entry_ts, entry, stop, target, params, atr=None):
+    """The CURRENT live daily rule's stop ladder (S25 R/ATR, S29 +1R -> BE),
+    replayed on 5-minute bars with the same fill rules as `replay`, so the
+    scoreboard compares rules with rules. Steps move on COMPLETED closes of
+    bars starting at or after `not_before_et` (10:00 ET); beyond the last step
+    the stop trails the highest completed DAILY close - trail_atr x ATR14
+    (`atr`, as of the entry day). Never lowered; at least market_gap_pct
+    below the close. Time stops and earnings exits are not modelled - nor
+    are they in the owner-ladder replay. (exit_price, exit_ts, reason)."""
+    idx = pd.DatetimeIndex(bars.index)
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    et = idx.tz_convert("America/New_York")
+    start = pd.Timestamp(entry_ts)
+    if start.tzinfo is None:
+        start = start.tz_localize("America/New_York")
+    keep = idx > start
+    after, et_after = bars[keep], et[keep]
+    if after.empty:
+        return None, None, "no bars"
+    hh, mm = (int(x) for x in str(params.get("not_before_et", "10:00")).split(":"))
+    live_stop, hc, first = stop, None, True
+    day_close, highest_daily = {}, None
+    for (ts, bar), t_et in zip(after.iterrows(), et_after):
+        o, h, l, c = (float(bar["open"]), float(bar["high"]),
+                      float(bar["low"]), float(bar["close"]))
+        d = t_et.date()
+        prior = [v for k, v in day_close.items() if k < d]
+        highest_daily = max(prior) if prior else None
+        if not first and o <= live_stop:
+            return o, ts, "stop (gap)"
+        if not first and target is not None and o >= target:
+            return o, ts, "target (gap)"
+        first = False
+        if l <= live_stop:
+            return live_stop, ts, "stop"
+        if target is not None and h >= target:
+            return target, ts, "target"
+        day_close[d] = c                         # last close seen for the day
+        if (t_et.hour, t_et.minute) >= (hh, mm):
+            hc = c if hc is None else max(hc, c)
+            cand, _ = pm.r_atr_target(entry, stop, hc, highest_daily, atr, c, params)
+            if cand is not None and live_stop < cand < c:
+                live_stop = cand
+    return float(after["close"].iloc[-1]), None, "open"

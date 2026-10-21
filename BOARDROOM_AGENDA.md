@@ -1521,3 +1521,23 @@ First reading (2026-10-21, 1 closed trade): TXN live -$6.87, owner ladder +$4.74
 
 Method notes: live P&L is the journal's realized P&L for a closed trade and the broker's unrealized P&L for an open one; the owner-ladder result is its replayed exit, or the last 5-minute close if it would still hold. Fills: a bar opening through a level fills at its open; a bar spanning stop and target hits the stop first. The replay starts after the entry fill time, so the entry bar itself never triggers anything.
 
+### Fix (CEO 2026-10-21): rules vs rules; the switch is the CEO's
+
+- The table now has three money columns: **LIVE $** (what the account
+  actually made - reference only), **RULE $** (the CURRENT live R/ATR ladder
+  replayed on the same 5-minute bars from the same entry, original stop and
+  target - `lock_replay.replay_r_atr`) and **OWNER $** (the owner's 0.5%
+  ladder, replayed the same way). **DIFF = OWNER $ - RULE $**: the rule is
+  judged against the rule, not against live accidents. Neither replay models
+  time stops or earnings exits.
+- Trades whose live result a journaled bug bent (ops events
+  `fill_corrected` / entry-bug kinds) carry a dagger (TXN 10-14).
+- **The switch rule now reads: switch to the owner ladder if it beats the
+  live RULE by more than $0 in total over at least 10 closed trades.** The
+  Friday post ends with **"CEO action: switch"** or **"CEO action: none"**.
+  The decision and the config change are the CEO's; the owner never edits
+  the config.
+- Reading after the fix (2026-10-21): TXN† live -$6.87, rule $0.00 (the
+  rule's +1R step put the stop at entry), owner +$4.74; REGN (open) rule
+  +$4.91 still holding, owner $0.00. Owner - rule over 1 closed trade:
+  +$4.74. CEO action: none (9 more closed trades needed).
