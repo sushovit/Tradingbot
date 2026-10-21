@@ -376,6 +376,7 @@ def refresh(broker, config: dict) -> list:
 # A catalyst name only JOINS the universe - it trades only through a normal
 # setup and every normal gate. No trades from news alone.
 CATALYSTS_FILE = "catalysts_today.json"
+WATCH_ONLY_GAP_PCT = 3.0
 
 
 def load_catalysts_today(path: str = None) -> list:
@@ -401,7 +402,13 @@ def merge_catalysts(ranked: list, names: list) -> list:
             continue
         extra = {"catalyst_tag": n.get("tag"),
                  "catalyst_headline": n.get("headline"),
-                 "catalyst_gap_pct": n.get("gap_pct")}
+                 "catalyst_gap_pct": n.get("gap_pct"),
+                 # CEO 2026-10-21: WATCH-ONLY. A name already in the universe
+                 # stays tradable only if its gap is < 3% - and every catalyst
+                 # name gapped >= 3%, so no news-gap entry at all.
+                 "catalyst": True,
+                 "watch_only": abs(float(n.get("gap_pct") or 0)) >= WATCH_ONLY_GAP_PCT
+                 or sym not in by_sym}
         if sym in by_sym:
             by_sym[sym].update(extra)
             continue
@@ -412,6 +419,30 @@ def merge_catalysts(ranked: list, names: list) -> list:
                "name": n.get("name", ""), **extra}
         out.append(row)
         by_sym[sym] = row
+    return out
+
+
+def watch_only_today() -> dict:
+    """{symbol: catalyst info} the worker must NOT enter today (CEO
+    2026-10-21: catalyst names are watch-only). Read from today's universe
+    rows AND today's catalysts file, so a universe that was not refreshed
+    after the scan still cannot let one through."""
+    out = {}
+    today = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    try:
+        with open(UNIVERSE_FILE, "r") as f:
+            uni = json.load(f)
+        if uni.get("date") == today:
+            for c in uni.get("candidates", []):
+                if c.get("watch_only"):
+                    out[c["symbol"]] = {"gap_pct": c.get("catalyst_gap_pct"),
+                                        "tag": c.get("catalyst_tag")}
+    except (OSError, ValueError, KeyError):
+        pass
+    for n in load_catalysts_today():
+        if n.get("symbol") and abs(float(n.get("gap_pct") or 0)) >= WATCH_ONLY_GAP_PCT:
+            out.setdefault(n["symbol"], {"gap_pct": n.get("gap_pct"),
+                                         "tag": n.get("tag")})
     return out
 
 
