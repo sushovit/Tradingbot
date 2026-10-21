@@ -384,7 +384,8 @@ def test_unflagged_exposure_wording_is_still_guarded(temp_journal, text):
 
 @pytest.mark.parametrize("text", [
     "fix uptime first (missed/late sessions cost whole days)",
-    "schedule a 09:15 ET wake (pmset repeat wakeorpoweron) and keep the lid open",
+    "check the always-awake job (com.tradingbot.awake_week, logs/awake_week.log) "
+    "and that the lid stayed open",
     "study moving the breakeven lock from +1.0R to +0.5R (S15 variants)",
     "study entry quality on stopped trades (stop distance vs ATR) before "
     "changing any filter",

@@ -522,8 +522,8 @@ def _why_and_fix(key: str, ev: dict, goals: dict) -> tuple:
         why = (f"{sessions - len(ev['late']) - len(ev['missed'])} of "
                f"{sessions} session(s) started by 09:30 ET; late: {late}; "
                f"missed: {', '.join(ev['missed']) or 'none'}.")
-        fix = ("schedule a 09:15 ET wake (pmset repeat wakeorpoweron) and "
-               "keep the lid open")
+        fix = ("check the always-awake job (com.tradingbot.awake_week, "
+               "logs/awake_week.log) and that the lid stayed open")
     else:                                        # givebacks
         names = "; ".join(f"{t['ticker']} {t['buy_ts'][:10]} "
                           f"${t['pnl']:+,.2f}" for t in ev["givebacks"]) or "none"

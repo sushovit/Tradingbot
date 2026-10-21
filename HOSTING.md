@@ -398,7 +398,8 @@ it, and both want the same flat weekend.
 
 Mac cutover, 2026-10-07 (Nepal times)
 - By 17:00: Order 1, 1b and S12 merged and the suite passing (done, cf0a59e). Mac on
-  America/New_York; pmset sleep 0 disksleep 0 powernap 0; on the charger, lid open.
+  America/New_York; lid open (since 2026-10-21 the always-awake launchd job
+  com.tradingbot.awake_week holds off sleep, no sudo).
 - Laptop: delete every TradingBot schtask; no bot.run; the worker is NOT started.
   Copy bot_config.json and data/ to the Mac.
 - New $5,000 Alpaca paper account; rotate the Anthropic, Finnhub, Discord and intern keys;

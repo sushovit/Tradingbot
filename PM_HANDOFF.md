@@ -112,8 +112,9 @@ BOARDROOM_AGENDA.md (item 10 = ratified policy), HOSTING.md.
    review memo at 16:30.
 3. **Owner to-dos on the Mac:** system timezone America/New_York; Python
    3.12+ (pandas_ta 0.4.x), git, Ollama (Apple silicon) or set analyst_mode "claude";
-   prevent sleep (`sudo pmset -a sleep 0 disksleep 0`, lid open or proper
-   clamshell on a laptop); Full Disk/Folder access for the Claude desktop
+   sleep is held off by the always-awake launchd job
+   (com.tradingbot.awake_week, Sun 20:00 -> Fri 16:30 ET, no sudo) - keep the
+   lid open; Full Disk/Folder access for the Claude desktop
    app; never start the worker by hand on weekends; never start it twice.
 4. **Next weekend (after cutover is stable):** S11 — journal prospective
    entry/stop/target on deterministic rejections so outcomes.py can grade
