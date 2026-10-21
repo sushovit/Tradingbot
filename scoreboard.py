@@ -12,13 +12,19 @@ in 0.25% steps; same entry, original stop and live target; a bar opening
 through a level fills at its open; a bar spanning stop and target hits the
 stop first). Per trade and total, in dollars.
 
-Live: a closed trade's journaled P&L; an open trade's unrealized P&L at the
-broker. Owner ladder: its exit if the replay closed the trade, else the
-last bar's close.
+Three numbers per trade (CEO 2026-10-21 fix):
+  LIVE $   what the account actually made (journal realized / broker
+           unrealized) - for reference only: it carries every live accident.
+  RULE $   the CURRENT live R/ATR ladder replayed on the same bars from the
+           same entry, original stop and target (lock_replay.replay_r_atr).
+  OWNER $  the owner's 0.5% ladder replayed the same way.
+The comparison is RULES vs RULES: OWNER $ - RULE $. A trade touched by a
+journaled bug (ops events fill_corrected / entry bug) is marked with a dagger.
 
-The switch rule (agenda 25): switch to the owner ladder if it beats live by
-more than $0 in total over at least 10 CLOSED trades. The scoreboard reports
-whether the rule is met; switching is a config change the CEO makes.
+The switch rule (agenda 25): switch to the owner ladder if it beats the
+live rule by more than $0 in total over at least 10 CLOSED trades. The
+decision is the CEO's: the Friday post ends "CEO action: switch" or "CEO
+action: none". The owner never edits the config.
 """
 
 import argparse
@@ -33,6 +39,9 @@ import trade_table
 
 ET = pytz.timezone("America/New_York")
 MIN_CLOSED = 10
+# ops-event kinds that mean a trade's live numbers were bent by a bug
+BUG_KINDS = ("fill_corrected", "entry_reconciled", "entry_bug",
+             "entry_fill_corrected")
 TITLE = "📊 Weekly scoreboard — live R/ATR vs owner 0.5% ladder"
 
 
@@ -54,10 +63,37 @@ def daily_trades(conn, config):
     return out
 
 
-def score(trades, open_positions, bars_for, params, positions=None):
-    """Rows {ticker, buy_ts, status, live, owner, diff, owner_open} and totals."""
+def bug_flags(conn, trades) -> set:
+    """buy_ts of every trade an ops bug event touched: the event names the
+    ticker (first word of its target) and falls between the buy and 3 days
+    after the sell (now, for an open trade)."""
+    flags = set()
+    try:
+        rows = conn.execute(
+            "SELECT ticker, substr(timestamp,1,10) FROM decisions WHERE source='ops' "
+            "AND setup_name IN (%s)" % ",".join("?" * len(BUG_KINDS)), BUG_KINDS).fetchall()
+    except Exception:
+        return flags
+    for t in trades:
+        start = t["buy_ts"][:10]
+        end = "9999-12-31"
+        if t.get("sell_ts"):
+            from datetime import timedelta
+            end = (date.fromisoformat(t["sell_ts"][:10]) + timedelta(days=3)).isoformat()
+        for target, day in rows:
+            if str(target or "").split()[:1] == [t["ticker"]] and start <= day <= end:
+                flags.add(t["buy_ts"])
+    return flags
+
+
+def score(trades, open_positions, bars_for, params, positions=None,
+          rule_params=None, atr_for=None, flags=()):
+    """Rows {ticker, buy_ts, status, live, rule, owner, diff, *_open, bug}
+    and totals. diff = OWNER $ - RULE $ (rules vs rules)."""
     import lock_replay
+    import position_mgmt as pm
     policy = lock_replay.shadow_ladder_policy(params)
+    rule_params = rule_params or dict(pm.R_ATR_DEFAULTS)
     positions = positions or {}
     rows = []
     for t in trades:
@@ -66,11 +102,9 @@ def score(trades, open_positions, bars_for, params, positions=None):
         stop = t.get("orig_stop") or state.get("original_stop") or state.get("initial_stop")
         target = (t.get("target") if closed
                   else state.get("profit_target_price") or t.get("target"))
-        if closed:
-            live = t["pnl"]
-        else:
-            live = (open_positions.get(t["ticker"]) or {}).get("unrealized")
-        owner, owner_open = None, None
+        target = float(target) if target else None
+        live = t["pnl"] if closed else (open_positions.get(t["ticker"]) or {}).get("unrealized")
+        owner = rule = owner_open = rule_open = None
         if stop is not None:
             try:
                 bars = bars_for(t["ticker"], t["buy_ts"])
@@ -78,26 +112,34 @@ def score(trades, open_positions, bars_for, params, positions=None):
                 bars = None
             if bars is not None and not getattr(bars, "empty", True):
                 px, ts, _ = lock_replay.replay(bars, t["buy_ts"], t["buy"],
-                                               float(stop),
-                                               float(target) if target else None,
-                                               policy)
+                                               float(stop), target, policy)
                 if px is not None:
-                    owner = (px - t["buy"]) * t["qty"]
-                    owner_open = ts is None
+                    owner, owner_open = (px - t["buy"]) * t["qty"], ts is None
+                try:
+                    atr = atr_for(t["ticker"], t["buy_ts"]) if atr_for else None
+                except Exception:
+                    atr = None
+                px, ts, _ = lock_replay.replay_r_atr(bars, t["buy_ts"], t["buy"],
+                                                     float(stop), target,
+                                                     rule_params, atr)
+                if px is not None:
+                    rule, rule_open = (px - t["buy"]) * t["qty"], ts is None
         rows.append({"ticker": t["ticker"], "buy_ts": t["buy_ts"],
-                     "status": "closed" if closed else "open",
-                     "live": live, "owner": owner, "owner_open": owner_open,
-                     "diff": (owner - live) if owner is not None and live is not None else None})
+                     "status": "closed" if closed else "open", "live": live,
+                     "rule": rule, "owner": owner, "rule_open": rule_open,
+                     "owner_open": owner_open, "bug": t["buy_ts"] in flags,
+                     "diff": (owner - rule) if owner is not None and rule is not None else None})
     both = [r for r in rows if r["diff"] is not None]
     closed_rows = [r for r in both if r["status"] == "closed"]
     totals = {
-        "live": sum(r["live"] for r in both), "owner": sum(r["owner"] for r in both),
+        "live": sum(r["live"] or 0.0 for r in rows),
+        "rule": sum(r["rule"] for r in both), "owner": sum(r["owner"] for r in both),
         "closed_n": len(closed_rows),
-        "closed_live": sum(r["live"] for r in closed_rows),
+        "closed_rule": sum(r["rule"] for r in closed_rows),
         "closed_owner": sum(r["owner"] for r in closed_rows),
         "unscored": [r["ticker"] for r in rows if r["diff"] is None],
     }
-    totals["closed_diff"] = totals["closed_owner"] - totals["closed_live"]
+    totals["closed_diff"] = totals["closed_owner"] - totals["closed_rule"]
     totals["rule_met"] = (totals["closed_n"] >= MIN_CLOSED and totals["closed_diff"] > 0)
     return rows, totals
 
@@ -108,36 +150,45 @@ def _m(x):
 
 def table_lines(rows, totals, day):
     w = trade_table.WIDTH
-    head = f"{'TICK':<5} {'IN':<5} {'ST':<4} {'LIVE $':>9} {'OWNER $':>9} {'DIFF':>8}"
+    head = (f"{'TICK':<5} {'IN':<5} {'S':<1} {'LIVE $':>8} {'RULE $':>8} "
+            f"{'OWNER $':>8} {'DIFF':>8}")
     lines = [head, "-" * w]
     for r in rows:
-        mark = "*" if r["owner_open"] else ""
-        lines.append(f"{r['ticker'][:5]:<5} {r['buy_ts'][5:10]:<5} "
-                     f"{r['status'][:4]:<4} {_m(r['live']):>9} "
-                     f"{(_m(r['owner']) + mark):>9} {_m(r['diff']):>8}"[:w])
+        tk = r["ticker"][:4] + ("†" if r["bug"] else "")
+        lines.append(f"{tk:<5} {r['buy_ts'][5:10]:<5} {r['status'][0].upper():<1} "
+                     f"{_m(r['live']):>8} "
+                     f"{(_m(r['rule']) + ('*' if r['rule_open'] else '')):>8} "
+                     f"{(_m(r['owner']) + ('*' if r['owner_open'] else '')):>8} "
+                     f"{_m(r['diff']):>8}"[:w])
     if not rows:
         lines.append("(no daily trades on the account yet)")
     lines.append("-" * w)
-    lines.append(f"{'TOTAL':<16} {_m(totals['live']):>9} {_m(totals['owner']):>9} "
-                 f"{_m(totals['owner'] - totals['live']):>8}"[:w])
-    lines.append(f"Closed trades: {totals['closed_n']}  owner - live "
+    lines.append(f"{'TOTAL':<13} {_m(totals['live']):>8} {_m(totals['rule']):>8} "
+                 f"{_m(totals['owner']):>8} {_m(totals['owner'] - totals['rule']):>8}"[:w])
+    lines.append("DIFF = OWNER - RULE (rules vs rules);")
+    lines.append("LIVE = what the account made (reference).")
+    lines.append(f"Closed: {totals['closed_n']}  owner - rule "
                  f"{_m(totals['closed_diff'])}")
-    if totals["rule_met"]:
-        lines.append(f"RULE MET: owner ladder ahead over >= {MIN_CLOSED}")
-        lines.append("closed trades - switch is a CEO config change.")
-    else:
-        need = max(0, MIN_CLOSED - totals["closed_n"])
-        lines.append(f"Rule: switch if owner > live over >= {MIN_CLOSED} closed")
-        lines.append("trades. Not met" + (f" (needs {need} more closed)." if need
-                                          else " (owner not ahead)."))
-    if any(r["owner_open"] for r in rows):
-        lines.append("* owner ladder still holding: valued at last close")
+    if any(r["rule_open"] or r["owner_open"] for r in rows):
+        lines.append("* rule still holding: valued at last close")
+    if any(r["bug"] for r in rows):
+        lines.append("† live result bent by a journaled bug")
     if totals["unscored"]:
         lines.append("No replay for: " + ", ".join(totals["unscored"]))
+    lines.append(f"Switch if owner > rule over >= {MIN_CLOSED} closed.")
+    if totals["rule_met"]:
+        lines.append(f"Rule MET ({totals['closed_n']} closed).")
+        lines.append("CEO action: switch")
+    else:
+        need = max(0, MIN_CLOSED - totals["closed_n"])
+        lines.append("Rule not met" + (f" ({need} more closed needed)." if need
+                                       else " (owner not ahead)."))
+        lines.append("CEO action: none")
     return [ln[:w] for ln in lines]
 
 
 def build(day, conn, broker, config, positions):
+    import position_mgmt as pm
     trades = daily_trades(conn, config)
     open_positions = trade_table.live_open_positions(broker) if broker else {}
 
@@ -145,7 +196,15 @@ def build(day, conn, broker, config, positions):
         days = (day - date.fromisoformat(since[:10])).days + 3
         return broker.get_bars([ticker], timeframe_minutes=5,
                                lookback_days=max(days, 3)).get(ticker)
-    return score(trades, open_positions, bars_for, owner_params(config), positions)
+
+    def atr_for(ticker, since):
+        daily = broker.get_daily_bars([ticker], lookback_days=
+                                      (day - date.fromisoformat(since[:10])).days + 60)
+        return pm.daily_atr(daily.get(ticker), 14, since[:10])
+    profile = ((config.get("risk_profiles") or {}).get("Moderate") or {})
+    return score(trades, open_positions, bars_for, owner_params(config), positions,
+                 rule_params=pm.r_atr_params(profile), atr_for=atr_for,
+                 flags=bug_flags(conn, trades))
 
 
 def main(argv=None) -> int:
