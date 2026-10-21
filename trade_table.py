@@ -102,6 +102,8 @@ def load_trades(conn):
             # to the proposal here and are replaced by live levels below.
             "target": _sold_level(last, "exit_target", ctx.get("target")),
             "stop": _sold_level(last, "exit_stop", ctx.get("stop")),
+            # the levels the trade STARTED with (replays need these)
+            "orig_stop": ctx.get("stop"), "orig_target": ctx.get("target"),
             "setup": b["reason"],
         })
     return out
