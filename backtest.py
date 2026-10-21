@@ -37,9 +37,22 @@ from strategies.base import Signal
 
 DATA_DIR = "data"
 REPORT_FILE = "backtest_report.md"
-BASE_EQUITY = 2000.0
-RISK_PCT = 1.0
-POSITION_CAP = 0.25
+def _live_sizing():
+    """(equity, risk %, position cap) from bot_config.json - the backtest
+    sizes like the live desk. 2026-10-22: it was pinned at the OLD $2,000
+    cap, so every study refused signals the $5,000 account can afford."""
+    import json
+    try:
+        with open("bot_config.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    equity = float(cfg.get("capital_cap_usd") or 5000.0)
+    rp = ((cfg.get("risk_profiles") or {}).get("Moderate") or {}).get("risk_per_trade_pct", 1.0)
+    return equity, float(rp), risk.max_position_pct(cfg)
+
+
+BASE_EQUITY, RISK_PCT, POSITION_CAP = _live_sizing()
 WARMUP_BARS = 40
 
 BASE_RISK_PROFILE = {
