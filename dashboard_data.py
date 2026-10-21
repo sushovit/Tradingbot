@@ -136,7 +136,34 @@ def next_trigger(entry, original_stop, stop, highest_close, risk_profile):
             if (highest_close or 0) < level:
                 return f"{label} at a 5-min close ≥ ${level:,.2f}"
         return "Trailing the high close"
+    if ttype == pm.R_ATR:
+        return r_atr_next(entry, original_stop, stop, highest_close, risk_profile)
     return f"Rule: {ttype}"
+
+
+def r_atr_next(entry, original_stop, stop, highest_close, risk_profile):
+    """The live R/ATR ladder's next stop move, in plain English: the next
+    step that would actually RAISE the stop (a step that asks for the level
+    the stop already has is skipped), or the ATR trail once past them."""
+    if original_stop is None or original_stop >= entry:
+        return "R/ATR ladder (original stop unknown)"
+    p = pm.r_atr_params(risk_profile)
+    risk = entry - original_stop
+    reached = ((highest_close or entry) - entry) / risk
+    current = stop if stop is not None else original_stop
+    for trigger_r, stop_r in p["steps"]:
+        if reached >= trigger_r:
+            continue
+        new_stop = entry + stop_r * risk
+        if new_stop <= current + 0.005:
+            continue
+        level = _first_cent(entry + trigger_r * risk)
+        what = ("breakeven" if abs(stop_r) < 1e-9
+                else f"entry {stop_r:+g}R")
+        return (f"+{trigger_r:g}R at a 5-min close ≥ ${level:,.2f} "
+                f"(from {p['not_before_et']} ET) → stop ${new_stop:,.2f} ({what})")
+    return (f"Trailing: highest daily close − {p['trail_atr']:g}×ATR"
+            f"{p['atr_length']}, never lowered")
 
 
 def position_rows(broker_positions, local_positions, orders, config):
@@ -178,7 +205,8 @@ def position_rows(broker_positions, local_positions, orders, config):
             "Stop (live)": stop, "Stop is": stop_state,
             "If stopped $": to_stop,
             "Target": target,
-            "To target %": ((last - entry) / (target - entry) * 100
+            # a progress bar: below entry is 0% of the way, not negative
+            "To target %": (min(100.0, max(0.0, (last - entry) / (target - entry) * 100))
                             if target and target > entry else None),
             "Next stop move": next_trigger(
                 entry, orig, stop, local.get("highest_close") or last,
