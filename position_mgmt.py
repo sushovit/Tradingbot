@@ -899,3 +899,115 @@ def maybe_cap_target(broker, ticker: str, state: dict, atr, cap_atr,
         except Exception:
             pass
     return True
+
+
+
+# --- Startup protection check (CEO 2026-10-21) ------------------------------
+# After the startup reconcile, every open position's live stop and target at
+# the broker are compared with positions.json and repaired at once. Rules:
+#   * a stop is never LOWERED: a broker stop above the record is the truth
+#     (a raise whose write was lost) and the record is corrected; a broker
+#     stop below the record is raised to it.
+#   * a target that differs is moved to the record (the S28 cap lives there).
+#   * a missing leg is never placed alone - a lone stop beside a live target
+#     could sell the shares twice. The surviving leg is cancelled and a fresh
+#     one-cancels-other stop + target pair is placed for the broker's qty.
+
+PRICE_TOL = 0.005
+
+
+def _kind(o) -> str:
+    return str(getattr(o, "order_type", None) or getattr(o, "type", "")).lower()
+
+
+def exit_legs(orders):
+    """(stop_order, target_order) among a symbol's working SELL orders."""
+    stop = target = None
+    for o in orders or []:
+        if "sell" not in str(getattr(o, "side", "")).lower():
+            continue
+        k = _kind(o)
+        if "stop" in k and getattr(o, "stop_price", None) is not None:
+            stop = stop or o
+        elif "limit" in k and getattr(o, "limit_price", None) is not None:
+            target = target or o
+    return stop, target
+
+
+def _fmt(x):
+    return f"{x:.2f}" if x is not None else "?"
+
+
+def verify_protection(broker, positions: dict, broker_qty: dict,
+                      journal_event=None, persist=None):
+    """Check and repair every open position's live stop + target. Returns
+    one Discord line per position. Never raises for one position's failure."""
+    lines = []
+    for ticker, state in sorted(positions.items()):
+        if not state.get("in_position"):
+            continue
+        qty = broker_qty.get(ticker)
+        if not qty:
+            continue
+        want_stop = state.get("trailing_stop_price")
+        want_tgt = state.get("profit_target_price")
+        try:
+            want_stop = float(want_stop) if want_stop is not None else None
+            want_tgt = float(want_tgt) if want_tgt is not None else None
+            stop_o, tgt_o = exit_legs(broker.get_live_orders(ticker))
+            notes = []
+            if stop_o is None or tgt_o is None:
+                if want_stop is None or want_tgt is None:
+                    lines.append(f"⚠️ {ticker} protection missing and no "
+                                 f"stop/target on record - NOT repaired")
+                    if journal_event:
+                        journal_event("protection_repaired",
+                                      f"{ticker}: legs missing, no record to restore from")
+                    continue
+                for o in (stop_o, tgt_o):
+                    if o is not None:
+                        broker.cancel_order(str(o.id))
+                parent = broker.submit_oco_exit(ticker, qty, want_stop, want_tgt)
+                legs = [parent] + list(getattr(parent, "legs", None) or [])
+                new_stop, new_tgt = exit_legs(legs)
+                if new_stop is not None:
+                    state["stop_order_id"] = str(new_stop.id)
+                if new_tgt is not None:
+                    state["target_order_id"] = str(new_tgt.id)
+                missing = [n for n, o in (("stop", stop_o), ("target", tgt_o)) if o is None]
+                notes.append(f"{' and '.join(missing)} missing -> re-placed as a "
+                             f"linked pair")
+                stop_txt = f"stop {_fmt(want_stop)} 🔧"
+                tgt_txt = f"target {_fmt(want_tgt)} 🔧"
+            else:
+                live_stop = float(stop_o.stop_price)
+                live_tgt = float(tgt_o.limit_price)
+                stop_txt, tgt_txt = f"stop {_fmt(live_stop)} ✅", f"target {_fmt(live_tgt)} ✅"
+                if want_stop is not None and abs(live_stop - want_stop) > PRICE_TOL:
+                    if live_stop > want_stop:            # never lower a stop
+                        state["trailing_stop_price"] = live_stop
+                        notes.append(f"stop: broker {live_stop:.2f} above record "
+                                     f"{want_stop:.2f} -> record corrected")
+                    else:
+                        o = broker.replace_stop(str(stop_o.id), want_stop)
+                        state["stop_order_id"] = str(getattr(o, "id", stop_o.id))
+                        notes.append(f"stop raised {live_stop:.2f} -> {want_stop:.2f}")
+                        stop_txt = f"stop {_fmt(want_stop)} 🔧"
+                if want_tgt is not None and abs(live_tgt - want_tgt) > PRICE_TOL:
+                    o = broker.replace_target(str(tgt_o.id), want_tgt)
+                    state["target_order_id"] = str(getattr(o, "id", tgt_o.id))
+                    notes.append(f"target moved {live_tgt:.2f} -> {want_tgt:.2f}")
+                    tgt_txt = f"target {_fmt(want_tgt)} 🔧"
+            if notes:
+                lines.append(f"⚠️ {ticker} {stop_txt} {tgt_txt} - " + "; ".join(notes))
+                if journal_event:
+                    journal_event("protection_repaired", f"{ticker}: " + "; ".join(notes))
+                if persist:
+                    persist(positions)
+            else:
+                lines.append(f"🛡️ {ticker} {stop_txt} {tgt_txt}")
+        except Exception as e:
+            lines.append(f"⚠️ {ticker} protection check FAILED: {str(e)[:120]}")
+            if journal_event:
+                journal_event("protection_repaired", f"{ticker}: check failed: {e}")
+    return lines

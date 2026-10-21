@@ -216,6 +216,22 @@ class Broker:
         return _retry(self.trading.submit_order, req,
                       what=f"submit_bracket({ticker})")
 
+    def submit_oco_exit(self, ticker: str, qty: float, stop_price: float,
+                        target_price: float):
+        """A linked SELL pair for a position that already exists: a limit at
+        the target and a stop at the stop, one-cancels-other - so the two
+        can never both fill. Used to restore missing bracket protection."""
+        from alpaca.trading.requests import LimitOrderRequest
+        req = LimitOrderRequest(
+            symbol=ticker, qty=qty, side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC, order_class=OrderClass.OCO,
+            limit_price=round(target_price, 2),
+            take_profit=TakeProfitRequest(limit_price=round(target_price, 2)),
+            stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+        )
+        return _retry(self.trading.submit_order, req,
+                      what=f"submit_oco_exit({ticker})")
+
     def replace_stop(self, order_id: str, new_stop_price: float):
         """Ratchet a bracket's stop leg up (trailing-stop behaviour)."""
         req = ReplaceOrderRequest(stop_price=round(new_stop_price, 2))
