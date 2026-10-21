@@ -1541,3 +1541,100 @@ Method notes: live P&L is the journal's realized P&L for a closed trade and the 
   rule's +1R step put the stop at entry), owner +$4.74; REGN (open) rule
   +$4.91 still holding, owner $0.00. Owner - rule over 1 closed trade:
   +$4.74. CEO action: none (9 more closed trades needed).
+---
+
+## 26. Study: S44 morning-momentum (gap-and-go / opening-range breakout) replay on catalyst names (2026-10-22)
+
+**S44 (CEO 2026-10-22, item 2) - morning-momentum setup replay, study only, no live change.** No such setup exists in the code; it is defined here as:
+
+> - Candidates per day: catalyst names per the scanner rule, LONG side only: gap UP >= 3% (first RTH 5-min open vs previous RTH close), Finnhub company news with datetime in the 18 h before 09:30 ET, price on the open 5-1200, 20-session ADV (close x volume, IEX, prior sessions) >= $20M, top 15 by gap per day.
+> - Opening range = the 09:30-09:45 ET bars (3 x 5-min). Entry: the first completed 5-min bar between 09:45 and 11:00 ET that CLOSES above the opening-range high; fill at the NEXT bar's open. Skip if that open is already above the target.
+> - Stop: the opening-range low. Skip only if risk <= 0; report the median risk %.
+> - Target: entry + 2R. Exit at 15:55 ET same day if neither hit (intraday only). Fills: a bar opening through a level fills at its open; a bar spanning stop and target takes the stop.
+> - One trade per symbol per day; no SPY filter (report the SPY-trending vs not split as a sensitivity).
+
+Implementation notes: the "already above the target" check uses the target planned at the signal (trigger close + kR from the trigger close to the OR low), since a target measured from the fill can never be below the fill; the traded target is fill + kR. Trigger bars start 09:45..10:55 (complete by 11:00). The 15:55 exit is the 15:55 bar's open. SPY trending = SPY close above its 20-day EMA as of the previous session.
+
+Window 2025-10-26..2026-10-21 (51.4 weeks; Finnhub news starts 2025-10-26), 162 universe symbols. Candidates: 1289 gap-up/price/ADV symbol-days on 139 symbols, 1197 with news, 1071 after the 15/day cap; outcomes no_trigger 617, traded 454. Exits at 2R: stop 110, target 22, time 322.
+
+| Rows | Trades | Trades/week | Win % | Expectancy (R) | PF | MaxDD (R) | Median risk % |
+|---|---|---|---|---|---|---|---|
+| **2R target (the setup)** | 454 | 8.83 | 49.6% | +0.014 | 1.04 | 20.7 | 3.01% |
+| sensitivity: 1.5R target | 454 | 8.83 | 50.0% | +0.021 | 1.07 | 18.66 | 3.01% |
+| sensitivity: 3R target | 454 | 8.83 | 49.6% | +0.015 | 1.05 | 20.44 | 3.01% |
+| split @2R: SPY trending (prior close > 20d EMA) | 265 | - | 47.2% | -0.032 | 0.9 | 14.65 | 3.02% |
+| split @2R: SPY not trending | 189 | - | 52.9% | +0.077 | 1.25 | 16.39 | 3.01% |
+
+**By month (2R target).**
+
+| Month | Trades | Trades/week | Win % | Expectancy (R) | PF | MaxDD (R) | Median risk % |
+|---|---|---|---|---|---|---|---|
+| 2025-10 | 11 | - | 18.2% | -0.386 | 0.21 | 4.25 | 3.16% |
+| 2025-11 | 27 | - | 25.9% | -0.482 | 0.26 | 16.2 | 2.49% |
+| 2025-12 | 11 | - | 36.4% | -0.204 | 0.66 | 4.96 | 3.15% |
+| 2026-01 | 30 | - | 56.7% | +0.178 | 1.63 | 5.04 | 3.12% |
+| 2026-02 | 31 | - | 61.3% | +0.159 | 1.56 | 3.45 | 3.84% |
+| 2026-03 | 36 | - | 47.2% | +0.001 | 1.0 | 9.81 | 2.65% |
+| 2026-04 | 48 | - | 45.8% | -0.075 | 0.74 | 8.33 | 2.97% |
+| 2026-05 | 53 | - | 56.6% | +0.115 | 1.41 | 4.0 | 2.81% |
+| 2026-06 | 53 | - | 52.8% | +0.017 | 1.06 | 7.27 | 3.02% |
+| 2026-07 | 60 | - | 55.0% | +0.081 | 1.33 | 6.88 | 3.32% |
+| 2026-08 | 44 | - | 50.0% | -0.061 | 0.81 | 8.92 | 3.36% |
+| 2026-09 | 37 | - | 62.2% | +0.486 | 3.93 | 2.18 | 3.24% |
+| 2026-10 | 13 | - | 7.7% | -0.625 | 0.01 | 8.13 | 2.05% |
+
+**Bar** (expectancy >= +0.15R over >= 50 trades): 454 trades at +0.014R -> **not proposed**.
+
+**Missed movers 10-19..10-21.**
+
+| Day | Ticker | Source | Candidate | Detail | Entered | R (2R target) |
+|---|---|---|---|---|---|---|
+| 2026-10-19 | DDOG | cache top-10 #1 (+5.4%) | yes | gap +4.4%, news | no (no_trigger) | - |
+| 2026-10-19 | AMZN | cache top-10 #2 (+5.0%) | no | gap +2.3% < +3% | no | (would-be +1.44R if it were) |
+| 2026-10-19 | PLTR | cache top-10 #3 (+4.4%) | no | gap +0.5% < +3% | no | (would-be +0.34R if it were) |
+| 2026-10-19 | MRNA | cache top-10 #4 (+4.3%) | no | gap +0.0% < +3% | no | (no_trigger if it were) |
+| 2026-10-19 | MRVL | cache top-10 #5 (+4.1%) | yes | gap +4.7%, news | no (no_trigger) | - |
+| 2026-10-19 | TSLA | cache top-10 #6 (+3.7%) | no | gap +0.8% < +3% | no | (would-be +0.28R if it were) |
+| 2026-10-19 | WULF | cache top-10 #7 (+3.5%) | yes | gap +5.9%, news | no (no_trigger) | - |
+| 2026-10-19 | ANET | cache top-10 #8 (+3.3%) | no | gap +3.2%; outside top 15 | no | (no_trigger if it were) |
+| 2026-10-19 | ACN | cache top-10 #9 (+3.1%) | no | gap -1.4% < +3% | no | (would-be +1.46R if it were) |
+| 2026-10-19 | LRCX | cache top-10 #10 (+3.1%) | yes | gap +3.9%, news | yes 09:50 @ 277.52 | -1.00R (stop) |
+| 2026-10-20 | MRNA | report #1 | no | gap -0.6% < +3% | no | (no_trigger if it were) |
+| 2026-10-20 | MSTR | report #2 | no | gap -1.5% < +3% | no | (would-be +2.00R if it were) |
+| 2026-10-20 | MMM | report #3 | no | gap +0.7% < +3%; ADV $19M < $20M | no | (would-be +0.38R if it were) |
+| 2026-10-20 | NU | report #4 | no | gap +0.8% < +3% | no | (would-be +0.24R if it were) |
+| 2026-10-20 | BMY | report #5 | no | gap +1.8% < +3% | no | (would-be +0.53R if it were) |
+| 2026-10-20 | NOC | report #6 | yes | gap +3.1%, news | yes 09:50 @ 542.10 | -0.47R (time 15:55) |
+| 2026-10-20 | TSLL | report #7 | no | gap +1.2% < +3% | no | (would-be +0.43R if it were) |
+| 2026-10-20 | AAL | report #8 | no | gap -0.4% < +3% | no | (would-be +0.26R if it were) |
+| 2026-10-20 | ON | report #9 | no | gap -1.4% < +3% | no | (would-be +2.00R if it were) |
+| 2026-10-20 | NXPI | report #10 | no | gap -1.2% < +3% | no | (would-be +0.96R if it were) |
+| 2026-10-21 | SMCI | report #1 | yes | gap +12.2%, news | no (no_trigger) | - |
+| 2026-10-21 | MSTR | report #2 | no | gap +2.7% < +3% | no | (would-be +2.00R if it were) |
+| 2026-10-21 | WULF | report #3 | yes | gap +5.7%, news | no (no_trigger) | - |
+| 2026-10-21 | SPCX | report #4 | yes | gap +8.6%, news | yes 09:50 @ 163.34 | -1.00R (stop) |
+| 2026-10-21 | DDOG | report #5 | no | gap +1.4% < +3% | no | (would-be +0.38R if it were) |
+| 2026-10-21 | ZS | report #6 | no | gap +0.4% < +3% | no | (would-be +1.29R if it were) |
+| 2026-10-21 | NET | report #7 | no | gap +2.8% < +3% | no | (would-be +2.00R if it were) |
+| 2026-10-21 | CRWD | report #8 | no | gap +1.5% < +3% | no | (would-be +0.95R if it were) |
+| 2026-10-21 | IREN | report #9 | yes | gap +3.7%, news | no (no_trigger) | - |
+| 2026-10-21 | DELL | report #10 | yes | gap +7.6%, news | no (no_trigger) | - |
+| 2026-10-21 | CRWV | report: gapped on news, not in pool | yes | gap +3.6%, news | no (no_trigger) | - |
+
+### Reading
+
+- **Flat, not an edge.** 454 trades (8.8/week) at +0.014R, PF 1.04, MaxDD 20.7R. The target barely matters (1.5R +0.021R, 3R +0.015R): at 2R only 22 trades reached the target, 110 hit the OR-low stop and 322 (71%) were closed at 15:55.
+- **The news test hardly filters.** 1,197 of 1,289 gap-up/price/ADV symbol-days had Finnhub news in the 18 h window; this universe is large caps that always have headlines. 617 of the 1,071 capped candidates never closed above the OR high by 11:00.
+- **Months swing.** 7 of 13 months positive; 2026-09 +0.486R (37 trades), 2025-11 -0.482R (27), 2026-10 so far -0.625R (13). SPY split: not trending +0.077R (189), trending -0.032R (265) - post-hoc, and neither side clears the bar.
+- **Missed movers.** 10-19 has no report: its list is the top 10 universe gainers by close vs prior close from the 5-min cache. Of 31 name-days (incl. CRWV on 10-21), 10 were candidates and 3 entered: LRCX 10-19 -1.00R, NOC 10-20 -0.47R, SPCX 10-21 -1.00R (-2.47R together). Most movers did not gap >= +3% (their move came after the open), so a gap-and-go cannot see them by construction. On 10-21: SMCI was a candidate (+12.2% gap, news) but faded below its OR high and never triggered; DDOG (+1.4% gap), ZS (+0.4%), NET (+2.8%) and CRWD (+1.5%) were not candidates. "Would-be" R in the table is the setup run on a name that failed the candidate test, for information only.
+- **Bar:** +0.014R over 454 trades is below +0.15R -> **not proposed**. Catalyst names stay WATCH-ONLY (agenda 23).
+
+### Limits
+
+- Today's universe (survivorship): the names are today's 162-name universe, not each day's; names that left the list are missing.
+- IEX 5-minute bars (the live feed): IEX volume is a slice of the tape, bars can be missing and the 09:30 print can differ from the consolidated open, so the gap, OR and ADV are IEX-based.
+- Finnhub free tier: about one year of company news, so coverage starts ~2025-10-26; the news test is Finnhub's view only (no PR wires, no earnings calendar).
+- No gatekeeper, no whole-share sizing, no slippage or spread on the next-bar-open fill, no max-positions or daily-loss breaker: an upper bound on what the desk would have realised.
+
+Reproduce with `python study_exit_grid.py --s44`.
+

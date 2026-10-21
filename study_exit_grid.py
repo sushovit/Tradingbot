@@ -6,6 +6,7 @@ or trading change.
     python study_exit_grid.py --s34 [--append]      # S34 target grid, below
     python study_exit_grid.py --s35 [--append]      # S35 pullback replay
     python study_exit_grid.py --s36 [--append]      # S36 catalyst vs rest
+    python study_exit_grid.py --s44                 # S44 morning momentum
 
 A 5-minute replay of the LIVE daily rule as built, then six variants:
 
@@ -1062,6 +1063,385 @@ def s37_main(append=False, universe_file="universe_today.json"):
     return 0
 
 
+# =========================================================== S44 (2026-10-22)
+# CEO 2026-10-22 item 2: the "S36 morning-momentum setup" replay. No such
+# setup exists in the live code; it is DEFINED here (study only) as a long
+# gap-and-go / opening-range breakout on the catalyst scanner's names:
+#   candidates: gap UP >= 3% (first RTH 5-min open vs previous RTH close),
+#     Finnhub company news in the 18 h before 09:30 ET, open price 5-1200,
+#     20-session ADV (close x volume, IEX, prior sessions) >= $20M, top 15
+#     by gap per day;
+#   opening range: the 09:30-09:45 ET 5-minute bars (09:30, 09:35, 09:40);
+#   entry: the first completed 5-minute bar starting 09:45..10:55 ET (done
+#     by 11:00) that CLOSES above the OR high; fill at the NEXT bar's open;
+#     skip if that open is already above the target planned at the signal
+#     (trigger close + k x (trigger close - OR low));
+#   stop: the OR low (skip if fill - stop <= 0); target: fill + k x R;
+#   exit at the 15:55 ET bar's open if neither level is hit; a bar opening
+#     through a level fills at its open, a bar spanning both takes the stop;
+#   one trade per symbol per day; no SPY filter (split reported).
+
+S44_START = S34_START
+S44_TARGETS = (2.0, 1.5, 3.0)
+S44_BASE_K = 2.0
+S44_OR_END = 585          # 09:45 ET, minutes after midnight
+S44_ENTRY_LAST = 655      # last trigger bar starts 10:55 (completes 11:00)
+S44_EXIT = 955            # 15:55 ET
+S44_BAR_MIN = 50          # trades needed for the bar
+S44_BAR_R = 0.15
+
+
+def _hm(ts):
+    return ts.hour * 60 + ts.minute
+
+
+def s44_candidates(frames, start=S44_START, end=None, gap=S36_GAP,
+                   price=S36_PRICE, adv_min=S36_ADV):
+    """{date: [(sym, gap)]}: gap UP >= `gap`, open price in range, prior-20
+    ADV >= adv_min (news not yet applied). Long side only."""
+    lo = pd.Timestamp(start).date()
+    hi = pd.Timestamp(end).date() if end else None
+    out = {}
+    for sym, (_m5, daily) in frames.items():
+        g, a = s36_gaps(daily), s36_adv(daily)
+        for i, ts in enumerate(daily.index):
+            d = pd.Timestamp(ts).date()
+            gv, av, px = g.iloc[i], a.iloc[i], float(daily["open"].iloc[i])
+            if d < lo or (hi and d > hi) or pd.isna(gv) or pd.isna(av):
+                continue
+            if gv >= gap and price[0] <= px <= price[1] and av >= adv_min:
+                out.setdefault(d, []).append((sym, float(gv)))
+    return out
+
+
+def s44_day_bars(m5, day):
+    """The RTH 5-minute bars of one session (ET index)."""
+    d = pd.Timestamp(day).date()
+    return m5[m5.index.date == d]
+
+
+def s44_opening_range(bars):
+    """(OR high, OR low) over the bars starting 09:30..09:40 ET, or None."""
+    orb = bars[[570 <= _hm(t) < S44_OR_END for t in bars.index]]
+    if orb.empty:
+        return None
+    return float(orb["high"].max()), float(orb["low"].min())
+
+
+def s44_trigger(bars, or_high):
+    """Index position of the first bar starting 09:45..10:55 ET whose close
+    is above the OR high, or None."""
+    for i, (ts, b) in enumerate(bars.iterrows()):
+        m = _hm(ts)
+        if S44_OR_END <= m <= S44_ENTRY_LAST and float(b["close"]) > or_high:
+            return i
+        if m > S44_ENTRY_LAST:
+            break
+    return None
+
+
+def s44_simulate(bars, i, entry, stop, target):
+    """(exit price, reason) walking from bar i (filled at its open)."""
+    last = None
+    for ts, b in bars.iloc[i:].iterrows():
+        o, h, l, c = (float(b[k]) for k in ("open", "high", "low", "close"))
+        if _hm(ts) >= S44_EXIT:
+            return o, "time 15:55"
+        if o <= stop:
+            return o, "stop (gap)"
+        if o >= target:
+            return o, "target (gap)"
+        if l <= stop:
+            return stop, "stop"
+        if h >= target:
+            return target, "target"
+        last = c
+    return last, "time (last bar)"
+
+
+def s44_trade(m5, day, k=S44_BASE_K):
+    """One symbol-day through the setup. Returns a dict with `status`:
+    no_bars / no_or / no_trigger / no_fill_bar / above_target / no_risk /
+    traded (then r, why, entry, stop, target, risk_pct, t_entry)."""
+    bars = s44_day_bars(m5, day)
+    if bars.empty:
+        return {"status": "no_bars"}
+    orr = s44_opening_range(bars)
+    if orr is None:
+        return {"status": "no_or"}
+    or_high, or_low = orr
+    i = s44_trigger(bars, or_high)
+    if i is None:
+        return {"status": "no_trigger", "or_high": or_high, "or_low": or_low}
+    if i + 1 >= len(bars):
+        return {"status": "no_fill_bar"}
+    sig = float(bars["close"].iloc[i])
+    planned = sig + k * (sig - or_low)
+    entry = float(bars["open"].iloc[i + 1])
+    if entry > planned:
+        return {"status": "above_target", "entry": entry, "planned": planned}
+    risk = entry - or_low
+    if risk <= 0:
+        return {"status": "no_risk", "entry": entry, "stop": or_low}
+    target = entry + k * risk
+    px, why = s44_simulate(bars, i + 1, entry, or_low, target)
+    return {"status": "traded", "r": (px - entry) / risk, "why": why,
+            "entry": entry, "stop": or_low, "target": target,
+            "risk_pct": 100 * risk / entry, "t_entry": bars.index[i + 1]}
+
+
+def s44_spy_trend(spy_daily):
+    """{date: SPY close > 20d EMA as of the PREVIOUS session} (known pre-open)."""
+    import backtest
+    reg = backtest.spy_regime_series(spy_daily).shift(1)
+    return {pd.Timestamp(i).date(): bool(v) for i, v in reg.items() if not pd.isna(v)}
+
+
+def s44_replay(frames, picks, k=S44_BASE_K, spy=None, gaps=None):
+    """Trades for every (sym, date) in `picks`, sorted by entry time."""
+    trades = []
+    for sym, d in sorted(picks, key=lambda x: (x[1], x[0])):
+        out = s44_trade(frames[sym][0], d, k)
+        if out["status"] != "traded":
+            continue
+        out.update(sym=sym, day=d, k=k,
+                   spy=(spy or {}).get(d), gap=(gaps or {}).get((sym, d)))
+        trades.append(out)
+    trades.sort(key=lambda t: (t["t_entry"], t["sym"]))
+    return trades
+
+
+def s44_stats(trades, weeks=None):
+    """The report row: trades, /week, win %, exp R, PF, MaxDD, median risk %."""
+    st = sc.aggregate(trades)
+    if not trades:
+        return [0, "-", "-", "-", "-", "-", "-"]
+    risk = sorted(t["risk_pct"] for t in trades)
+    n = len(risk)
+    med = risk[n // 2] if n % 2 else (risk[n // 2 - 1] + risk[n // 2]) / 2
+    pf = st["profit_factor"]
+    return [st["trades"], f"{st['trades'] / weeks:.2f}" if weeks else "-",
+            f"{st['win_rate']}%", f"{st['expectancy_r']:+.3f}",
+            "inf" if pf == float("inf") else pf, st["max_drawdown_r"],
+            f"{med:.2f}%"]
+
+
+def s44_verdict(trades):
+    st = sc.aggregate(trades)
+    ok = st["trades"] >= S44_BAR_MIN and (st["expectancy_r"] or 0) >= S44_BAR_R
+    return ("proposed for probation (max 1 position)" if ok else "not proposed"), ok
+
+
+def s44_explain(sym, d, frames, cands, picks, has_news, news_known, k=S44_BASE_K):
+    """One missed-mover line: (candidate?, why not, entered?, R)."""
+    if sym not in frames:
+        return "no", "no 5-min bars cached", "no", "-"
+    m5, daily = frames[sym]
+    days = [pd.Timestamp(i).date() for i in daily.index]
+    if d not in days:
+        return "no", "no bars that day", "no", "-"
+    i = days.index(d)
+    gv = s36_gaps(daily).iloc[i]
+    av = s36_adv(daily).iloc[i]
+    px = float(daily["open"].iloc[i])
+    fails = []
+    if pd.isna(gv) or gv < S36_GAP:
+        fails.append(f"gap {gv * 100:+.1f}% < +3%")
+    if not (S36_PRICE[0] <= px <= S36_PRICE[1]):
+        fails.append(f"price {px:.2f}")
+    if pd.isna(av) or av < S36_ADV:
+        fails.append(f"ADV ${(av or 0) / 1e6:.0f}M < $20M")
+    if not fails:
+        if (sym, d) not in news_known:
+            fails.append(f"gap {gv * 100:+.1f}%; news not checked")
+        elif not has_news:
+            fails.append(f"gap {gv * 100:+.1f}%; no Finnhub news in 18 h")
+        elif (sym, d) not in picks:
+            fails.append(f"gap {gv * 100:+.1f}%; outside top {S36_MAX_NAMES}")
+    out = s44_trade(m5, d, k)
+    gap_txt = f"gap {gv * 100:+.1f}%"
+    if fails:
+        hyp = (f"would-be {out['r']:+.2f}R" if out["status"] == "traded"
+               else out["status"])
+        return "no", "; ".join(fails), "no", f"({hyp} if it were)"
+    if out["status"] != "traded":
+        return "yes", gap_txt + ", news", f"no ({out['status']})", "-"
+    return "yes", gap_txt + ", news", \
+        f"yes {out['t_entry'].strftime('%H:%M')} @ {out['entry']:.2f}", \
+        f"{out['r']:+.2f}R ({out['why']})"
+
+
+def s44_main(append=False, universe_file="universe_today.json", client=None,
+             limiter=None, end="2026-10-21", movers=None, cache=S34_CACHE):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    frames = {}
+    for sym in symbols:
+        m5 = load_m5_rth(sym, cache)
+        if m5 is None or m5.empty:
+            continue
+        daily = daily_from_m5(m5)
+        daily.index = pd.DatetimeIndex([pd.Timestamp(i).tz_localize(None) for i in daily.index])
+        frames[sym] = (m5, daily)
+    spy5 = load_m5_rth("SPY", cache)
+    spy = s44_spy_trend(daily_from_m5(spy5)) if spy5 is not None else {}
+    if client is None:
+        import finnhub
+        from dotenv import load_dotenv
+        load_dotenv("/Users/ranasaradb/TradingBot/.env")
+        client = finnhub.Client(api_key=os.environ.get("FINNHUB_API_KEY", ""))
+    limiter = limiter or S36Limiter()
+    cands = s44_candidates(frames, S44_START, end)
+    by_sym = {}
+    for d, names in cands.items():
+        for sym, _ in names:
+            by_sym.setdefault(sym, []).append(d)
+    news, failed, n_art = {}, [], 0
+    for i, sym in enumerate(sorted(by_sym)):
+        arts, bad = s36_news(sym, by_sym[sym], client, limiter)
+        if bad:
+            failed.append(sym)
+            arts = []
+        news[sym] = arts
+        n_art += len(arts)
+        if (i + 1) % 20 == 0:
+            print(f"  news: {i + 1}/{len(by_sym)} symbols", file=sys.stderr)
+    has = {(s, d) for s, ds in by_sym.items() for d in ds if s36_has_news(news.get(s), d)}
+    picks = s36_cap(cands, lambda s, d: (s, d) in has)
+    gaps = {(s, d): g for d, ns in cands.items() for s, g in ns}
+    art_days = [pd.Timestamp(int(a["datetime"]), unit="s").date()
+                for arts in news.values() for a in arts if a.get("datetime")]
+    first_news = min(art_days) if art_days else None
+    runs = {k: s44_replay(frames, picks, k, spy, gaps) for k in S44_TARGETS}
+    base = runs[S44_BASE_K]
+    first = min((t["day"] for t in base), default=None)
+    span_lo = max(pd.Timestamp(S44_START).date(), first_news) if first_news else \
+        pd.Timestamp(S44_START).date()
+    weeks = max((pd.Timestamp(end) - pd.Timestamp(span_lo)).days / 7, 1e-9)
+    hdr = ["Rows", "Trades", "Trades/week", "Win %", "Expectancy (R)", "PF",
+           "MaxDD (R)", "Median risk %"]
+    rows = [[f"**{S44_BASE_K:g}R target (the setup)**"] + s44_stats(base, weeks)]
+    for k in S44_TARGETS[1:]:
+        rows.append([f"sensitivity: {k:g}R target"] + s44_stats(runs[k], weeks))
+    for lab, flag in (("SPY trending (prior close > 20d EMA)", True),
+                      ("SPY not trending", False)):
+        rows.append([f"split @2R: {lab}"] +
+                    s44_stats([t for t in base if t["spy"] is flag], None))
+    months = sorted({t["day"].strftime("%Y-%m") for t in base})
+    mrows = []
+    for m in months:
+        sel = [t for t in base if t["day"].strftime("%Y-%m") == m]
+        mrows.append([m] + s44_stats(sel, None))
+    verdict, _ok = s44_verdict(base)
+    st = sc.aggregate(base)
+    whys = {}
+    for t in base:
+        w = t["why"].split(" ")[0]
+        whys[w] = whys.get(w, 0) + 1
+    statuses = {}
+    for s, d in picks:
+        o = s44_trade(frames[s][0], d, S44_BASE_K)["status"]
+        statuses[o] = statuses.get(o, 0) + 1
+    lines = [
+        "**S44 (CEO 2026-10-22, item 2) - morning-momentum setup replay, study "
+        "only, no live change.** No such setup exists in the code; it is "
+        "defined here as:",
+        "",
+        "> - Candidates per day: catalyst names per the scanner rule, LONG side "
+        "only: gap UP >= 3% (first RTH 5-min open vs previous RTH close), "
+        "Finnhub company news with datetime in the 18 h before 09:30 ET, price "
+        "on the open 5-1200, 20-session ADV (close x volume, IEX, prior "
+        "sessions) >= $20M, top 15 by gap per day.",
+        "> - Opening range = the 09:30-09:45 ET bars (3 x 5-min). Entry: the "
+        "first completed 5-min bar between 09:45 and 11:00 ET that CLOSES above "
+        "the opening-range high; fill at the NEXT bar's open. Skip if that open "
+        "is already above the target.",
+        "> - Stop: the opening-range low. Skip only if risk <= 0; report the "
+        "median risk %.",
+        "> - Target: entry + 2R. Exit at 15:55 ET same day if neither hit "
+        "(intraday only). Fills: a bar opening through a level fills at its "
+        "open; a bar spanning stop and target takes the stop.",
+        "> - One trade per symbol per day; no SPY filter (report the "
+        "SPY-trending vs not split as a sensitivity).",
+        "",
+        "Implementation notes: the \"already above the target\" check uses the "
+        "target planned at the signal (trigger close + kR from the trigger "
+        "close to the OR low), since a target measured from the fill can never "
+        "be below the fill; the traded target is fill + kR. Trigger bars start "
+        "09:45..10:55 (complete by 11:00). The 15:55 exit is the 15:55 bar's "
+        "open. SPY trending = SPY close above its 20-day EMA as of the "
+        "previous session.",
+        "",
+        f"Window {span_lo}..{end} ({weeks:.1f} weeks; Finnhub news starts "
+        f"{first_news or '-'}), {len(frames)} universe symbols. Candidates: "
+        f"{sum(len(v) for v in cands.values())} gap-up/price/ADV symbol-days on "
+        f"{len(by_sym)} symbols, {len(has)} with news, {len(picks)} after the "
+        f"15/day cap; outcomes {', '.join(f'{k} {v}' for k, v in sorted(statuses.items()))}. "
+        f"Exits at 2R: {', '.join(f'{k} {v}' for k, v in sorted(whys.items()))}.",
+        "",
+    ]
+    lines += sc.table(hdr, rows)
+    lines += ["", "**By month (2R target).**", ""]
+    lines += sc.table(["Month", "Trades", "Trades/week", "Win %", "Expectancy (R)",
+                       "PF", "MaxDD (R)", "Median risk %"], mrows)
+    lines += ["", f"**Bar** (expectancy >= +{S44_BAR_R:.2f}R over >= "
+              f"{S44_BAR_MIN} trades): {st['trades']} trades at "
+              f"{(st['expectancy_r'] or 0):+.3f}R -> **{verdict}**.", ""]
+    if movers:
+        mr = []
+        for d, names in movers:
+            d = pd.Timestamp(d).date()
+            for sym, note in names:
+                frm = frames
+                if sym not in frames:
+                    m5 = load_m5_rth(sym, cache)
+                    if m5 is not None and not m5.empty:
+                        dl = daily_from_m5(m5)
+                        dl.index = pd.DatetimeIndex([pd.Timestamp(i).tz_localize(None) for i in dl.index])
+                        frm = dict(frames, **{sym: (m5, dl)})
+                known = {(s, dd) for s, ds in by_sym.items() for dd in ds}
+                hn = (sym, d) in has
+                if sym in frm and (sym, d) not in known:
+                    # gap-up name outside the replay pool: check its news too
+                    m5x, dlx = frm[sym]
+                    days = [pd.Timestamp(x).date() for x in dlx.index]
+                    if d in days and (s36_gaps(dlx).iloc[days.index(d)] or 0) >= S36_GAP:
+                        arts, bad = s36_news(sym, [d], client, limiter)
+                        hn = (not bad) and s36_has_news(arts, d)
+                        known = known | {(sym, d)}
+                c, why, ent, r = s44_explain(sym, d, frm, cands, picks, hn, known)
+                mr.append([str(d), sym, note, c, why, ent, r])
+        lines += ["**Missed movers 10-19..10-21.**", ""]
+        lines += sc.table(["Day", "Ticker", "Source", "Candidate", "Detail",
+                           "Entered", "R (2R target)"], mr)
+        lines += [""]
+    lines += [
+        "### Reading",
+        "",
+        "_(Reading: written on BOARDROOM_AGENDA.md item 26.)_",
+        "",
+        "### Limits",
+        "",
+        "- Today's universe (survivorship): the names are today's 162-name "
+        "universe, not each day's; names that left the list are missing.",
+        "- IEX 5-minute bars (the live feed): IEX volume is a slice of the "
+        "tape, bars can be missing and the 09:30 print can differ from the "
+        "consolidated open, so the gap, OR and ADV are IEX-based.",
+        "- Finnhub free tier: about one year of company news, so coverage "
+        "starts ~2025-10-26; the news test is Finnhub's view only (no PR "
+        "wires, no earnings calendar).",
+        "- No gatekeeper, no whole-share sizing, no slippage or spread on the "
+        "next-bar-open fill, no max-positions or daily-loss breaker: an upper "
+        "bound on what the desk would have realised.",
+        "",
+        "Reproduce with `python study_exit_grid.py --s44`.",
+    ]
+    return lines, {"base": base, "runs": runs, "verdict": verdict, "picks": picks,
+                   "cands": cands, "has": has, "frames": frames}
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -1069,6 +1449,7 @@ def main():
     ap.add_argument("--s35", action="store_true")
     ap.add_argument("--s37", action="store_true")
     ap.add_argument("--s36", action="store_true")
+    ap.add_argument("--s44", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
     a = ap.parse_args()
@@ -1076,6 +1457,10 @@ def main():
         return s34_main(a.append, a.universe_file)
     if a.s36:
         s36_main(a.append, a.universe_file)
+        return 0
+    if a.s44:
+        lines, _ = s44_main(a.append, a.universe_file)
+        print("\n".join(lines))
         return 0
     if a.s37:
         return s37_main(a.append, a.universe_file)
