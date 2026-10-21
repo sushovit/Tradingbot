@@ -715,6 +715,23 @@ def _worker_loop():
         logger.warning(f"order-id refresh failed: {e}")
     write_positions(positions)
 
+    # CEO 2026-10-21: startup protection check - every open position's live
+    # stop + target compared with positions.json and repaired at once; one
+    # Discord line per position. Never blocks the start.
+    try:
+        _qty = {p.symbol: abs(float(p.qty)) for p in broker.get_positions()}
+        _lines = position_mgmt.verify_protection(
+            broker, positions, _qty,
+            journal_event=journal.log_integrity_event,
+            persist=write_positions)
+        for _ln in _lines:
+            logger.info(f"protection: {_ln}")
+        if _lines and trade_alerts.enabled("startup"):
+            __import__("alerts").post_async("\n".join(_lines))
+    except Exception as e:
+        logger.warning(f"startup protection check failed: {e}")
+    write_positions(positions)
+
     # Refresh the candidate universe once per session start (graceful on failure).
     startup_checks, startup_config, universe_n = [], {}, None
     try:
