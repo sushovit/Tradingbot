@@ -1387,6 +1387,16 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
   setup (slightly different indicator values for reclaim and momentum too) -
   a trading-path change. **Not made; CEO decision.** Given the replay, the
   case for enabling it is weak.
+
+### Decision (CEO 2026-10-21): pullback_in_uptrend RETIRED
+
+**Retired from live trading.** Removed from `default_strategies` and from
+`setup_probation` (and its `max_concurrent_by_setup` slot); `strategies.RETIRED`
+keeps it out of the live detector list even if a config lists it again. The
+detector stays in the registry for backtests and studies. Basis: the replay
+above (-0.096R over 155 trades). The daily fetch is NOT changed: the
+60-calendar-day window that starved it live stays as it is.
+
 ---
 
 ## 23. Study: S36 catalyst replay - catalyst names vs the rest (2026-10-21)

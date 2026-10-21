@@ -156,9 +156,10 @@ def test_decision_prompt_version_handles_unknown_ids(temp_journal):
 # ================================================ unscoped setups unchanged
 
 def test_a_setup_without_a_version_scope_counts_every_open_position():
-    """pullback_in_uptrend has no count_from_prompt_version: as before,
-    every open position for the setup holds the slot, versioned or not."""
-    name = "pullback_in_uptrend"
+    """post_earnings_continuation has no count_from_prompt_version: as
+    before, every open position for the setup holds the slot, versioned or
+    not. (pullback_in_uptrend was retired 2026-10-21.)"""
+    name = "post_earnings_continuation"
     assert risk.probation_min_prompt_version(name, CONFIG) is None
     book = {"ARM": {"in_position": True, "setup": name},
             "AMD": {"in_position": True, "setup": name, "prompt_version": 3},

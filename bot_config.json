@@ -109,7 +109,6 @@
         "trend_continuation",
         "momentum_continuation",
         "mean_reversion_reclaim",
-        "pullback_in_uptrend",
         "post_earnings_continuation"
     ],
     "strategy_timeframes": {
@@ -225,12 +224,8 @@
         "go_live_date": "2026-09-02",
         "trades": 20,
         "max_concurrent": 2,
-        "max_concurrent_by_setup": {
-            "pullback_in_uptrend": 1
-        },
         "setups": [
-            "pullback_in_uptrend",
-            "post_earnings_continuation",
+                "post_earnings_continuation",
             "mean_reversion_reclaim"
         ],
         "count_from_prompt_version": {

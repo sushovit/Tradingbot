@@ -419,7 +419,7 @@ def test_review_bot_bundles_the_probation_trades(temp_journal, monkeypatch):
     import review_bot
     monkeypatch.setattr(review_bot, "journal", temp_journal)
     temp_journal.log_trade("AMZN", "BUY", 1, 100.0,
-                           reason="pullback_in_uptrend")
+                           reason="post_earnings_continuation")
     text = review_bot.probation_lines()
-    assert "pullback_in_uptrend #1/20" in text
+    assert "post_earnings_continuation #1/20" in text
     assert "AMZN" in text and "still OPEN" in text

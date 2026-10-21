@@ -55,17 +55,18 @@ def shipped():
     return json.load(open("bot_config.json", encoding="utf-8"))
 
 
-def test_pullback_is_on_probation_with_one_slot():
+def test_pullback_is_retired_not_on_probation():
+    """CEO 2026-10-21: retired - off the live list and the probation list."""
     cfg = shipped()
-    assert "pullback_in_uptrend" in risk.probation_setups(cfg)
-    assert risk.probation_max_concurrent(cfg, "pullback_in_uptrend") == 1
-    assert risk.probation_max_concurrent(cfg, "mean_reversion_reclaim") == 2
+    assert "pullback_in_uptrend" not in risk.probation_setups(cfg)
+    assert "pullback_in_uptrend" not in cfg["default_strategies"]
     assert risk.probation_max_concurrent(cfg) == 2          # agenda 14 unchanged
 
 
-def test_the_gate_holds_pullback_at_one_open_position():
-    cfg = shipped()
-    assert risk.check_setup_probation("pullback_in_uptrend", 0, 0, cfg) == (True, None)
-    assert risk.check_setup_probation("pullback_in_uptrend", 1, 0, cfg) == (
+def test_a_per_setup_slot_override_still_works():
+    """The S35 mechanism stays for any future setup."""
+    cfg = {"setup_probation": {"setups": ["x_setup"], "max_concurrent": 2,
+                               "max_concurrent_by_setup": {"x_setup": 1}}}
+    assert risk.check_setup_probation("x_setup", 0, 0, cfg) == (True, None)
+    assert risk.check_setup_probation("x_setup", 1, 0, cfg) == (
         False, "probation_position_open")
-    assert risk.check_setup_probation("mean_reversion_reclaim", 1, 0, cfg)[0] is True
