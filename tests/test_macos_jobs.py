@@ -26,6 +26,8 @@ EXPECTED = {
     "shadow_warm": ["local_analyst.py", "--warm"],      # S28: 09:20 ET
     "missed_movers": ["missed_movers.py"],              # S33: 16:20 ET
     "keepawake": ["caffeinate", "-i", "-t 26700"],      # CEO 10-20: 09:05 ET
+    "catalysts": ["catalysts.py"],                      # S36: 09:00 ET scan
+    "catalysts_post": ["catalysts.py", "--post"],       # S36: 09:20 ET post
 }
 
 

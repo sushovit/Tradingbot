@@ -351,6 +351,7 @@ def refresh(broker, config: dict) -> list:
         logger.warning(f"core watchlist scan failed: {e}")
         core = []
     ranked = filter_and_rank(merge_candidates(movers, core), config)
+    ranked = merge_catalysts(ranked, load_catalysts_today())     # S36
     scan_seconds = round(time.time() - t0, 2)
     payload = {
         "generated_at": datetime.now(EASTERN_TZ).isoformat(),
@@ -366,6 +367,73 @@ def refresh(broker, config: dict) -> list:
     logger.info(f"Universe scan: {payload['scanned']} names fetched, "
                 f"{payload['evaluated']} qualified, {scan_seconds}s")
     return ranked
+
+
+# ------------------------------------------------------------ S36 catalysts
+# catalysts.py (09:00 ET) writes catalysts_today.json. Every universe build
+# merges today's names in, so the worker's 09:25 refresh cannot drop them;
+# if today's universe file already exists, the scan adds them to it at once.
+# A catalyst name only JOINS the universe - it trades only through a normal
+# setup and every normal gate. No trades from news alone.
+CATALYSTS_FILE = "catalysts_today.json"
+
+
+def load_catalysts_today(path: str = None) -> list:
+    try:
+        with open(path or CATALYSTS_FILE, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if payload.get("date") != datetime.now(EASTERN_TZ).strftime("%Y-%m-%d"):
+        return []
+    return list(payload.get("names") or [])
+
+
+def merge_catalysts(ranked: list, names: list) -> list:
+    """`ranked` plus today's catalyst names: a name already present keeps its
+    row and gains the catalyst tag; a new one is appended as source
+    'catalyst'. Never removes anything."""
+    out = [dict(c) for c in ranked]
+    by_sym = {c["symbol"]: c for c in out}
+    for n in names or []:
+        sym = n.get("symbol")
+        if not sym:
+            continue
+        extra = {"catalyst_tag": n.get("tag"),
+                 "catalyst_headline": n.get("headline"),
+                 "catalyst_gap_pct": n.get("gap_pct")}
+        if sym in by_sym:
+            by_sym[sym].update(extra)
+            continue
+        row = {"symbol": sym, "price": n.get("price"),
+               "avg_dollar_volume": n.get("adv_usd"),
+               "change_pct": n.get("gap_pct"), "score": 0.0,
+               "source": "catalyst", "setup_flag": None,
+               "name": n.get("name", ""), **extra}
+        out.append(row)
+        by_sym[sym] = row
+    return out
+
+
+def add_catalysts_to_today(payload: dict) -> int:
+    """Add the scan's names to TODAY's universe_today.json, if it exists.
+    Returns how many symbols were new to it."""
+    try:
+        with open(UNIVERSE_FILE, "r") as f:
+            uni = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 0
+    if uni.get("date") != datetime.now(EASTERN_TZ).strftime("%Y-%m-%d"):
+        return 0          # stale: the 09:25 refresh merges them instead
+    before = {c["symbol"] for c in uni.get("candidates", [])}
+    uni["candidates"] = merge_catalysts(uni.get("candidates", []),
+                                        payload.get("names", []))
+    tmp = UNIVERSE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(uni, f, indent=2)
+    import os
+    os.replace(tmp, UNIVERSE_FILE)
+    return len({c["symbol"] for c in uni["candidates"]} - before)
 
 
 def load_universe_tickers() -> list:
