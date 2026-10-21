@@ -1756,6 +1756,65 @@ def _cached_intraday(_broker, tickers, minute_key):
     return _broker.get_bars(list(tickers), timeframe_minutes=5, lookback_days=4)
 
 
+WATCH_FILTERS = ("All", "Position", "Gatekeeper", "Watch-only", "Filtered",
+                 "Waiting", "Catalysts")
+
+
+def _render_watchlist():
+    """S37 (CEO 2026-10-21): one row per ticker the worker scanned in its
+    last cycle - status, reason, price, change, source, catalyst. Files
+    only (bot_status.log, universe_today.json, catalysts_today.json); no
+    broker call. Display only: any failure degrades to a caption."""
+    import dashboard_data
+    st.subheader("👀 Watchlist")
+    try:
+        w = dashboard_data.watchlist_rows(STATUS_FILE)
+    except Exception as e:
+        st.caption(f"Watchlist unavailable: {e}")
+        return
+    rows = w["rows"]
+    if not rows:
+        st.caption("No cycle yet - the table fills after the worker's first "
+                   "cycle (09:25 ET start).")
+        return
+    counts = {}
+    for r in rows:
+        counts[r["Status"]] = counts.get(r["Status"], 0) + 1
+    n_cat = sum(1 for r in rows if r["Catalyst"] or r["Source"] == "catalyst")
+    st.caption(f"Cycle #{w['cycle']} at {w['time']} ET — {len(rows)} tickers: "
+               + ", ".join(f"{k} {v}" for k, v in counts.items())
+               + (f"; {n_cat} catalyst (watch-only)" if n_cat else ""))
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        pick = st.pills("Show", WATCH_FILTERS, default="All",
+                        key="watch_filter", label_visibility="collapsed")
+    with c2:
+        query = st.text_input("Search ticker", key="watch_search",
+                              placeholder="Search ticker",
+                              label_visibility="collapsed")
+    shown = rows
+    if pick == "Catalysts":
+        shown = [r for r in shown if r["Catalyst"] or r["Source"] == "catalyst"]
+    elif pick and pick != "All":
+        shown = [r for r in shown if r["Status"] == pick]
+    if query:
+        q = query.strip().upper()
+        shown = [r for r in shown if q in r["Ticker"]]
+    if not shown:
+        st.caption("No tickers match.")
+        return
+    st.dataframe(
+        pd.DataFrame(shown), width='stretch', hide_index=True,
+        height=min(38 + 35 * len(shown), 460),
+        column_config={
+            "Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Change %": st.column_config.NumberColumn(format="%+.2f%%"),
+            "Watch-only": st.column_config.CheckboxColumn(),
+            "Detail": st.column_config.TextColumn(width="large"),
+            "Headline": st.column_config.TextColumn(width="large"),
+        })
+
+
 def _render_live_charts(broker, broker_err):
     """Market trend, the account vs SPY, and the session's stocks. Display
     only; any failure degrades to a caption, never breaks the page."""
@@ -1985,6 +2044,10 @@ with tab1:
                 st.code(f.read(), language=None)
         except OSError:
             st.caption("No status file yet.")
+
+    # --- Watchlist: every ticker the last cycle scanned (S37, CEO 10-21) ---
+    if not desk_config.in_worker():       # dashboard only; the worker skips it
+        _render_watchlist()
 
     # --- Today's gatekeeper decisions ---
     st.subheader("🧠 Gatekeeper decisions today")
