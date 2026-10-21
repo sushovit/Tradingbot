@@ -217,3 +217,129 @@ def decision_rows(conn, day: str, threshold: float = 70):
                     "Conviction": r["conviction_score"],
                     "Why": (r["error"] or r["reason"] or r["reasoning"] or "")[:160]})
     return out
+
+
+# ============================================================ watchlist (S37)
+# CEO 2026-10-21: one row per ticker the worker scanned in its LAST cycle,
+# with its status, joined to today's universe (price, change, source) and
+# the morning catalyst scan. Files only - no broker or API call.
+
+WATCH_GROUPS = (                       # (group, rank, prefixes) - first match
+    ("Position", 0, ("In Pos", "BOUGHT", "Entry pending", "SOLD", "CLOSED",
+                     "Exited", "Order failed")),
+    ("Gatekeeper", 1, ("Gatekeeper", "Waiting (gatekeeper")),
+    ("Watch-only", 2, ("Pass (watch_only",)),
+    ("Filtered", 3, ("Pass", "chop_reclaim", "duplicate blocked")),
+    ("Waiting", 4, ("Waiting",)),
+    ("No data", 5, ("No Data",)),
+)
+
+
+def last_cycle_line(status_file="bot_status.log") -> str:
+    """The newest status line that is a cycle line (the file also holds
+    'Market is CLOSED' / 'Session ended' lines)."""
+    try:
+        with open(status_file, encoding="utf-8", errors="replace") as f:
+            for line in f.read().splitlines():
+                if "Cycle #" in line and "|" in line:
+                    return line
+    except OSError:
+        pass
+    return ""
+
+
+def cycle_statuses(line: str) -> list:
+    """[(ticker, status)] in scan order. A ticker can appear twice in one
+    cycle (e.g. 'chop_reclaim (Rule #5)' then 'Gatekeeper blocked (...)');
+    both are kept, in order."""
+    m = _STATUS.match(line or "")
+    body = m.group("body") if m else (line or "")
+    out = []
+    for part in body.split(" | ")[1:]:
+        if "Monitoring Live" in part and "): " in part:
+            part = part.split("): ", 1)[1]
+        tk, sep, status = part.partition(": ")
+        if sep and tk.strip() and " " not in tk.strip():
+            out.append((tk.strip(), status.strip()))
+    if " | " in body:
+        head = body.split(" | ")[0]
+        if "): " in head:
+            tk, _, status = head.split("): ", 1)[1].partition(": ")
+            if tk.strip() and " " not in tk.strip():
+                out.insert(0, (tk.strip(), status.strip()))
+    return out
+
+
+def status_group(status: str):
+    for group, rank, prefixes in WATCH_GROUPS:
+        if any(status.startswith(p) for p in prefixes):
+            return group, rank
+    return "Other", 6
+
+
+def _detail(status: str) -> str:
+    """'Pass (trend_continuation: adx_low)' -> 'trend_continuation: adx_low'."""
+    s = status.strip()
+    if s.startswith("In Pos"):
+        return s[len("In Pos"):].strip()          # '[bot] (+0.38%)'
+    if s.startswith("Waiting (No Signal)"):
+        return ""
+    if "(" in s and s.endswith(")"):
+        return s[s.index("(") + 1:-1]
+    return "" if s.startswith("Waiting (No Signal)") else s
+
+
+def watchlist_rows(status_file="bot_status.log",
+                   universe_file="universe_today.json",
+                   catalysts_file="catalysts_today.json", today=None) -> dict:
+    """{'cycle', 'time', 'rows': [...]} - rows sorted: positions, gatekeeper,
+    watch-only, filtered, waiting, no data; then by |change %|. The
+    universe and catalyst files are read for the cycle's own date."""
+    line = last_cycle_line(status_file)
+    summary = status_summary(line)
+    today = today or (summary["time"] or "")[:10] or None
+
+    def load(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if today and payload.get("date") != today:
+            return {}
+        return payload
+    uni = {c.get("symbol"): c for c in load(universe_file).get("candidates", [])}
+    cat = {n.get("symbol"): n for n in load(catalysts_file).get("names", [])}
+
+    merged = {}
+    for tk, status in cycle_statuses(line):
+        group, rank = status_group(status)
+        if tk in merged:              # keep the furthest stage, join details
+            prev = merged[tk]
+            if rank < prev["_rank"]:
+                prev.update(Status=group, _rank=rank)
+            prev["Detail"] = "; ".join(x for x in (prev["Detail"], _detail(status)) if x)
+            continue
+        merged[tk] = {"Ticker": tk, "Status": group, "_rank": rank,
+                      "Detail": _detail(status)}
+    rows = []
+    for tk, r in merged.items():
+        u, c = uni.get(tk, {}), cat.get(tk, {})
+        catalyst = bool(c) or bool(u.get("catalyst"))
+        rows.append({
+            "Ticker": tk, "Status": r["Status"], "Detail": r["Detail"][:140],
+            "Price": u.get("price"),
+            "Change %": (round(float(u["change_pct"]), 2)
+                         if u.get("change_pct") is not None else None),
+            "Source": "catalyst" if catalyst and u.get("source") in (None, "catalyst")
+                      else (u.get("source") or ("held" if r["_rank"] == 0 else "config")),
+            "Watch-only": bool(u.get("watch_only")) or bool(c),
+            "Catalyst": (c.get("tag") or u.get("catalyst_tag") or "") if catalyst else "",
+            "Headline": ((c.get("headline") or u.get("catalyst_headline") or "")[:120]
+                         if catalyst else ""),
+            "_rank": r["_rank"],
+        })
+    rows.sort(key=lambda r: (r["_rank"], -abs(r["Change %"] or 0), r["Ticker"]))
+    for r in rows:
+        r.pop("_rank")
+    return {"cycle": summary["cycle"], "time": summary["time"], "rows": rows}
