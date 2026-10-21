@@ -792,7 +792,7 @@ def setup_live_counts(setup_names, config: dict = None) -> dict:
         for name in setup_names}
 
 
-def size_zero_report(month: str = None) -> list:
+def size_zero_report(month: str = None, since: str = "2026-10-09 12:47:00") -> list:
     """Per-setup size_zero rate for a month (YYYY-MM, default current ET).
 
     Returns [{setup, size_zero, signals, rate_pct, median_stop_usd,
@@ -806,7 +806,8 @@ def size_zero_report(month: str = None) -> list:
     with _lock, _connect() as conn:
         for r in conn.execute(
                 "SELECT setup_name, verdict, context FROM decisions "
-                "WHERE source='rules' AND substr(timestamp,1,7)=?", (month,)):
+                "WHERE source='rules' AND substr(timestamp,1,7)=? AND timestamp>=?",
+                (month, since or "")):
             verdict = r["verdict"] or ""
             if '"size_zero"' not in verdict and                     '"price_too_high_for_account"' not in verdict:
                 continue
@@ -832,8 +833,8 @@ def size_zero_report(month: str = None) -> list:
         for setup in list(rows):
             taken = conn.execute(
                 "SELECT COUNT(*) AS n FROM trades WHERE action='BUY' "
-                "AND reason=? AND substr(timestamp,1,7)=?",
-                (setup, month)).fetchone()
+                "AND reason=? AND substr(timestamp,1,7)=? AND timestamp>=?",
+                (setup, month, since or "")).fetchone()
             rows[setup]["entries"] = int(taken["n"] or 0)
 
     out = []

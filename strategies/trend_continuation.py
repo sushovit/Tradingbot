@@ -60,8 +60,13 @@ class TrendContinuation(Strategy):
 
         # --- Deterministic filters (rejections are journaled by the caller) ---
         if 'adx_14' not in last_closed or last_closed['adx_14'] < adx_threshold:
+            # Shown rounded DOWN to 2 decimals, so a rejected value always
+            # reads below the threshold ('29.99 < 30', never '30.0 < 30');
+            # the test itself is unchanged: ADX >= threshold passes.
+            _adx = last_closed.get('adx_14', float('nan'))
+            _shown = math.floor(_adx * 100) / 100 if _adx == _adx else _adx
             return Rejection(self.name, ticker, "adx_low",
-                             f"ADX {last_closed.get('adx_14', float('nan')):.1f} < {adx_threshold}")
+                             f"ADX {_shown:.2f} < {adx_threshold}")
         if use_rsi_filter and ('rsi_14' not in last_closed
                                or last_closed['rsi_14'] < rsi_threshold):
             return Rejection(self.name, ticker, "rsi_low",
@@ -92,7 +97,7 @@ class TrendContinuation(Strategy):
             target=target,
             confidence_hint="medium",
             reasoning=(f"EMA{fast_ema}>EMA{slow_ema} golden cross, "
-                       f"ADX {last_closed.get('adx_14', 0):.1f}, "
+                       f"ADX {last_closed.get('adx_14', 0):.2f}, "
                        f"RSI {last_closed.get('rsi_14', 0):.1f}"),
             extras={
                 "df": df,

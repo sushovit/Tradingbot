@@ -334,7 +334,7 @@ def fmt(stats):
 UPPER_BOUND = (
     "_Measured on SIGNALS, not on trades the desk took. Every signal counted "
     "here would still have had to clear the AI gatekeeper, whole-share sizing "
-    "on a $2,000 cap, the max-positions cap and the daily-loss breaker, so "
+    "on the live capital cap, the max-positions cap and the daily-loss breaker, so "
     "these counts are an UPPER BOUND on what would have been realised._")
 
 
