@@ -16,7 +16,18 @@
     "discord": {
         "trade_alerts": true,
         "daily_table": true,
-        "missed_movers": true
+        "missed_movers": true,
+        "catalysts": true
+    },
+    "catalysts": {
+        "enabled": true,
+        "min_gap_pct": 3.0,
+        "news_hours": 18,
+        "min_price": 5,
+        "max_price": 1200,
+        "min_dollar_volume": 20000000,
+        "max_names": 15,
+        "tag_timeout_s": 30
     },
     "interval": 5,
     "capital_cap_usd": 5000,
