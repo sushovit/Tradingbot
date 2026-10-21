@@ -4,6 +4,8 @@ or trading change.
 
     python study_exit_grid.py
     python study_exit_grid.py --s34 [--append]      # S34 target grid, below
+    python study_exit_grid.py --s35 [--append]      # S35 pullback replay
+    python study_exit_grid.py --s36 [--append]      # S36 catalyst vs rest
 
 A 5-minute replay of the LIVE daily rule as built, then six variants:
 
@@ -34,6 +36,7 @@ trades that reached >= +1R and closed at a loss - the goals.py definition).
 import math
 import os
 import sys
+from datetime import date
 
 import pandas as pd
 
@@ -365,7 +368,8 @@ def s34_run(signals, frames, steps=None, variants=None):
                 continue
             r, why, mfe = out
             busy[sym] = day.date()
-            trades.append({"setup": setup, "r": r, "mfe_r": mfe, "why": why})
+            trades.append({"setup": setup, "r": r, "mfe_r": mfe, "why": why,
+                           "sym": sym, "day": day.date()})
         results[label] = trades
     return results
 
@@ -524,16 +528,346 @@ def s35_main(append=False, universe_file="universe_today.json"):
     return st, ok
 
 
+# =========================================================== S36 (2026-10-21)
+# Catalyst names vs the rest. The morning catalyst scanner adds a name when
+# |pre-market gap| >= 3% AND company news in the last 18 h AND price 5-1200
+# AND ADV >= $20M, at most 15 names a day; catalyst names only get the normal
+# setups. Replayed here: the S34 trades at the current target (3R, no
+# partial), split by whether the entry day was a catalyst day for the symbol.
+# Gap = day's first RTH 5-minute open vs the previous session's RTH close;
+# ADV = mean close x volume of the 20 prior resampled daily bars (the same
+# IEX feed the live universe ADV comes from); news = Finnhub company news
+# with `datetime` in [09:30 ET - 18 h, 09:30 ET).
+
+S36_GAP = 0.03
+S36_NEWS_HOURS = 18
+S36_PRICE = (5.0, 1200.0)
+S36_ADV = 20e6
+S36_ADV_DAYS = 20
+S36_MAX_NAMES = 15
+S36_NEWS_DIR = os.path.join("data", "s36_news")
+S36_CALLS_PER_MIN = 55
+S36_CHUNK_DAYS = 31
+
+
+def s36_gaps(daily):
+    """Per day: open / previous session's close - 1 (NaN on the first day)."""
+    return daily["open"] / daily["close"].shift(1) - 1.0
+
+
+def s36_adv(daily, n=S36_ADV_DAYS):
+    """Per day: mean close x volume over the n PRIOR sessions (NaN until n)."""
+    return (daily["close"] * daily["volume"]).rolling(n).mean().shift(1)
+
+
+def s36_open_utc(day):
+    """09:30 ET on `day` as a UTC timestamp (DST-correct)."""
+    d = pd.Timestamp(day)
+    d = d.tz_localize(None) if d.tzinfo is not None else d
+    return (pd.Timestamp(d.date()) + pd.Timedelta(hours=9, minutes=30)) \
+        .tz_localize(ET).tz_convert("UTC")
+
+
+def s36_news_window(day, hours=S36_NEWS_HOURS):
+    """(start, end) unix seconds: [09:30 ET - hours, 09:30 ET)."""
+    end = s36_open_utc(day)
+    return int((end - pd.Timedelta(hours=hours)).timestamp()), int(end.timestamp())
+
+
+def s36_has_news(articles, day, hours=S36_NEWS_HOURS):
+    lo, hi = s36_news_window(day, hours)
+    for a in articles or ():
+        try:
+            t = int(a.get("datetime") or 0)
+        except (TypeError, ValueError):
+            continue
+        if lo <= t < hi:
+            return True
+    return False
+
+
+def s36_candidates(frames, start=S34_START, gap=S36_GAP, price=S36_PRICE,
+                   adv_min=S36_ADV):
+    """{date: [(sym, gap)]} for every symbol-day on/after `start` passing the
+    gap, price-on-open and ADV conditions (news not yet applied)."""
+    lo = pd.Timestamp(start).date()
+    out = {}
+    for sym, (_m5, daily) in frames.items():
+        g, a = s36_gaps(daily), s36_adv(daily)
+        for i, ts in enumerate(daily.index):
+            d = pd.Timestamp(ts).date()
+            gv, av, px = g.iloc[i], a.iloc[i], float(daily["open"].iloc[i])
+            if d < lo or pd.isna(gv) or pd.isna(av):
+                continue
+            if abs(gv) >= gap and price[0] <= px <= price[1] and av >= adv_min:
+                out.setdefault(d, []).append((sym, float(gv)))
+    return out
+
+
+def s36_cap(cands, keep=lambda sym, d: True, n=S36_MAX_NAMES):
+    """{(sym, date)}: per day, the n largest |gap| among names `keep` passes."""
+    out = set()
+    for d, names in cands.items():
+        kept = [x for x in names if keep(x[0], d)]
+        kept.sort(key=lambda x: (-abs(x[1]), x[0]))
+        out.update((sym, d) for sym, _ in kept[:n])
+    return out
+
+
+def s36_split(trades, catalyst):
+    """(catalyst trades, rest) by (sym, entry day) membership."""
+    cat = [t for t in trades if (t["sym"], t["day"]) in catalyst]
+    rest = [t for t in trades if (t["sym"], t["day"]) not in catalyst]
+    return cat, rest
+
+
+def s36_windows(dates, pad=1, chunk=S36_CHUNK_DAYS):
+    """Merged [(from, to)] date ranges covering each date +/- pad days, none
+    longer than `chunk` days."""
+    from datetime import timedelta
+    spans = []
+    for d in sorted(set(dates)):
+        a, b = d - timedelta(days=pad), d + timedelta(days=pad)
+        if spans and a <= spans[-1][1] + timedelta(days=1) \
+                and (b - spans[-1][0]).days < chunk:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    return [(a, b) for a, b in spans]
+
+
+S36_API_CAP = 240        # Finnhub returns at most ~250 articles a call
+
+
+def s36_needs_narrow(windows, d, cap=S36_API_CAP):
+    """True when no cached window shows news for day d but a capped window
+    covering d starts after d's news window opens (so it may be truncated)."""
+    lo, _hi = s36_news_window(d)
+    covering = []
+    for key, arts in windows.items():
+        a, b = (date.fromisoformat(x) for x in key.split("|"))
+        if a <= d <= b:
+            covering.append(arts)
+            if s36_has_news(arts, d):
+                return False
+    for arts in covering:
+        ts = [int(x.get("datetime") or 0) for x in arts if x.get("datetime")]
+        if len(arts) >= cap and ts and min(ts) > lo:
+            return True
+    return False
+
+
+class S36Limiter:
+    """At most `per_min` calls a minute (even spacing)."""
+
+    def __init__(self, per_min=S36_CALLS_PER_MIN, sleep=None, clock=None):
+        import time
+        self.gap = 60.0 / per_min
+        self.sleep, self.clock = sleep or time.sleep, clock or time.monotonic
+        self.last = None
+
+    def wait(self):
+        if self.last is not None:
+            dt = self.gap - (self.clock() - self.last)
+            if dt > 0:
+                self.sleep(dt)
+        self.last = self.clock()
+
+
+def s36_news(sym, dates, client, limiter, cache_dir=S36_NEWS_DIR):
+    """(articles, failed): Finnhub company news covering `dates` +/- 1 day,
+    cached raw per window in <cache_dir>/<SYM>.json. Any failed window marks
+    the symbol failed (the caller treats it as no-news)."""
+    import json
+    from datetime import timedelta
+    path = os.path.join(cache_dir, f"{sym}.json")
+    cache = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            cache = json.load(f)
+    windows = cache.setdefault("windows", {})
+    failed, dirty = False, False
+
+    def fetch(a, b):
+        nonlocal failed, dirty
+        key = f"{a.isoformat()}|{b.isoformat()}"
+        if key in windows:
+            return
+        got = None
+        for attempt in range(2):
+            limiter.wait()
+            try:
+                got = client.company_news(sym, _from=a.isoformat(), to=b.isoformat())
+                break
+            except Exception as e:                       # noqa: BLE001
+                msg = str(e).lower()
+                if attempt == 0 and ("429" in msg or "limit" in msg):
+                    limiter.sleep(61)
+                    continue
+                break
+        if not isinstance(got, list):
+            failed = True
+            return
+        windows[key] = got
+        dirty = True
+
+    for a, b in s36_windows(dates):
+        fetch(a, b)
+    # A window at the API's per-call cap (newest first) may have dropped the
+    # pre-open hours of a gap day: refetch just that day's two UTC dates.
+    for d in sorted(set(dates)):
+        if s36_needs_narrow(windows, d):
+            fetch(d - timedelta(days=1), d)
+    if dirty:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+    seen, arts = set(), []
+    for lst in windows.values():
+        for x in lst:
+            k = (x.get("id"), x.get("datetime"), x.get("headline"))
+            if k not in seen:
+                seen.add(k)
+                arts.append(x)
+    return arts, failed
+
+
+def s36_classify(frames, client, limiter, start=S34_START,
+                 cache_dir=S36_NEWS_DIR, log=print):
+    """Catalyst sets and coverage stats: {"news": {(sym, date)}, "gap":
+    {(sym, date)}, ...}. News is fetched only for symbols with a candidate
+    gap day, only around those days."""
+    cands = s36_candidates(frames, start)
+    by_sym = {}
+    for d, names in cands.items():
+        for sym, _ in names:
+            by_sym.setdefault(sym, []).append(d)
+    news, failed, n_articles = {}, [], 0
+    for i, sym in enumerate(sorted(by_sym)):
+        arts, bad = s36_news(sym, by_sym[sym], client, limiter, cache_dir)
+        if bad:
+            failed.append(sym)
+            arts = []
+        news[sym] = arts
+        n_articles += len(arts)
+        if log and (i + 1) % 20 == 0:
+            log(f"  news: {i + 1}/{len(by_sym)} symbols", file=sys.stderr)
+    has = {(s, d) for s, ds in by_sym.items() for d in ds
+           if s36_has_news(news.get(s), d)}
+    dates = [pd.Timestamp(int(a["datetime"]), unit="s").date()
+             for arts in news.values() for a in arts if a.get("datetime")]
+    return {
+        "news": s36_cap(cands, lambda s, d: (s, d) in has),
+        "gap": s36_cap(cands),
+        "gap_days": sum(len(v) for v in by_sym.values()),
+        "gap_with_news": len(has),
+        "symbols": len(by_sym),
+        "failed": failed,
+        "articles": n_articles,
+        "first_article": min(dates) if dates else None,
+    }
+
+
+def s36_row(split, setup, group, trades):
+    st, cap, tgt = s34_metrics(trades)
+    return [split, setup, group, st["trades"],
+            f"{st['win_rate']}%" if st["trades"] else "-",
+            f"{st['expectancy_r']:+.3f}" if st["trades"] else "-",
+            st["profit_factor"] if st["trades"] else "-",
+            st["max_drawdown_r"] if st["trades"] else "-",
+            f"{cap * 100:.0f}%" if cap is not None else "-",
+            f"{tgt:.1f}%" if tgt is not None else "-"]
+
+
+def s36_render(trades, info, n_signals, n_symbols):
+    traded = {(t["sym"], t["day"]) for t in trades}
+    first = min((t["day"] for t in trades), default=None)
+    last = max((t["day"] for t in trades), default=None)
+    lines = [f"**S36 (CEO 2026-10-21) - catalyst names vs the rest, study "
+             f"only.** 5-minute replay of the live daily setups through the "
+             f"live daily exit rule at the current target (3R, S28-capped, no "
+             f"partial), {n_signals} signals on {n_symbols} universe symbols, "
+             f"entries {first or '-'}..{last or '-'}. Catalyst = entry day had "
+             f"|gap| >= {S36_GAP:.0%}, Finnhub company news in the "
+             f"{S36_NEWS_HOURS} h before 09:30 ET, open price "
+             f"{S36_PRICE[0]:g}-{S36_PRICE[1]:g}, 20-day ADV >= "
+             f"${S36_ADV / 1e6:.0f}M, top {S36_MAX_NAMES} |gap| a day.", ""]
+    rows = []
+    for split, key in (("gap + news (scanner rule)", "news"),
+                       ("gap only (no news test)", "gap")):
+        for setup in (None,) + S34_SETUPS:
+            sel = [t for t in trades if setup is None or t["setup"] == setup]
+            cat, rest = s36_split(sel, info[key])
+            rows.append(s36_row(split, setup or "all", "catalyst", cat))
+            rows.append(s36_row(split, setup or "all", "rest", rest))
+    lines += sc.table(["Split", "Setup", "Group", "Trades", "Win %",
+                       "Expectancy (R)", "PF", "MaxDD (R)", "Capture",
+                       "Exits at target"], rows)
+    n_news, n_gap = len(info["news"]), len(info["gap"])
+    t_news = len(info["news"] & traded)
+    t_gap = len(info["gap"] & traded)
+    lines += ["", f"**Catalyst days.** Scanner rule: {n_news} symbol-days "
+              f"(after the {S36_MAX_NAMES}/day cap), {t_news} of them produced "
+              f"a trade. Gap only: {n_gap} symbol-days, {t_gap} produced a "
+              f"trade. Gap/price/ADV symbol-days before the news test: "
+              f"{info['gap_days']} on {info['symbols']} symbols, "
+              f"{info['gap_with_news']} with news in the window.",
+              "", f"**Finnhub coverage.** {info['symbols']} symbols queried "
+              f"(gap days +/- 1 day), {info['articles']} articles, earliest "
+              f"{info['first_article'] or '-'}; "
+              f"{len(info['failed'])} symbol(s) failed and count as no-news"
+              + (f" ({', '.join(info['failed'])})" if info["failed"] else "")
+              + ". Free tier: about one year of history, so the first entry "
+              "days of the window can lack news.",
+              "", "**Method.** As S34 (agenda 21): daily bars resampled from "
+              "the S33 5-minute IEX cache (RTH), live SPY gate, live ladder, "
+              "time stops and S28 target cap, one position per symbol. Gap = "
+              "entry day's first RTH 5-minute open vs the previous cached "
+              "session's RTH close; ADV = mean close x volume of the 20 prior "
+              "sessions (IEX volume, the same feed the live universe ADV uses). "
+              "Reproduce with `python study_exit_grid.py --s36`.",
+              "", sc.UPPER_BOUND]
+    return lines
+
+
+def s36_main(append=False, universe_file="universe_today.json", client=None,
+             limiter=None):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols)
+    cur = [(s34_label(*S34_CURRENT), *S34_CURRENT)]
+    trades = s34_run(signals, frames, variants=cur)[cur[0][0]]
+    if client is None:
+        import finnhub
+        from dotenv import load_dotenv
+        load_dotenv("/Users/ranasaradb/TradingBot/.env")
+        client = finnhub.Client(api_key=os.environ.get("FINNHUB_API_KEY", ""))
+    info = s36_classify(frames, client, limiter or S36Limiter())
+    lines = s36_render(trades, info, len(signals), len(frames))
+    print("\n".join(lines))
+    if append:
+        n = sc.append_agenda("Study: S36 catalyst replay - catalyst names vs "
+                             "the rest (2026-10-21)", lines)
+        print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+    return trades, info
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--s34", action="store_true")
     ap.add_argument("--s35", action="store_true")
+    ap.add_argument("--s36", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
     a = ap.parse_args()
     if a.s34:
         return s34_main(a.append, a.universe_file)
+    if a.s36:
+        s36_main(a.append, a.universe_file)
+        return 0
     if a.s35:
         s35_main(a.append, a.universe_file)
         return 0

@@ -1387,3 +1387,61 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
   setup (slightly different indicator values for reclaim and momentum too) -
   a trading-path change. **Not made; CEO decision.** Given the replay, the
   case for enabling it is weak.
+---
+
+## 23. Study: S36 catalyst replay - catalyst names vs the rest (2026-10-21)
+
+**S36 (CEO 2026-10-21) - catalyst names vs the rest, study only.** 5-minute replay of the live daily setups through the live daily exit rule at the current target (3R, S28-capped, no partial), 2324 signals on 161 universe symbols, entries 2025-10-14..2026-10-16. Catalyst = entry day had |gap| >= 3%, Finnhub company news in the 18 h before 09:30 ET, open price 5-1200, 20-day ADV >= $20M, top 15 |gap| a day.
+
+| Split | Setup | Group | Trades | Win % | Expectancy (R) | PF | MaxDD (R) | Capture | Exits at target |
+|---|---|---|---|---|---|---|---|---|---|
+| gap + news (scanner rule) | all | catalyst | 100 | 30.0% | -0.169 | 0.67 | 20.46 | -20% | 17.0% |
+| gap + news (scanner rule) | all | rest | 1963 | 44.0% | +0.151 | 1.38 | 44.39 | 17% | 20.8% |
+| gap + news (scanner rule) | momentum_continuation | catalyst | 29 | 17.2% | -0.370 | 0.39 | 11.96 | -48% | 10.3% |
+| gap + news (scanner rule) | momentum_continuation | rest | 266 | 49.2% | +0.201 | 1.54 | 8.15 | 22% | 23.7% |
+| gap + news (scanner rule) | mean_reversion_reclaim | catalyst | 71 | 35.2% | -0.087 | 0.82 | 9.83 | -9% | 19.7% |
+| gap + news (scanner rule) | mean_reversion_reclaim | rest | 1571 | 43.7% | +0.162 | 1.41 | 38.63 | 18% | 20.9% |
+| gap + news (scanner rule) | pullback_in_uptrend | catalyst | 0 | - | - | - | - | - | - |
+| gap + news (scanner rule) | pullback_in_uptrend | rest | 126 | 36.5% | -0.092 | 0.79 | 20.22 | -11% | 14.3% |
+| gap only (no news test) | all | catalyst | 105 | 29.5% | -0.188 | 0.63 | 21.66 | -23% | 16.2% |
+| gap only (no news test) | all | rest | 1958 | 44.1% | +0.153 | 1.39 | 44.39 | 17% | 20.9% |
+| gap only (no news test) | momentum_continuation | catalyst | 29 | 17.2% | -0.370 | 0.39 | 11.96 | -48% | 10.3% |
+| gap only (no news test) | momentum_continuation | rest | 266 | 49.2% | +0.201 | 1.54 | 8.15 | 22% | 23.7% |
+| gap only (no news test) | mean_reversion_reclaim | catalyst | 76 | 34.2% | -0.118 | 0.75 | 11.56 | -14% | 18.4% |
+| gap only (no news test) | mean_reversion_reclaim | rest | 1566 | 43.8% | +0.165 | 1.42 | 38.63 | 18% | 20.9% |
+| gap only (no news test) | pullback_in_uptrend | catalyst | 0 | - | - | - | - | - | - |
+| gap only (no news test) | pullback_in_uptrend | rest | 126 | 36.5% | -0.092 | 0.79 | 20.22 | -11% | 14.3% |
+
+**Catalyst days.** Scanner rule: 1799 symbol-days (after the 15/day cap), 100 of them produced a trade. Gap only: 1888 symbol-days, 105 produced a trade. Gap/price/ADV symbol-days before the news test: 2310 on 151 symbols, 2163 with news in the window.
+
+**Finnhub coverage.** 151 symbols queried (gap days +/- 1 day), 110269 articles, earliest 2025-10-26; 0 symbol(s) failed and count as no-news. Free tier: about one year of history, so the first entry days of the window can lack news.
+
+**Method.** As S34 (agenda 21): daily bars resampled from the S33 5-minute IEX cache (RTH), live SPY gate, live ladder, time stops and S28 target cap, one position per symbol. Gap = entry day's first RTH 5-minute open vs the previous cached session's RTH close; ADV = mean close x volume of the 20 prior sessions (IEX volume, the same feed the live universe ADV uses). Reproduce with `python study_exit_grid.py --s36`.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+
+### Reading
+
+- **Catalyst-day trades did worse than the rest.** Under the scanner rule,
+  100 trades on catalyst days: win 30.0%, -0.169R, PF 0.67, against +0.151R
+  (PF 1.38) for the other 1,963 trades. By setup: momentum_continuation
+  -0.370R over 29 (win 17.2%), mean_reversion_reclaim -0.087R over 71;
+  pullback_in_uptrend had no catalyst-day trades.
+- **Few catalyst days produce a trade.** 1,799 catalyst symbol-days after the
+  15/day cap; 100 (5.6%) produced an entry. Catalyst-day trades are ~5% of
+  all trades, so the sample is small.
+- **The news test barely changes the split.** 2,163 of the 2,310
+  gap/price/ADV symbol-days (94%) had Finnhub news in the 18 h window. Gap
+  only gives 105 catalyst trades at -0.188R; adding the news test removes 5
+  of them. 57 of the 147 no-news gap days fall before Finnhub's earliest
+  returned article (2025-10-26), so part of what the news test removes here
+  is missing coverage, not missing news.
+- **Limits.** Today's universe only: the scanner's purpose is to add names
+  that are normally outside the universe, and those cannot be replayed from
+  this cache, so "catalyst" here means a universe name on a gap-and-news
+  day - a proxy. Gap is measured on IEX 5-minute RTH bars (first RTH open
+  vs prior RTH close), not on the pre-market quote the scanner will see.
+  Finnhub free tier: ~1 year of history (none before 2025-10-26), at most
+  ~250 articles a call (70 capped windows refetched narrow; none left
+  unresolved); 0 symbols failed. Signals, not gatekeeper-approved trades.
