@@ -1473,3 +1473,40 @@ Basis: the table above (catalyst-day trades -0.169R over 100, momentum
 There is no dedicated news-gap / morning-momentum setup in the code yet;
 the replay above measured the EXISTING setups on catalyst days. The bar
 applies to a dedicated setup once one is defined and replayed.
+---
+
+## 24. Study: S37 pyramiding on winners (2026-10-21)
+
+**S37 (CEO 2026-10-21) - pyramiding on winners, study only.** 5-minute replay of the live daily rule, 2194 signals on 162 universe symbols, entries 2025-10-14..2026-10-20. Expectancy is R per ORIGINAL trade; $ at $5,000 equity, 1% = $50 per R.
+
+| Setup | Variant | Trades | Adds | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Avg $ at risk / trade | Adds' own total R | Over 25% position cap |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| all | no add (current) | 1956 | 0 | 43.6% | +0.147 | +287.1 | 1.37 | 42.74 | $50.00 | +0.0 | 25.1% |
+| all | add at +1R | 1956 | 747 | 39.9% | +0.155 | +303.0 | 1.3 | 57.43 | $69.10 | +16.0 | 47.4% |
+| all | add at +1.5R | 1956 | 373 | 42.7% | +0.155 | +303.3 | 1.37 | 45.22 | $59.53 | +16.3 | 34.3% |
+| momentum_continuation | no add (current) | 297 | 0 | 46.1% | +0.150 | +44.7 | 1.39 | 14.93 | $50.00 | +0.0 | 11.8% |
+| momentum_continuation | add at +1R | 297 | 113 | 41.4% | +0.160 | +47.6 | 1.31 | 21.0 | $69.02 | +2.9 | 39.1% |
+| momentum_continuation | add at +1.5R | 297 | 49 | 45.1% | +0.150 | +44.6 | 1.36 | 16.79 | $58.25 | -0.1 | 21.2% |
+| mean_reversion_reclaim | no add (current) | 1659 | 0 | 43.2% | +0.146 | +242.4 | 1.36 | 38.63 | $50.00 | +0.0 | 27.5% |
+| mean_reversion_reclaim | add at +1R | 1659 | 634 | 39.6% | +0.154 | +255.4 | 1.29 | 53.28 | $69.11 | +13.0 | 48.9% |
+| mean_reversion_reclaim | add at +1.5R | 1659 | 324 | 42.3% | +0.156 | +258.7 | 1.37 | 41.11 | $59.76 | +16.3 | 36.6% |
+
+**Method.** As S34 (agenda 21): daily bars resampled from the 5-minute IEX bars; live ladder, time stops, S28 target cap; SPY gate for momentum (the reclaim is exempt). The add is bought at the open of the bar after a completed close at or above entry + kR with the stop at breakeven or better; it is sized so the symbol's combined open risk stays within 1% of equity, with its own stop at the original entry, raised with the ladder. 'Avg $ at risk / trade' counts the first unit's $50 plus the add's $50 when one was made (the two are never at risk at the same time: the first unit is at breakeven when the add is bought). 'Over 25% position cap' is the share of trades whose combined position would exceed $1,250 - a live add would be trimmed or refused there. Reproduce with `python study_exit_grid.py --s37`.
+
+**Limits.** Fractional shares (live sizing is whole shares); today's universe (survivorship); IEX bars; earnings exits not modelled; signals, not gatekeeper-approved trades.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on a $2,000 cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- **Adding to winners barely moves the total and costs more per dollar risked.** Over 1,956 trades, an add at +1R or +1.5R earns about +16R more in total (+303R vs +287R): +0.155R vs +0.147R per original trade. But it risks more money to get there - $69.10 per trade at +1R and $59.53 at +1.5R, against $50.00. Per $50 risked that is +0.112R (add at +1R) and +0.130R (add at +1.5R), both below the current +0.147R.
+- **Add at +1R** also lowers PF (1.30 vs 1.37) and deepens the worst drawdown (57.4R vs 42.7R): 747 adds, many of them stopped at breakeven.
+- **Add at +1.5R** keeps PF (1.37) and adds 2.5R of drawdown; it pays on mean_reversion_reclaim (+16.3R from its adds) and not at all on momentum_continuation (-0.1R).
+- **The account cannot hold most adds.** With the add, 34-47% of trades would exceed the $1,250 (25%) position cap, so live adds would often be trimmed or refused - the small gain above is an upper bound. (25% of trades already exceed it without an add here because this replay sizes in fractional shares at a flat $50 risk; live sizing applies the cap.)
+
+**No change proposed** - the evidence for pyramiding is too thin to justify the extra money at risk. Study only; the live rule is unchanged.
+
+### Standing rule (CEO 2026-10-21): NEVER AVERAGE DOWN
+
+The worker never buys a symbol it already holds, at a loss or otherwise. Two guards enforce it: a held position goes to the management branch, which ends before the entry scan; and before any order the broker itself is asked (`position_mgmt.duplicate_entry_exists`), so a position the local record missed is still refused. `tests/test_never_average_down.py` holds both, end to end through the worker loop. Any future add-to-winner rule would add only above breakeven, never below the entry.
+

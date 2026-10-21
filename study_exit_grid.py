@@ -854,11 +854,220 @@ def s36_main(append=False, universe_file="universe_today.json", client=None,
     return trades, info
 
 
+# =========================================================== S37 (2026-10-21)
+# CEO 2026-10-21, S37: pyramiding on winners. Study only - no live change.
+# The live daily rule (S34 current: 3R target S28-capped, no partial; ladder
+# +1R -> entry, +1.5R -> entry, +2R -> entry + 1R, then highest daily close
+# - 2.5 ATR; time stops) on the live daily setups (pullback retired;
+# post-earnings has no historical calendar).
+#
+# The add: once a completed 5-minute close (from 10:00 ET) is at or above
+# entry + kR AND the ladder has the stop at breakeven or better, buy at the
+# next bar's open. Size: combined open risk on the symbol <= 1% of equity -
+# the first unit's open risk is 0 once its stop is at breakeven, so the add
+# may risk the whole 1% budget (one original R) against its own stop at the
+# ORIGINAL ENTRY (raised with the ladder thereafter, like the first unit).
+# R is in units of the original trade's risk; $ at $5,000 equity, 1% = $50.
+
+S37_SETUPS = ("momentum_continuation", "mean_reversion_reclaim")
+S37_ADD_AT = (None, 1.0, 1.5)
+S37_EQUITY, S37_RISK_PCT, S37_POSITION_CAP = 5000.0, 1.0, 0.25
+
+
+def s37_label(k):
+    return "no add (current)" if k is None else f"add at +{k:g}R"
+
+
+def simulate_pyramid(m5, daily_close, atr_day, entry_day, entry, stop, target,
+                     steps, add_at=None):
+    """{r, r_add, size_add, add_px, why, mfe} or None while open at the end of
+    data. size_add is the add's share count as a multiple of the first
+    unit's; r_add is its contribution in original R."""
+    risk = entry - stop
+    bars = m5[m5.index.normalize() >= pd.Timestamp(entry_day).tz_convert(ET).normalize()]
+    if bars.empty:
+        return None
+    days = sorted({t.date() for t in bars.index})
+    day_no = {d: i + 1 for i, d in enumerate(days)}
+    live, hc, mfe, first = stop, entry, 0.0, True
+    entry_date = days[0]
+    pending, add_px, size_add = False, None, 0.0
+
+    def done(px, why):
+        r1 = (px - entry) / risk
+        r2 = size_add * (px - add_px) / risk if add_px is not None else None
+        return {"r": r1 + (r2 or 0.0), "r_add": r2, "size_add": size_add,
+                "add_px": add_px, "why": why, "mfe": mfe}
+
+    for ts, b in bars.iterrows():
+        o, h, l, c = (float(b["open"]), float(b["high"]), float(b["low"]),
+                      float(b["close"]))
+        d = ts.date()
+        if not first and o <= live:
+            return done(o, "stop (gap)")
+        if not first and o >= target:
+            mfe = max(mfe, (o - entry) / risk)
+            return done(o, "target (gap)")
+        if pending:                                   # the add fills at the open
+            pending = False
+            own_stop = max(entry, live)
+            if o > own_stop:
+                add_px = o
+                # combined open risk <= one original R: unit 1 risks
+                # max(0, entry - live) = 0 here, so the add gets the rest
+                budget = risk - max(0.0, entry - live)
+                size_add = budget / (o - own_stop)
+        n = day_no[d]
+        if (ts.hour, ts.minute) == (15, 55) and (n >= 10 or (n >= 5 and mfe < 0.5)):
+            return done(o, f"time stop day {n}")
+        first = False
+        mfe = max(mfe, (h - entry) / risk)
+        if l <= live:
+            return done(live, "stop")
+        if h >= target:
+            return done(target, "target")
+        if (ts.hour, ts.minute) >= (10, 0):
+            hc = max(hc, c)
+            cands = [entry + sr * risk for t, sr in steps if (hc - entry) / risk >= t]
+            if (hc - entry) / risk >= 2.0:
+                prior = [v for dd, v in daily_close.items() if entry_date <= dd < d]
+                a = atr_day.get(d)
+                if prior and a:
+                    cands.append(max(prior) - 2.5 * a)
+            if cands:
+                cand = math.ceil(max(cands) * 100 - 1e-6) / 100
+                if live < cand < c:
+                    live = cand
+            if (add_at and add_px is None and not pending and live >= entry
+                    and (c - entry) / risk >= add_at):
+                pending = True
+    return None
+
+
+def s37_run(signals, frames):
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in params["steps"]]
+    cap = pm.target_cap_atr(_live_config())
+    budget = S37_EQUITY * S37_RISK_PCT / 100
+    out = {}
+    for k in S37_ADD_AT:
+        trades, busy = [], {}
+        for setup, sym, day, entry, structural in sorted(signals, key=lambda x: x[2]):
+            if sym in busy and day.date() <= busy[sym]:
+                continue
+            m5, daily = frames[sym]
+            atrs = atr_by_day(daily)
+            atr = atrs.get(day.date())
+            if not atr:
+                continue
+            stop = pm.initial_stop(entry, structural, atr, params)
+            if stop >= entry:
+                continue
+            target = pm.capped_target(entry, stop, atr, cap, 3.0)
+            closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+            res = simulate_pyramid(m5, closes, atrs, day, entry, stop, target, steps, k)
+            if res is None:
+                busy[sym] = m5.index[-1].date()
+                continue
+            busy[sym] = day.date()
+            shares = budget / (entry - stop)              # first unit, fractional
+            notional = shares * entry
+            if res["add_px"] is not None:
+                notional += shares * res["size_add"] * res["add_px"]
+            trades.append({"setup": setup, "r": res["r"], "r_add": res["r_add"],
+                           "mfe_r": res["mfe"], "why": res["why"],
+                           # $ risked over the trade: the first unit's 1%,
+                           # plus the add's (its own 1% budget, never both open)
+                           "risk_usd": budget * (2 if res["add_px"] is not None else 1),
+                           "peak_notional": notional})
+        out[s37_label(k)] = trades
+    return out
+
+
+def s37_rows(results):
+    rows, cap_usd = [], S37_EQUITY * S37_POSITION_CAP
+    for setup in (None,) + S37_SETUPS:
+        for label, trades in results.items():
+            ts = [t for t in trades if setup is None or t["setup"] == setup]
+            st = sc.aggregate(ts)
+            adds = [t["r_add"] for t in ts if t["r_add"] is not None]
+            n = len(ts)
+            rows.append({
+                "setup": setup or "all", "variant": label, "trades": st["trades"],
+                "adds": len(adds), "win": st["win_rate"], "exp": st["expectancy_r"],
+                "total": round(sum(t["r"] for t in ts), 1), "pf": st["profit_factor"],
+                "maxdd": st["max_drawdown_r"],
+                "risk_usd": round(sum(t["risk_usd"] for t in ts) / n, 2) if n else None,
+                "add_total": round(sum(adds), 1) if adds else 0.0,
+                "add_avg": round(sum(adds) / len(adds), 3) if adds else None,
+                "over_cap": (round(100 * sum(1 for t in ts if t["peak_notional"] > cap_usd)
+                                   / n, 1) if n else None)})
+    return rows
+
+
+def s37_render(rows, n_signals, n_symbols, first_day):
+    lines = [f"**S37 (CEO 2026-10-21) - pyramiding on winners, study only.** "
+             f"5-minute replay of the live daily rule, {n_signals} signals on "
+             f"{n_symbols} universe symbols, entries {first_day}..2026-10-20. "
+             f"Expectancy is R per ORIGINAL trade; $ at ${S37_EQUITY:,.0f} "
+             f"equity, {S37_RISK_PCT:g}% = ${S37_EQUITY * S37_RISK_PCT / 100:,.0f} "
+             f"per R.", ""]
+    lines += sc.table(
+        ["Setup", "Variant", "Trades", "Adds", "Win %", "Expectancy (R)", "Total R",
+         "PF", "MaxDD (R)", "Avg $ at risk / trade", "Adds' own total R",
+         "Over 25% position cap"],
+        [[r["setup"], r["variant"], r["trades"], r["adds"],
+          f"{r['win']}%" if r["win"] is not None else "-",
+          f"{r['exp']:+.3f}" if r["exp"] is not None else "-",
+          f"{r['total']:+.1f}", r["pf"] if r["pf"] is not None else "-",
+          r["maxdd"] if r["maxdd"] is not None else "-",
+          f"${r['risk_usd']:,.2f}" if r["risk_usd"] is not None else "-",
+          f"{r['add_total']:+.1f}",
+          f"{r['over_cap']}%" if r["over_cap"] is not None else "-"] for r in rows])
+    lines += ["", "**Method.** As S34 (agenda 21): daily bars resampled from "
+              "the 5-minute IEX bars; live ladder, time stops, S28 target cap; "
+              "SPY gate for momentum (the reclaim is exempt). The add is bought "
+              "at the open of the bar after a completed close at or above "
+              "entry + kR with the stop at breakeven or better; it is sized so "
+              "the symbol's combined open risk stays within 1% of equity, with "
+              "its own stop at the original entry, raised with the ladder. "
+              "'Avg $ at risk / trade' counts the first unit's $50 plus the "
+              "add's $50 when one was made (the two are never at risk at the "
+              "same time: the first unit is at breakeven when the add is "
+              "bought). 'Over 25% position cap' is the share of trades whose "
+              "combined position would exceed $1,250 - a live add would be "
+              "trimmed or refused there. Reproduce with `python "
+              "study_exit_grid.py --s37`.",
+              "", "**Limits.** Fractional shares (live sizing is whole shares); "
+              "today's universe (survivorship); IEX bars; earnings exits not "
+              "modelled; signals, not gatekeeper-approved trades.", "",
+              sc.UPPER_BOUND]
+    return lines
+
+
+def s37_main(append=False, universe_file="universe_today.json"):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols, setups=S37_SETUPS)
+    results = s37_run(signals, frames)
+    first = min((x[2] for x in signals), default=None)
+    lines = s37_render(s37_rows(results), len(signals), len(frames),
+                       first.date() if first is not None else "-")
+    print("\n".join(lines))
+    if append:
+        n = sc.append_agenda("Study: S37 pyramiding on winners (2026-10-21)", lines)
+        print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+    return 0
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--s34", action="store_true")
     ap.add_argument("--s35", action="store_true")
+    ap.add_argument("--s37", action="store_true")
     ap.add_argument("--s36", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
@@ -868,6 +1077,8 @@ def main():
     if a.s36:
         s36_main(a.append, a.universe_file)
         return 0
+    if a.s37:
+        return s37_main(a.append, a.universe_file)
     if a.s35:
         s35_main(a.append, a.universe_file)
         return 0
