@@ -162,11 +162,14 @@ def test_hard_exit_and_manual_close_both_use_the_confirmed_price():
     confirm_fill, not journal the last 5-minute bar close."""
     with open("streamlit_app.py", encoding="utf-8") as f:
         body = f.read()
-    for marker in ('"Hard Exit Date"', '"Manual Override"'):
-        idx = body.index(marker)
-        window = body[max(0, idx - 400):idx]
-        assert "confirm_fill(broker, close_order" in window, marker
-        assert "exit_px" in body[idx - 200:idx]
+    idx = body.index('"Hard Exit Date"')
+    window = body[max(0, idx - 400):idx]
+    assert "confirm_fill(broker, close_order" in window
+    assert "exit_px" in body[idx - 200:idx]
+    # The manual close is now the owner's SELL (CEO 2026-10-21): one shared
+    # function, used by the worker and the dashboard.
+    owner = body[body.index("def owner_close("):body.index("def queue_owner_sell(")]
+    assert "confirm_fill(broker, close_order" in owner and "exit_px" in owner
 
 
 # ==================================================== entry order id

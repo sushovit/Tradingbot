@@ -232,16 +232,48 @@ class Broker:
         return _retry(self.trading.cancel_order_by_id, order_id,
                       what=f"cancel_order({order_id})")
 
-    def close_position(self, ticker: str):
-        """Cancel any open orders on the symbol, then market-close the position."""
+    # Orders that still reserve shares: the live states plus a cancel that
+    # has not settled yet.
+    RESERVING_STATES = LIVE_ORDER_STATES | {"pending_cancel"}
+
+    def _working_orders(self, ticker: str) -> list:
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500,
+                               symbols=[ticker])
+        orders = _retry(self.trading.get_orders, req, what="working orders")
+        return [o for o in orders
+                if str(getattr(o, "status", "")).lower().split(".")[-1]
+                in self.RESERVING_STATES]
+
+    def close_position(self, ticker: str, settle_s: float = 6.0):
+        """Cancel EVERY working order on the symbol - including HELD bracket
+        legs, which a status=open query does not return - wait for the
+        cancels to settle, then market-close the position.
+
+        2026-10-21: this used to cancel only status=open orders, so a held
+        stop leg survived and kept its shares reserved; the market sell could
+        then be rejected for insufficient quantity."""
         try:
-            for order in self.get_open_orders(ticker):
-                try:
-                    self.trading.cancel_order_by_id(order.id)
-                except Exception as e:
-                    logger.warning(f"Could not cancel order {order.id} on {ticker}: {e}")
+            working = self._working_orders(ticker)
         except BrokerError as e:
-            logger.warning(f"Could not list open orders for {ticker}: {e}")
+            logger.warning(f"Could not list orders for {ticker}: {e}")
+            working = []
+        for order in working:
+            if str(getattr(order, "status", "")).lower().endswith("pending_cancel"):
+                continue
+            try:
+                self.trading.cancel_order_by_id(order.id)
+            except Exception as e:
+                logger.warning(f"Could not cancel order {order.id} on {ticker}: {e}")
+        deadline = time.monotonic() + settle_s
+        while working and time.monotonic() < deadline:
+            time.sleep(0.5)
+            try:
+                working = self._working_orders(ticker)
+            except BrokerError:
+                break
+        if working:
+            logger.warning(f"{ticker}: {len(working)} order(s) still working "
+                           f"after cancel; closing anyway")
         return _retry(self.trading.close_position, ticker,
                       what=f"close_position({ticker})")
 
