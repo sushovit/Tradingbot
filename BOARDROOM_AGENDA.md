@@ -1509,4 +1509,15 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 ### Standing rule (CEO 2026-10-21): NEVER AVERAGE DOWN
 
 The worker never buys a symbol it already holds, at a loss or otherwise. Two guards enforce it: a held position goes to the management branch, which ends before the entry scan; and before any order the broker itself is asked (`position_mgmt.duplicate_entry_exists`), so a position the local record missed is still refused. `tests/test_never_average_down.py` holds both, end to end through the worker loop. Any future add-to-winner rule would add only above breakeven, never below the entry.
+---
+
+## 25. Weekly scoreboard - live R/ATR vs owner 0.5% ladder, and the switch rule (2026-10-21)
+
+**Decision (CEO 2026-10-21).** Every Friday at 16:30 ET Discord gets the weekly scoreboard (`scoreboard.py`, launchd com.tradingbot.scoreboard): for every daily trade on the $5,000 account since 2026-10-09, closed or open, the dollars it made under the LIVE rule (the R/ATR ladder) against the owner's 0.5% ladder (BE at +0.5%, then 0.5% under the highest close in 0.25% steps) replayed on 5-minute bars from the same entry, original stop and live target. Per trade and in total.
+
+**The rule: switch to the owner ladder if it beats the live ladder by more than $0 in total over at least 10 CLOSED trades.** The scoreboard states each week whether the rule is met; the switch itself is a config change (`daily_trailing` -> the owner ladder) made by the CEO once it is.
+
+First reading (2026-10-21, 1 closed trade): TXN live -$6.87, owner ladder +$4.74 (+$11.61); REGN (open) live +$4.79, owner ladder $0.00 (stopped at breakeven on the 10-20 dip). Rule not met: 1 of 10 closed trades.
+
+Method notes: live P&L is the journal's realized P&L for a closed trade and the broker's unrealized P&L for an open one; the owner-ladder result is its replayed exit, or the last 5-minute close if it would still hold. Fills: a bar opening through a level fills at its open; a bar spanning stop and target hits the stop first. The replay starts after the entry fill time, so the entry bar itself never triggers anything.
 

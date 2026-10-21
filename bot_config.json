@@ -17,7 +17,8 @@
         "trade_alerts": true,
         "daily_table": true,
         "missed_movers": true,
-        "catalysts": true
+        "catalysts": true,
+        "scoreboard": true
     },
     "catalysts": {
         "enabled": true,
