@@ -1445,3 +1445,21 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
   Finnhub free tier: ~1 year of history (none before 2025-10-26), at most
   ~250 articles a call (70 capped windows refetched narrow; none left
   unresolved); 0 symbols failed. Signals, not gatekeeper-approved trades.
+
+### Decision (CEO 2026-10-21): catalyst names are WATCH-ONLY
+
+**Catalyst names are watch-only until a news-gap setup shows >= +0.15R over
+>= 50 trades.** The scanner, the 09:20 Discord table and the
+`source='catalyst'` journal rows are unchanged; the universe rows carry
+`catalyst=true, watch_only=true`. A setup that fires on a watch-only name is
+not entered: the worker logs "watch_only: catalyst" and journals a rules row
+`watch_only_catalyst` with the signal's entry/stop/target, so the outcome
+tracker grades what the entry would have done. A name already in the
+universe without the catalyst stays tradable only if its gap is < 3% - and
+every catalyst name gapped >= 3%, so there are no news-gap entries at all.
+Basis: the table above (catalyst-day trades -0.169R over 100, momentum
+-0.370R over 29).
+
+There is no dedicated news-gap / morning-momentum setup in the code yet;
+the replay above measured the EXISTING setups on catalyst days. The bar
+applies to a dedicated setup once one is defined and replayed.

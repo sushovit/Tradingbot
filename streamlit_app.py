@@ -794,6 +794,11 @@ def _worker_loop():
             # positions are ALWAYS scanned so they stay managed even after
             # dropping out of the universe. Falls back to configured tickers.
             universe_tickers = universe.load_universe_tickers()
+            try:
+                watch_only = universe.watch_only_today()      # S36 (CEO 10-21)
+            except Exception as e:
+                logger.warning(f"watch-only list unavailable: {e}")
+                watch_only = {}
             base_list = universe_tickers or list(ticker_profiles.keys())
             held = [t for t, s in positions.items() if s.get("in_position")]
             ticker_list = list(dict.fromkeys(base_list + held))
@@ -1305,6 +1310,22 @@ def _worker_loop():
                     signal.target = round(signal.entry + _k * (signal.entry - _new_stop), 2)
 
             # --- Global deterministic gates: journaled as passes too ---
+            # S36 (CEO 2026-10-21): catalyst names are WATCH-ONLY - no entry
+            # on a news gap. Journaled with the signal's geometry so the
+            # outcome tracker grades what the entry would have done.
+            if ticker in watch_only:
+                _w = watch_only[ticker]
+                logger.info(f"{ticker}: watch_only: catalyst - {signal.setup_name} "
+                            f"signal not entered (gap {_w.get('gap_pct')}%, "
+                            f"{_w.get('tag')})")
+                journal_pass_once(
+                    ticker, signal.setup_name, "watch_only_catalyst",
+                    f"watch_only: catalyst gap={_w.get('gap_pct')} "
+                    f"tag={_w.get('tag')} entry={signal.entry:.2f} "
+                    f"stop={signal.stop:.2f} target={signal.target:.2f}",
+                    bar_key=signal_bar_key)
+                status_updates.append(f"{ticker}: Pass (watch_only: catalyst)")
+                continue
             if breaker_tripped:
                 journal_pass_once(ticker, signal.setup_name, "circuit_breaker",
                                   f"daily PnL ${daily_pnl:.2f} <= -${loss_limit_usd:.2f}")
