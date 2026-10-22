@@ -1698,3 +1698,77 @@ Reading warned. **No change:** no probation window, the entry windows stay
 09:30-11:30 / 14:00-15:00 ET, the 15:00-16:00 window and the SPY gate are
 unchanged. The probation machinery (midday_probation.py, kill switch) was
 built and tested on branch s46-midday-probation and is NOT merged.
+---
+
+## 28. Study: S48 gap-free intraday rallies (CEO P4, 2026-10-22)
+
+**S48 (CEO P4, 2026-10-22) - gap-free intraday rallies, study only, no live change.** The movers our setups never see (DDOG, ZS, NET, CRWD on 2026-10-21 gapped only 0.4-2.8% and ran later). Definition:
+
+> - Gap-free day: |first RTH open vs prior RTH close| < 3%. "No news gap": exclude the day if the gap is >= 1.5% AND Finnhub company news exists in the 18 h before 09:30 ET (fetch news only for those >= 1.5% gap days; if Finnhub fails, treat as no news and say so).
+> - Trigger: within the FIRST TWO HOURS (bars starting 09:30-11:25 ET), the first completed 5-min close >= +3.0% above the prior RTH close, AND the symbol's sector ETF is up on the day at that bar's close (ETF close > its prior RTH close).
+> - Entry: the next bar's open. Stop: the day's lowest low from 09:30 through the trigger bar; skip if risk <= 0. Target: entry + 2R. Forced exit at the 15:55 ET bar's open (no overnight). Fills: a bar opening through a level fills at its open; a bar spanning stop and target takes the stop. One trade per symbol per day.
+> - Sensitivities: SPY trending (prior close > 20d EMA) vs not; targets 1.5R and 3R; a max-1-open-across-symbols count.
+
+Implementation notes: the 1.5% news test uses |gap| (gap up or down). News is fetched only for >= 1.5% gap days that actually trigger (a non-triggering day cannot trade, so its news cannot change a result). "ETF up at that bar's close" = the ETF's 5-min close at the trigger bar's timestamp (or the last ETF bar before it that session) above the ETF's prior RTH close. If the first +3% close comes with the ETF down, the day is not traded (main rule); the row "first bar with +3% AND ETF up" instead waits for the ETF within the same window. SPY trending is as of the previous session.
+
+ETF map (sectors.sector_for tag -> ETF): technology -> XLK, except semiconductors ADI, AMAT, AMD, ARM, AVGO, INTC, KLAC, LRCX, MCHP, MRVL, MU, NVDA, NXPI, ON, QCOM, SWKS, TXN -> SMH; communication -> XLC; consumer_discretionary -> XLY; consumer_staples -> XLP; financials -> XLF; healthcare -> XLV; industrials -> XLI; energy -> XLE; materials -> XLB; utilities_reit split: AMT, PLD -> XLRE, the rest -> XLU. AMZN, GOOGL, META, PYPL, SHOP follow the house 'technology' tag (XLK). Symbols per ETF: SMH 17, XLB 3, XLC 9, XLE 12, XLF 19, XLI 15, XLK 29, XLP 7, XLRE 2, XLU 3, XLV 21, XLY 18. **Unmapped, excluded (7):** COIN, CRWV, IREN, ITUB, MSTR, NU, WULF (crypto_dat and unclassified tags).
+
+Window 2025-10-14..2026-10-21 (53.1 weeks), 155 mapped symbols. 39656 symbol-days, 2081 with |gap| >= 3% dropped, 37575 gap-free; outcomes at 2R: no trigger 34275, +3% with ETF down 618, no risk 3, traded 2679; 1054 of those excluded as >= 1.5% gap + news. Finnhub: 1248 symbol-days checked on 142 symbols, 1126 with news, 50858 articles, earliest 2025-10-27; 0 symbol(s) failed and count as no-news. Exits at 2R: stop 226, target 47, time 1352.
+
+| Rows | Trades | Trades/week | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Median risk % |
+|---|---|---|---|---|---|---|---|---|
+| **2R target (main definition)** | 1625 | 30.58 | 48.4% | +0.025 | +40.6 | 1.1 | 39.71 | 2.72% |
+| sensitivity: 1.5R target | 1625 | 30.58 | 48.5% | +0.020 | +32.3 | 1.08 | 41.21 | 2.72% |
+| sensitivity: 3R target | 1625 | 30.58 | 48.2% | +0.030 | +49.5 | 1.12 | 40.28 | 2.72% |
+| split @2R: SPY trending (prior close > 20d EMA) | 953 | 17.93 | 51.9% | +0.074 | +70.8 | 1.31 | 17.02 | 2.75% |
+| split @2R: SPY not trending | 672 | 12.65 | 43.3% | -0.045 | -30.2 | 0.85 | 51.65 | 2.66% |
+| sensitivity @2R: max 1 open across symbols | 279 | 5.25 | 44.8% | +0.029 | +8.2 | 1.08 | 12.87 | 2.55% |
+| sensitivity @2R: trigger = first bar with +3% AND ETF up | 1725 | 32.46 | 48.8% | +0.025 | +43.9 | 1.1 | 40.46 | 2.75% |
+| reference @2R: no news exclusion | 2679 | 50.41 | 46.2% | +0.020 | +53.1 | 1.06 | 67.69 | 2.34% |
+
+**By month (2R target, main definition).**
+
+| Month | Trades | Trades/week | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Median risk % |
+|---|---|---|---|---|---|---|---|---|
+| 2025-10 | 110 | - | 52.7% | +0.052 | +5.7 | 1.17 | 17.79 | 2.09% |
+| 2025-11 | 99 | - | 55.6% | +0.062 | +6.1 | 1.28 | 12.9 | 2.50% |
+| 2025-12 | 68 | - | 54.4% | +0.140 | +9.5 | 1.69 | 3.81 | 2.68% |
+| 2026-01 | 117 | - | 52.1% | +0.059 | +6.9 | 1.25 | 9.24 | 2.71% |
+| 2026-02 | 160 | - | 44.4% | -0.030 | -4.8 | 0.89 | 18.73 | 2.91% |
+| 2026-03 | 141 | - | 36.9% | -0.137 | -19.3 | 0.58 | 35.24 | 2.67% |
+| 2026-04 | 109 | - | 51.4% | +0.079 | +8.7 | 1.33 | 11.92 | 2.87% |
+| 2026-05 | 143 | - | 52.4% | +0.155 | +22.2 | 1.72 | 5.76 | 3.07% |
+| 2026-06 | 189 | - | 48.7% | +0.029 | +5.5 | 1.1 | 19.1 | 2.88% |
+| 2026-07 | 152 | - | 43.4% | -0.060 | -9.1 | 0.76 | 17.04 | 2.59% |
+| 2026-08 | 137 | - | 46.7% | -0.036 | -4.9 | 0.87 | 13.06 | 2.72% |
+| 2026-09 | 121 | - | 43.8% | +0.037 | +4.5 | 1.14 | 5.58 | 2.80% |
+| 2026-10 | 79 | - | 58.2% | +0.122 | +9.6 | 1.6 | 3.58 | 2.66% |
+
+**Bar** (expectancy >= +0.15R over >= 50 trades, main definition): 1625 trades at +0.025R -> **not proposed**.
+
+**Would it have caught the 2026-10-21 movers?**
+
+| Ticker | Gap | ETF | Trigger | Entry | Result (2R) | Counted |
+|---|---|---|---|---|---|---|
+| DDOG | +1.43% | XLK | 09:35 | 09:40 @ 264.95 (stop 259.91, risk 1.90%) | +2.00R (target, 11:10) | yes |
+| ZS | +0.38% | XLK | 09:40 | 09:45 @ 221.21 (stop 215.49, risk 2.59%) | +1.82R (time 15:55, 15:55) | yes |
+| NET | +2.81% | XLK | 09:35 - EXCLUDED: gap >= 1.5% + news | 09:40 @ 301.08 (stop 297.96, risk 1.04%) | +2.00R (target, 10:20) | no |
+| CRWD | +1.49% | XLK | 10:00 | 10:05 @ 234.42 (stop 228.77, risk 2.41%) | +0.95R (time 15:55, 15:55) | yes |
+
+### Reading
+
+- **Not proposed.** The main definition traded 1,625 times in 53 weeks (30.6 a week) at **+0.025R** (PF 1.10, total +40.6R, MaxDD 39.7R) - far below the +0.15R bar. The target barely matters (1.5R +0.020R, 3R +0.030R) because 83% of trades (1,352 of 1,625) reach neither level and are closed at 15:55: a +3% move in the first two hours mostly drifts sideways afterwards.
+- **The edge, such as it is, is SPY regime.** SPY trending: +0.074R over 953 (PF 1.31); not trending: -0.045R over 672. Even the trending half is half the bar. Months swing from +0.155R (May) to -0.137R (March); 6 of 13 months are below +0.04R.
+- **Max 1 open across symbols** (how a probation would trade it): 279 trades, +0.029R, total +8.2R - no better per trade. Waiting for the ETF instead of skipping (first bar with +3% AND ETF up): +0.025R, the same.
+- **The news test mostly turns the 1.5-3% gap days off.** Finnhub had pre-open news for 1,126 of the 1,248 triggering 1.5-3% gap days (large caps almost always have some headline), so the rule in practice means gap < 1.5%. Removing those days changed little per trade (+0.020R with them, +0.025R without).
+- **2026-10-21 movers:** DDOG (+2.00R, target 11:10), ZS (+1.82R at 15:55) and CRWD (+0.95R at 15:55, gap 1.49% - just under the news line) would have been caught; NET triggered at 09:35 and hit 2R by 10:20 but is excluded (gap 2.81% with pre-open news). Three of four on one good day is exactly the anecdote the year does not support: the same trigger fired ~6 times a day across the universe and averaged +0.025R.
+
+### Limits
+
+- Today's universe (survivorship): the 162 names cached for S33, not each day's list.
+- IEX 5-minute bars (the live feed) for the symbols and the ETFs: the 09:30 print and closes can differ from the consolidated tape, so the gap, the +3% trigger and the ETF test are IEX-based.
+- Finnhub free tier: about one year of company news; days before coverage starts count as no-news. Finnhub is the only news source (no PR wires, no earnings calendar).
+- No gatekeeper, no whole-share sizing, no slippage or spread on the next-bar-open fill, no daily-loss breaker: an UPPER BOUND.
+
+Reproduce with `python study_exit_grid.py --s48`.
+
