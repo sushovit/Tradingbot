@@ -121,8 +121,11 @@
         "mean_reversion_reclaim": "daily",
         "momentum_continuation": "daily",
         "trend_continuation": "intraday",
-        "pullback_in_uptrend": "daily",
         "post_earnings_continuation": "daily"
+    },
+    "sector_cap": {
+        "enabled": true,
+        "max_per_sector": 1
     },
     "spy_filter_exempt": [
         "mean_reversion_reclaim"

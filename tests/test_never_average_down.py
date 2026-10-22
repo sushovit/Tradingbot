@@ -84,7 +84,10 @@ def test_a_symbol_the_worker_holds_is_managed_never_re_entered(temp_journal, tmp
     import streamlit_app as app
     asked, submitted = drive(app, monkeypatch, tmp_path, broker_holds=("NVDA",),
                              local_holds=("NVDA",))
-    assert "NVDA" not in asked and "AMD" in asked    # NVDA never scanned for entry
+    assert "NVDA" not in asked                       # NVDA never scanned for entry
+    # (AMD shares NVDA's sector, so since 2026-10-22 the sector cap stops it
+    # before the gatekeeper - it is journaled, which shows the gates ran)
+    assert "AMD" in blocked(temp_journal, "sector_cap")
     assert not [a for a in submitted if a and a[0] == "NVDA"]
 
 
