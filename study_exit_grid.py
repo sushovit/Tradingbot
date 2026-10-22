@@ -7,6 +7,7 @@ or trading change.
     python study_exit_grid.py --s35 [--append]      # S35 pullback replay
     python study_exit_grid.py --s36 [--append]      # S36 catalyst vs rest
     python study_exit_grid.py --s44                 # S44 morning momentum
+    python study_exit_grid.py --s45 [--fetch] [--append]  # S45 funnel per blocker
 
 A 5-minute replay of the LIVE daily rule as built, then six variants:
 
@@ -1442,6 +1443,444 @@ def s44_main(append=False, universe_file="universe_today.json", client=None,
                    "cands": cands, "has": has, "frames": frames}
 
 
+# =========================================================== S45 (2026-10-22)
+# Funnel replay PER BLOCKER (CEO 2026-10-22, item B). Study only.
+#
+# For each deterministic blocker X: the signals X stopped and NOTHING else
+# stopped - they pass every other filter of the detector (before AND after X
+# in the live order) and every worker gate - replayed through the LIVE exits,
+# against the signals that passed everything over the same window.
+#
+# The detectors in strategies/ return their FIRST failing filter. The study
+# copies below (s45_daily_check, s45_trend_fails) evaluate EVERY filter in the
+# same order and return the full list of failures; "blocked by X" means that
+# list is exactly [X]. tests/test_s45_funnel_replay.py proves the copies
+# agree with the live detectors (same trigger, same first failure, same
+# entry/stop on a pass) on synthetic bars.
+#
+# Gates after the detector, in worker order (streamlit_app.py):
+#   daily:  Rule #3 gap_below_signal_mid; spy_bearish (Rule #5, the reclaim
+#           exempt per spy_filter_exempt); outside_hours does NOT bite - the
+#           worker only scans 09:30-16:00 and a daily setup is evaluated once,
+#           on the first cycle after today's daily bar exists, i.e. at the
+#           open, inside the 09:30-11:30 window; the S25 ATR initial stop;
+#           whole-share sizing on the live capital (backtest._live_sizing).
+#   trend:  spy_bearish (last completed SPY close vs its 20-day EMA, unknown
+#           regime fails closed); outside_hours (09:30-11:30 / 14:00-15:00 ET,
+#           the bar after the cross); sizing.
+# Not modelled: watch_only catalysts, the circuit breaker, max positions, the
+# gatekeeper.
+#
+# Exits: daily setups = S34 'current' (s34_run, 3R S28-capped, no partial);
+# trend_continuation = the S33 intraday replay (study_adx_band.simulate_
+# intraday). For each blocker the population "passed + blocked by X" is
+# replayed together (one position per symbol), as if X were loosened, and the
+# blocked subset is reported; PASSED = the passed-only replay.
+
+S45_START, S45_END = "2025-10-14", "2026-10-21"
+S45_BAR_R, S45_BAR_N = 0.15, 50
+S45_DAILY_SETUPS = ("momentum_continuation", "mean_reversion_reclaim")
+S45_TREND = "trend_continuation"
+S45_APPLIES = {
+    "volume_low": ("momentum_continuation", "mean_reversion_reclaim", S45_TREND),
+    "change_too_small": ("momentum_continuation",),
+    "below_ema9": ("mean_reversion_reclaim",),
+    "spy_bearish": ("momentum_continuation", S45_TREND),
+    "rsi_low": (S45_TREND,),
+    "outside_hours": (S45_TREND,),
+}
+
+
+def s45_daily_check(setup, window, vol_mult):
+    """Study copy of the live daily detector `setup`, every filter evaluated.
+    None = no trigger; else {"fails": [filter names, live order], "entry",
+    "stop"} (entry/stop as the detector would set them)."""
+    import pandas_ta as ta
+    from strategies import mean_reversion_reclaim as mr
+    from strategies import momentum_continuation as mc
+    if setup == "momentum_continuation":
+        lb = mc.LOOKBACK
+        if window is None or len(window) < lb + 2:
+            return None
+        bar = window.iloc[-2]
+        prior = window.iloc[-(lb + 2):-2]
+        prior_high = float(prior["high"].max())
+        avg_volume = float(prior["volume"].mean())
+        prev_close = float(window["close"].iloc[-3])
+        change = ((float(bar["close"]) / prev_close) - 1) * 100 if prev_close > 0 else 0.0
+        if not float(bar["close"]) > prior_high:
+            return None
+        fails = []
+        if avg_volume <= 0 or float(bar["volume"]) <= avg_volume * vol_mult:
+            fails.append("volume_low")
+        if change <= mc.MIN_CHANGE_PCT:
+            fails.append("change_too_small")
+        entry, stop = float(window["close"].iloc[-1]), float(bar["low"])
+        if stop >= entry:
+            fails.append("invalid_stop")
+        return {"fails": fails, "entry": entry, "stop": stop}
+    if setup == "mean_reversion_reclaim":
+        lb = mr.LOOKBACK
+        if window is None or len(window) < lb + 2:
+            return None
+        ema9 = ta.ema(window["close"], length=9)
+        bar, prior_bar = window.iloc[-2], window.iloc[-3]
+        win = window.iloc[-(lb + 2):-2]
+        high_20, low = float(win["high"].max()), float(win["low"].min())
+        if high_20 <= 0:
+            return None
+        washed = (high_20 - low) / high_20 * 100 >= mr.DRAWDOWN_PCT
+        if not (washed and float(bar["close"]) > float(prior_bar["high"])):
+            return None
+        fails = []
+        e9 = float(ema9.iloc[-2]) if ema9 is not None else float("nan")
+        if not float(bar["close"]) > e9:
+            fails.append("below_ema9")
+        avg_volume = float(win["volume"].mean())
+        if avg_volume <= 0 or (float(bar["volume"]) / avg_volume
+                               < min(mr.SOFT_VOLUME_FLOOR, vol_mult)):
+            fails.append("volume_low")
+        if float(window["open"].iloc[-1]) < (float(bar["high"]) + float(bar["low"])) / 2.0:
+            fails.append("gap_below_reclaim_mid")
+        entry, stop = float(window["close"].iloc[-1]), float(bar["low"])
+        if stop >= entry:
+            fails.append("invalid_stop")
+        return {"fails": fails, "entry": entry, "stop": stop}
+    raise ValueError(setup)
+
+
+def _vol_mult(setup, config):
+    from strategies import mean_reversion_reclaim as mr
+    from strategies import momentum_continuation as mc
+    default = mc.VOLUME_MULT if setup == "momentum_continuation" else mr.VOLUME_MULT
+    return (config.get("volume_multipliers") or {}).get(setup, default)
+
+
+def s45_sizes(entry, stop):
+    import backtest
+    import risk
+    return risk.position_size(backtest.BASE_EQUITY, backtest.RISK_PCT, entry, stop,
+                              position_cap_pct=backtest.POSITION_CAP) >= 1
+
+
+def s45_entry_window(daily, i):
+    """The detector's view at the entry-day evaluation: bars up to i-1
+    completed, bar i the session's partial bar AT THE OPEN (o=h=l=c=open)."""
+    import backtest
+    w = daily.iloc[max(0, i - backtest.DETECT_WINDOW + 1):i + 1].copy()
+    o = float(w["open"].iloc[-1])
+    w.loc[w.index[-1], ["high", "low", "close"]] = o
+    return w
+
+
+def s45_daily_candidates(frames, regime, config, start=S45_START, end=S45_END):
+    """Every daily trigger in the window with its full list of failures
+    (detector filters, then worker gates). frames {sym: (m5, daily)}."""
+    import backtest
+    exempt = set(config.get("spy_filter_exempt", []))
+    params = dict(pm.r_atr_params(config["risk_profiles"]["Moderate"]))
+    lo, hi = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+    out = []
+    for sym, (_m5, daily) in frames.items():
+        atrs = atr_by_day(daily)
+        for i in range(backtest.WARMUP_BARS, len(daily)):
+            day = pd.Timestamp(daily.index[i])
+            if not lo <= day.date() <= hi:
+                continue
+            w = s45_entry_window(daily, i)
+            for setup in S45_DAILY_SETUPS:
+                res = s45_daily_check(setup, w, _vol_mult(setup, config))
+                if res is None:
+                    continue
+                fails = list(res["fails"])
+                entry, structural = float(w["open"].iloc[-1]), res["stop"]
+                sig = daily.iloc[i - 1]
+                if entry < (float(sig["high"]) + float(sig["low"])) / 2.0 \
+                        and "gap_below_reclaim_mid" not in fails:
+                    fails.append("gap_below_signal_mid")
+                trending = bool(regime.reindex([daily.index[i - 1]]).fillna(False).iloc[0])
+                if setup not in exempt and not trending:
+                    fails.append("spy_bearish")
+                atr = atrs.get(day.date())
+                if not atr:
+                    fails.append("no_atr")
+                elif "invalid_stop" not in fails:
+                    stop = pm.initial_stop(entry, structural, atr, params)
+                    if stop >= entry:
+                        fails.append("invalid_stop")
+                    elif not s45_sizes(entry, stop):
+                        fails.append("zero_size")
+                out.append({"setup": setup, "sym": sym, "day": day.tz_localize(ET),
+                            "entry": entry, "stop": structural, "fails": fails})
+    return out
+
+
+def s45_daily_replay(cands, frames):
+    sigs = [(c["setup"], c["sym"], c["day"], c["entry"], c["stop"]) for c in cands]
+    trades = s34_run(sigs, frames, variants=[("current", 3.0, False)])["current"] if sigs else []
+    for t in trades:
+        t["when"] = pd.Timestamp(t["day"]).tz_localize(ET) + pd.Timedelta(minutes=570)
+    return trades
+
+
+def s45_trend_fails(df, j, st):
+    """Study copy of the live trend_continuation detector at cross bar j
+    (k = j + 1 is the bar the detector sees as the latest): None if no
+    golden cross on j, else the detector's failures in live order. `df`
+    carries study_adx_band.add_indicators columns."""
+    ef, es = df["ema_fast"].values, df["ema_slow"].values
+    if not (ef[j] > es[j] and ef[j - 1] <= es[j - 1]):
+        return None
+    row, k = df.iloc[j], j + 1
+    fails = []
+    if not row["adx"] >= st["adx"]:
+        fails.append("adx_low")
+    if st["rsi"] is not None and not row["rsi"] >= st["rsi"]:
+        fails.append("rsi_low")
+    if st["confirm"] and not (ef[k] > es[k]):
+        fails.append("no_confirmation")
+    if st["volume"] and not row["volume"] >= row["vol_ema"]:
+        fails.append("volume_low")
+    if not float(row["atr"]) > 0:
+        fails.append("invalid_atr")
+    return fails
+
+
+S45_IND = ("ema_fast", "ema_slow", "adx", "rsi", "atr", "vol_ema")
+
+
+def s45_trend_candidates(df, sym, st, spy_trend, start=S45_START, end=S45_END):
+    """Golden crosses with their full failure list: detector filters, then
+    spy_bearish, outside_hours, sizing (worker order)."""
+    import numpy as np
+    import study_adx_band as ab
+    lo, hi = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+    ok = ~np.isnan(df[list(S45_IND)].values.astype(float)).any(axis=1)
+    ef, es = df["ema_fast"].values, df["ema_slow"].values
+    out = []
+    for j in range(22, len(df) - 2):
+        if not (ef[j] > es[j] and ef[j - 1] <= es[j - 1]):
+            continue
+        k = j + 1
+        if not (ok[j - 1] and ok[j] and ok[k]):
+            continue
+        ts = df.index[k] + pd.Timedelta(minutes=5)
+        if not lo <= ts.date() <= hi:
+            continue
+        fails = s45_trend_fails(df, j, st)
+        if not spy_trend.get(ts.date()):
+            fails.append("spy_bearish")
+        if not ab.in_entry_window(df.index[k]):
+            fails.append("outside_hours")
+        entry = float(df["close"].iloc[k])
+        atr = float(df["atr"].iloc[j])
+        stop = entry - st["atr_mult"] * atr
+        if "invalid_atr" not in fails and not s45_sizes(entry, stop):
+            fails.append("zero_size")
+        out.append({"setup": S45_TREND, "sym": sym, "i": k, "ts": ts, "entry": entry,
+                    "atr": atr, "fails": fails})
+    return out
+
+
+def s45_trend_replay(prepared, keep, st):
+    """The S33 intraday replay (study_adx_band.s33_replay's inner loop) over
+    the candidates `keep` admits. prepared {sym: (df, datr, cands)}."""
+    import study_adx_band as ab
+    trades = []
+    for sym, (df, datr, cands) in prepared.items():
+        busy_until = -1
+        for c in cands:
+            if not keep(c) or c["i"] <= busy_until:
+                continue
+            entry = c["entry"]
+            stop = entry - st["atr_mult"] * c["atr"]
+            target = entry + st["rr"] * (entry - stop)
+            d_atr = datr.get(c["ts"].date())
+            if d_atr:
+                target = min(target, entry + st["cap_atr"] * d_atr)
+            res = ab.simulate_intraday(df, c["i"], entry, stop, target, st["trail_atr"])
+            if res is None:
+                busy_until = len(df)
+                continue
+            px, why, n = res
+            busy_until = n
+            trades.append({"setup": S45_TREND, "sym": sym, "i": c["i"], "when": c["ts"],
+                           "r": (px - entry) / (entry - stop), "why": why})
+    return trades
+
+
+def _key(t):
+    return (t["setup"], t["sym"], t["i"] if t["setup"] == S45_TREND else t["day"])
+
+
+def _ckey(c):
+    return (c["setup"], c["sym"], c["i"] if c["setup"] == S45_TREND else c["day"].date())
+
+
+def s45_run(daily_cands, frames, trend_prepared, st):
+    """{blocker: {"blocked": trades, "signals": n blocked signals,
+    "passed": trades}} plus the passed-only baseline under "_passed"."""
+    trend_cands = [c for _df, _d, cs in trend_prepared.values() for c in cs]
+    passed = (s45_daily_replay([c for c in daily_cands if not c["fails"]], frames)
+              + s45_trend_replay(trend_prepared, lambda c: not c["fails"], st))
+    out = {"_passed": passed}
+    for x, setups in S45_APPLIES.items():
+        blocked = [c for c in daily_cands + trend_cands
+                   if c["setup"] in setups and c["fails"] == [x]]
+        keys = {_ckey(c) for c in blocked}
+        dsel = [c for c in daily_cands if c["setup"] in setups
+                and (not c["fails"] or c["fails"] == [x])]
+        trades = s45_daily_replay(dsel, frames)
+        if S45_TREND in setups:
+            trades += s45_trend_replay(
+                trend_prepared, lambda c: not c["fails"] or c["fails"] == [x], st)
+        out[x] = {"blocked": [t for t in trades if _key(t) in keys],
+                  "signals": len(blocked),
+                  "passed": [t for t in passed if t["setup"] in setups]}
+    return out
+
+
+def s45_stats(trades):
+    ts = sorted(trades, key=lambda t: pd.Timestamp(t["when"]))
+    st = sc.aggregate(ts)
+    st["total_r"] = round(sum(t["r"] for t in ts), 2)
+    return st
+
+
+def s45_verdict(st):
+    """The CEO rule, verbatim: a blocker with >= +0.15R over >= 50 rejected
+    signals -> CEO loosens it for probation next Monday."""
+    return bool(st["trades"] >= S45_BAR_N and st["expectancy_r"] is not None
+                and st["expectancy_r"] >= S45_BAR_R)
+
+
+def _cells(st):
+    if not st["trades"]:
+        return [0, "-", "-", "+0.00", "-", "-"]
+    return [st["trades"], f"{st['win_rate']}%", f"{st['expectancy_r']:+.3f}",
+            f"{st['total_r']:+.2f}", st["profit_factor"], st["max_drawdown_r"]]
+
+
+def s45_rows(results):
+    rows = []
+    for x, setups in S45_APPLIES.items():
+        r = results[x]
+        groups = [("all", setups)] + ([(s, (s,)) for s in setups] if len(setups) > 1 else [])
+        for label, ss in groups:
+            b = s45_stats([t for t in r["blocked"] if t["setup"] in ss])
+            p = s45_stats([t for t in r["passed"] if t["setup"] in ss])
+            rows.append({"blocker": x, "setup": label if label != "all" else
+                         " + ".join(setups) if len(setups) > 1 else setups[0],
+                         "pooled": label == "all", "blocked": b, "passed": p,
+                         "meets": s45_verdict(b)})
+    return rows
+
+
+def s45_render(results, n_symbols, n_daily, n_trend, missing=()):
+    rows = s45_rows(results)
+    lines = [f"**S45 (CEO 2026-10-22, item B) - funnel replay per blocker, study "
+             f"only.** One year of 5-minute IEX bars, signals {S45_START}.."
+             f"{S45_END}, {n_symbols} universe symbols ({n_daily} daily triggers, "
+             f"{n_trend} trend_continuation crosses). For each deterministic "
+             f"blocker: the signals it stopped that passed EVERY other live "
+             f"filter and gate, replayed through the live exits, against the "
+             f"signals that passed everything (same setups, same window).", ""]
+    lines += sc.table(
+        ["Blocker", "Setup(s)", "Blocked signals", "Rejected n (replayed)", "Win %",
+         "Expectancy (R)", "Total R", "PF", "MaxDD (R)", "|", "Passed n", "Win %",
+         "Expectancy (R)", "Total R", "PF", "MaxDD (R)", "Rule met"],
+        [[("**" + r["blocker"] + "**") if r["pooled"] else "", r["setup"],
+          results[r["blocker"]]["signals"] if r["pooled"] else "",
+          *_cells(r["blocked"]), "|", *_cells(r["passed"]),
+          ("YES" if r["meets"] else "no")] for r in rows])
+    lines += ["", "adx_low (trend_continuation) is not redone here: S33 (item 20) "
+              "replayed the signals the ADX 30 gate blocks at +0.022R to +0.054R.", ""]
+    met = [r for r in rows if r["pooled"] and r["meets"]]
+    sub = [r for r in rows if not r["pooled"] and r["meets"]]
+    lines.append(f"**CEO rule** (\"a blocker with >= +{S45_BAR_R}R over >= {S45_BAR_N} "
+                 f"rejected signals -> CEO loosens it for probation next Monday\"): "
+                 + ("met by " + ", ".join(f"{r['blocker']} ({r['blocked']['expectancy_r']:+.3f}R "
+                                          f"over {r['blocked']['trades']})" for r in met)
+                    if met else "met by NONE of the blockers") + "."
+                 + (" Per-setup rows that clear it on their own: "
+                    + ", ".join(f"{r['blocker']} / {r['setup']}" for r in sub) + "."
+                    if sub else ""))
+    lines += ["", "**Method.** Study copies of the detectors evaluate every filter "
+              "(the live ones stop at the first failure); a signal is 'blocked by X' "
+              "when X is its ONLY failure - detector filters before and after X, then "
+              "the worker gates (Rule #3 gap, SPY Rule #5 with the reclaim exempt, "
+              "entry hours for trend_continuation, the S25 ATR initial stop and "
+              "whole-share sizing on the live $5,000 / 1% / 25% config). Live "
+              "volume multipliers from bot_config.json (momentum 1.0x, reclaim "
+              "1.3x with the 1.0x soft floor). Daily setups are evaluated at the "
+              "open (the partial daily bar = the open), so outside_hours does not "
+              "apply to them: the worker scans only 09:30-16:00 and judges a daily "
+              "setup once, on the first cycle after the day's bar exists. Daily "
+              "exits = S34 'current' (R/ATR ladder +1R->BE, +1.5R->BE, +2R->+1R, "
+              "then highest close - 2.5 ATR; time stops day 5/10; 3R target "
+              "S28-capped at 3 ATR); trend_continuation exits = the S33 intraday "
+              "rule (2 ATR stop, 3R target S28-capped, 2.5 ATR trail from +1R "
+              "floored at entry). For each blocker, passed + blocked-by-X are "
+              "replayed together, one position per symbol, as if X were loosened; "
+              "the table shows the blocked subset. Reproduce with "
+              "`python study_exit_grid.py --s45 --fetch` (fetch after the close).",
+              "", "**Limits.** Today's universe (survivorship); IEX bars, daily bars "
+              "resampled from them; signals, not gatekeeper-approved trades; one "
+              "year; post_earnings_continuation excluded (no historical earnings "
+              "calendar), pullback_in_uptrend retired; earnings exits, watch-only "
+              "catalysts, max positions and the daily-loss breaker not modelled; "
+              "trend indicators on the full series, not the worker's 5-day window."
+              + (f" No bars for: {', '.join(missing)}." if missing else ""),
+              "", sc.UPPER_BOUND]
+    return lines
+
+
+def s45_main(append=False, universe_file="universe_today.json", fetch=False,
+             cache=S34_CACHE):
+    import backtest
+    import study_adx_band as ab
+    symbols = [s for s in ab.study_universe(universe_file) if s != "SPY"]
+    if not symbols:
+        print(f"No universe symbols in {universe_file}.")
+        return 2
+    if fetch:
+        print(f"fetched {ab.fetch_m5_year(['SPY'] + symbols, start=S45_START, end=S45_END, cache=cache)}")
+    config = _live_config()
+    st = ab.s33_settings(config)
+    spy5 = load_m5_rth("SPY", cache)
+    if spy5 is None:
+        print("No SPY bars - run with --fetch after the close.")
+        return 2
+    spy_d = daily_from_m5(spy5)
+    regime = backtest.spy_regime_series(spy_d)
+    regime.index = pd.DatetimeIndex([pd.Timestamp(i).tz_localize(None) for i in regime.index])
+    spy_trend, _ = ab.spy_regime_maps(ab.load_m5("SPY", cache))
+    frames, prepared, missing = {}, {}, []
+    for sym in symbols:
+        m5 = load_m5_rth(sym, cache)
+        if m5 is None or m5.empty:
+            missing.append(sym)
+            continue
+        daily = daily_from_m5(m5)
+        daily.index = pd.DatetimeIndex([pd.Timestamp(i).tz_localize(None) for i in daily.index])
+        frames[sym] = (m5, daily)
+        raw = ab.load_m5(sym, cache)
+        df = ab.add_indicators(raw)
+        datr = ab.prior_day_map(dict(zip(*ab._daily_atr(raw))))
+        prepared[sym] = (df, datr, s45_trend_candidates(df, sym, st, spy_trend))
+    daily_cands = s45_daily_candidates(frames, regime, config)
+    results = s45_run(daily_cands, frames, prepared, st)
+    n_trend = sum(len(c) for _a, _b, c in prepared.values())
+    lines = s45_render(results, len(frames), len(daily_cands), n_trend, missing)
+    print("\n".join(lines))
+    if append:
+        n = sc.append_agenda("Study: S45 funnel replay per blocker - are the "
+                             "deterministic filters throwing away winners? (2026-10-22)",
+                             lines)
+        print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+    return 0
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -1450,9 +1889,13 @@ def main():
     ap.add_argument("--s37", action="store_true")
     ap.add_argument("--s36", action="store_true")
     ap.add_argument("--s44", action="store_true")
+    ap.add_argument("--s45", action="store_true")
+    ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
     a = ap.parse_args()
+    if a.s45:
+        return s45_main(a.append, a.universe_file, a.fetch)
     if a.s34:
         return s34_main(a.append, a.universe_file)
     if a.s36:

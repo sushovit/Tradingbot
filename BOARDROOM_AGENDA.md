@@ -1637,4 +1637,43 @@ Window 2025-10-26..2026-10-21 (51.4 weeks; Finnhub news starts 2025-10-26), 162 
 - No gatekeeper, no whole-share sizing, no slippage or spread on the next-bar-open fill, no max-positions or daily-loss breaker: an upper bound on what the desk would have realised.
 
 Reproduce with `python study_exit_grid.py --s44`.
+---
+
+## 27. Study: S45 funnel replay per blocker - are the deterministic filters throwing away winners? (CEO 2026-10-22, item B)
+
+**S45 (CEO 2026-10-22, item B) - funnel replay per blocker, study only.** One year of 5-minute IEX bars, signals 2025-10-14..2026-10-21, 162 universe symbols (11353 daily triggers, 68489 trend_continuation crosses). For each deterministic blocker: the signals it stopped that passed EVERY other live filter and gate, replayed through the live exits, against the signals that passed everything (same setups, same window).
+
+| Blocker | Setup(s) | Blocked signals | Rejected n (replayed) | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | | | Passed n | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Rule met |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **volume_low** | momentum_continuation + mean_reversion_reclaim + trend_continuation | 3583 | 3383 | 40.8% | +0.041 | +138.13 | 1.08 | 120.46 | | | 2922 | 41.4% | +0.095 | +277.54 | 1.21 | 65.74 | no |
+|  | momentum_continuation |  | 160 | 40.0% | +0.022 | +3.47 | 1.04 | 20.52 | | | 611 | 43.5% | +0.096 | +58.38 | 1.23 | 37.77 | no |
+|  | mean_reversion_reclaim |  | 2255 | 40.8% | +0.048 | +107.57 | 1.11 | 91.34 | | | 1781 | 41.0% | +0.086 | +152.43 | 1.2 | 48.38 | no |
+|  | trend_continuation |  | 968 | 40.9% | +0.028 | +27.09 | 1.05 | 53.47 | | | 530 | 40.6% | +0.126 | +66.73 | 1.23 | 25.15 | no |
+| **change_too_small** | momentum_continuation | 474 | 461 | 39.3% | +0.040 | +18.60 | 1.08 | 31.39 | | | 611 | 43.5% | +0.096 | +58.38 | 1.23 | 37.77 | no |
+| **below_ema9** | mean_reversion_reclaim | 394 | 388 | 42.3% | +0.070 | +27.34 | 1.16 | 26.93 | | | 1781 | 41.0% | +0.086 | +152.43 | 1.2 | 48.38 | no |
+| **spy_bearish** | momentum_continuation + trend_continuation | 608 | 602 | 43.2% | +0.110 | +66.28 | 1.23 | 29.4 | | | 1141 | 42.2% | +0.110 | +125.12 | 1.23 | 45.8 | no |
+|  | momentum_continuation |  | 163 | 39.9% | -0.007 | -1.22 | 0.98 | 22.14 | | | 611 | 43.5% | +0.096 | +58.38 | 1.23 | 37.77 | no |
+|  | trend_continuation |  | 439 | 44.4% | +0.154 | +67.50 | 1.31 | 24.13 | | | 530 | 40.6% | +0.126 | +66.73 | 1.23 | 25.15 | YES |
+| **rsi_low** | trend_continuation | 53 | 53 | 35.8% | -0.152 | -8.07 | 0.79 | 17.24 | | | 530 | 40.6% | +0.126 | +66.73 | 1.23 | 25.15 | no |
+| **outside_hours** | trend_continuation | 317 | 317 | 40.1% | +0.199 | +63.13 | 1.26 | 40.51 | | | 530 | 40.6% | +0.126 | +66.73 | 1.23 | 25.15 | YES |
+
+adx_low (trend_continuation) is not redone here: S33 (item 20) replayed the signals the ADX 30 gate blocks at +0.022R to +0.054R.
+
+**CEO rule** ("a blocker with >= +0.15R over >= 50 rejected signals -> CEO loosens it for probation next Monday"): met by outside_hours (+0.199R over 317). Per-setup rows that clear it on their own: spy_bearish / trend_continuation.
+
+**Method.** Study copies of the detectors evaluate every filter (the live ones stop at the first failure); a signal is 'blocked by X' when X is its ONLY failure - detector filters before and after X, then the worker gates (Rule #3 gap, SPY Rule #5 with the reclaim exempt, entry hours for trend_continuation, the S25 ATR initial stop and whole-share sizing on the live $5,000 / 1% / 25% config). Live volume multipliers from bot_config.json (momentum 1.0x, reclaim 1.3x with the 1.0x soft floor). Daily setups are evaluated at the open (the partial daily bar = the open), so outside_hours does not apply to them: the worker scans only 09:30-16:00 and judges a daily setup once, on the first cycle after the day's bar exists. Daily exits = S34 'current' (R/ATR ladder +1R->BE, +1.5R->BE, +2R->+1R, then highest close - 2.5 ATR; time stops day 5/10; 3R target S28-capped at 3 ATR); trend_continuation exits = the S33 intraday rule (2 ATR stop, 3R target S28-capped, 2.5 ATR trail from +1R floored at entry). For each blocker, passed + blocked-by-X are replayed together, one position per symbol, as if X were loosened; the table shows the blocked subset. Reproduce with `python study_exit_grid.py --s45 --fetch` (fetch after the close).
+
+**Limits.** Today's universe (survivorship); IEX bars, daily bars resampled from them; signals, not gatekeeper-approved trades; one year; post_earnings_continuation excluded (no historical earnings calendar), pullback_in_uptrend retired; earnings exits, watch-only catalysts, max positions and the daily-loss breaker not modelled; trend indicators on the full series, not the worker's 5-day window.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+
+### Reading
+
+- **The CEO rule is met by outside_hours** (trend_continuation only): the 317 crosses the 09:30-11:30 / 14:00-15:00 windows blocked ran +0.199R (total +63.1R, PF 1.26) against +0.126R for the passed trend signals. **It is fragile:** drop the five best trades and it falls to +0.072R; by half-year it is +0.319R (Oct-Apr, 142) then +0.102R (Apr-Oct, 175); its MaxDD (40.5R) is 1.6x the passed population's. Split by window: midday 11:30-14:00 +0.176R (195, MaxDD 10.5R), late 15:00-16:00 +0.236R (122, MaxDD 32.1R) - the late entries hold overnight under the intraday rule (no end-of-day exit), so a part of that edge is overnight gap risk the desk does not take today.
+- **spy_bearish does NOT meet it as a blocker** (+0.110R over 602 pooled): momentum_continuation signals in a bearish SPY are -0.007R (163) - the gate does its job there. The trend_continuation half alone clears the bar (+0.154R over 439, vs +0.126R passed), but only just, and it is +0.248R then +0.026R by half-year; noted, not a pooled pass.
+- **volume_low, change_too_small, below_ema9 and rsi_low keep their place.** Their rejected signals are positive but thin (+0.040R to +0.070R; rsi_low -0.152R) and below the passed signals of the same setups in every case; volume_low is the largest funnel (3,383 replayed) and would roughly double the drawdown for +0.041R a trade.
+- **adx_low:** S33 (item 20), +0.022R to +0.054R - not redone.
+
+**Limits.** Today's universe (survivorship); IEX 5-minute bars, daily bars resampled from them; signals, not gatekeeper-approved trades (an UPPER BOUND); one year only (2025-10-14..2026-10-21) - the half-year splits above show how much one regime carries; post_earnings_continuation excluded (no calendar). Study only; no live change.
 
