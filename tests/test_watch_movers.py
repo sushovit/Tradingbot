@@ -181,3 +181,26 @@ def test_a_long_note_wraps_instead_of_being_cut():
     lines = wm.table_lines(rows, NOW)
     body = " ".join(l.strip() for l in lines[3:5])
     assert body == "Super Micro raises full-year guidance citing strong AI server demand"
+
+
+def test_notes_are_off_until_the_ceo_approves(monkeypatch):
+    """CEO 2026-10-22: the table ships WITHOUT the local-model note."""
+    cfg = json.load(open("bot_config.json", encoding="utf-8"))
+    assert cfg["watch_movers"]["notes"] is False and wm.DEFAULTS["notes"] is False
+    import universe
+    monkeypatch.setattr(universe, "load_universe_tickers", lambda: ["UPP"])
+    called = []
+    rows = wm.run(FakeBroker(), None, cfg, sqlite3.connect(":memory:"), NOW,
+                  note_fn=lambda *a: called.append(a) or "x")
+    assert called == [] and all(r["note"] is None for r in rows)
+    lines = wm.table_lines(rows, NOW)
+    body = lines[2:lines.index("-" * 50, 2)]
+    assert [l.split()[0] for l in body] == ["OLD", "DWN", "UPP"]       # no note lines
+
+
+def test_notes_can_be_switched_on(monkeypatch):
+    import universe
+    monkeypatch.setattr(universe, "load_universe_tickers", lambda: [])
+    rows = wm.run(FakeBroker(), None, {"watch_movers": {"notes": True}},
+                  sqlite3.connect(":memory:"), NOW, note_fn=lambda *a: "a note")
+    assert {r["note"] for r in rows} == {"a note"}

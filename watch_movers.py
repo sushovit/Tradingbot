@@ -35,7 +35,9 @@ logger = logging.getLogger("watch_movers")
 ET = pytz.timezone("America/New_York")
 TITLE = "👀 Watching"
 NO_NOTE = "no note"
-DEFAULTS = {"min_price": 5.0, "max_price": 1200.0, "min_dollar_volume": 20_000_000,
+# CEO 2026-10-22: notes are OFF until the CEO approves them (P5 speed test).
+DEFAULTS = {"notes": False,
+            "min_price": 5.0, "max_price": 1200.0, "min_dollar_volume": 20_000_000,
             "min_change_pct": 3.0, "max_names": 10, "note_timeout_s": 30,
             "note_words": 12, "yield_wait_s": 60}
 NOTE_SYSTEM = (
@@ -221,8 +223,9 @@ def table_lines(rows, now):
     lines = [f"{'TICK':<5} {'CHG%':>6}  WHY NOT TRADED", "-" * w]
     for r in rows:
         lines.append(f"{r['symbol'][:5]:<5} {r['change_pct']:>+6.1f}  {r['why']}"[:w])
-        import textwrap
-        lines += [f"      {part}" for part in textwrap.wrap(r["note"], w - 6)[:2]]
+        if r.get("note"):
+            import textwrap
+            lines += [f"      {part}" for part in textwrap.wrap(r["note"], w - 6)[:2]]
     lines += ["-" * w, "View only - never traded from this list."]
     return lines
 
@@ -251,12 +254,16 @@ def run(broker, client, config, conn, now=None, note_fn=None):
     line = dd.last_cycle_line("bot_status.log")
     if line and not line[1:11] == day:
         line = ""                                    # another day's cycle
+    notes_on = bool(settings(config)["notes"])
     note_fn = note_fn or (lambda t, hs, sec: write_note(t, hs, sec, config))
     for r in rows:
-        hs = headlines_for(client, r["symbol"], now)
         r["sector"] = sectors.sector_for(r["symbol"], r.get("name", ""))
-        r["headline"] = hs[0] if hs else None
-        r["note"] = note_fn(r["symbol"], hs, r["sector"])
+        if notes_on:                     # local model + headlines only when approved
+            hs = headlines_for(client, r["symbol"], now)
+            r["headline"] = hs[0] if hs else None
+            r["note"] = note_fn(r["symbol"], hs, r["sector"])
+        else:
+            r["headline"], r["note"] = None, None
         r["why"] = why_not_traded(r["symbol"], uni, line)
     return rows
 
@@ -272,13 +279,15 @@ def main(argv=None) -> int:
     import journal
     from broker import Broker
     config = load_config()
+    notes_on = bool(settings(config)["notes"])
     if not (config.get("watch_movers") or {}).get("enabled", True):
         print("watch_movers disabled in bot_config.json")
         return 0
     now = datetime.now(ET)
     conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
     try:
-        rows = run(Broker(), catalysts.finnhub_client(), config, conn, now)
+        rows = run(Broker(), catalysts.finnhub_client() if notes_on else None,
+                   config, conn, now)
     finally:
         conn.close()
     for line in table_lines(rows, now):
