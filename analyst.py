@@ -97,6 +97,23 @@ def _shadow_worker(gk_kwargs, ticker, setup_name, context, claude_verdict):
     _journal_shadow(job, _infer(job))
 
 
+SHADOW_BUSY_FILE = "shadow_busy.marker"
+
+
+def _busy(on: bool):
+    """CEO 2026-10-23: a marker other local-model users (watch_movers.py)
+    read so they yield to the shadow queue. Never raises."""
+    import os
+    try:
+        if on:
+            with open(SHADOW_BUSY_FILE, "w") as f:
+                f.write(str(time.time()))
+        elif os.path.exists(SHADOW_BUSY_FILE):
+            os.remove(SHADOW_BUSY_FILE)
+    except OSError:
+        pass
+
+
 class ShadowQueue:
     """CEO 2026-10-17 (S31). FIFO; ONE inference at a time (the 8.35 GB
     memory cap of S28 is unchanged); each inference gets its full 45 s from
@@ -138,7 +155,12 @@ class ShadowQueue:
                 logger.info(f"shadow: dropped {job['ticker']} after "
                             f"{job['waited_s']:.0f}s in the queue")
             else:
-                self._record(job, self._infer(job))
+                _busy(True)
+                try:
+                    verdict = self._infer(job)
+                finally:
+                    _busy(False)
+                self._record(job, verdict)
         except Exception as e:
             logger.error(f"shadow queue item failed: {e}")
         finally:

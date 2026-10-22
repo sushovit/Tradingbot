@@ -18,7 +18,8 @@
         "daily_table": true,
         "missed_movers": true,
         "catalysts": true,
-        "scoreboard": true
+        "scoreboard": true,
+        "watching": true
     },
     "catalysts": {
         "enabled": true,

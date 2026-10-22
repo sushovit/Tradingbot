@@ -159,7 +159,8 @@ def test_shipped_config_has_every_switch_on():
     assert cfg["discord"] == {"trade_alerts": True, "daily_table": True,
                               "missed_movers": True,      # S33
                               "catalysts": True,          # S36
-                              "scoreboard": True}         # CEO 10-21
+                              "scoreboard": True,         # CEO 10-21
+                              "watching": True}           # CEO 10-23
 
 
 def test_the_worker_fires_alerts_in_the_background():

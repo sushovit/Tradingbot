@@ -420,6 +420,80 @@ def _fetch_bars(tickers, broker=None):
         return {}
 
 
+# ============================================================ watchlist (CEO 2026-10-23)
+# watch_movers.py journals view-only names (source='watch') with the price
+# when they were posted. Graded here by plain forward move: the close +1, +3
+# and +5 sessions after the post date, as % of the posted price. Its own
+# table, like rejection_outcomes - these are not trades.
+
+WATCH_HORIZONS = (1, 3, 5)
+
+
+def init_watch_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watch_outcomes (
+            decision_id INTEGER PRIMARY KEY,
+            posted_date TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            price REAL NOT NULL,
+            ret_1 REAL, ret_3 REAL, ret_5 REAL,
+            updated_at TEXT NOT NULL
+        )""")
+
+
+def watch_forward(bars, posted_date: str, price: float) -> dict:
+    """{1: %, 3: %, 5: %} - the close N completed sessions after the posted
+    date vs the posted price; None where that session has not closed yet."""
+    out = {h: None for h in WATCH_HORIZONS}
+    if bars is None or getattr(bars, "empty", True) or not price:
+        return out
+    days = [str(i)[:10] for i in bars.index]
+    after = [k for k, d in enumerate(days) if d > posted_date]
+    today = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    for h in WATCH_HORIZONS:
+        if len(after) >= h:
+            k = after[h - 1]
+            if days[k] < today:                     # completed sessions only
+                out[h] = round(100.0 * (float(bars["close"].iloc[k]) / price - 1), 3)
+    return out
+
+
+def grade_watch(db_file: str = None, fetch=None) -> dict:
+    """Fill/refresh watch_outcomes for every watch row not yet fully graded."""
+    db_file = db_file or journal.DB_FILE
+    conn = sqlite3.connect(db_file)
+    try:
+        init_watch_table(conn)
+        rows = conn.execute(
+            "SELECT d.id, substr(d.timestamp,1,10), d.ticker, d.context FROM decisions d "
+            "LEFT JOIN watch_outcomes w ON w.decision_id = d.id "
+            "WHERE d.source='watch' AND (w.decision_id IS NULL OR w.ret_5 IS NULL)").fetchall()
+        if not rows:
+            return {"graded": 0, "complete": 0}
+        fetch = fetch or _fetch_bars
+        bars = fetch({r[2] for r in rows})
+        done = complete = 0
+        for did, day, ticker, ctx in rows:
+            try:
+                price = float(json.loads(ctx or "{}").get("price"))
+            except (TypeError, ValueError):
+                continue
+            fwd = watch_forward(bars.get(ticker), day, price)
+            conn.execute(
+                "INSERT INTO watch_outcomes (decision_id, posted_date, ticker, price, "
+                "ret_1, ret_3, ret_5, updated_at) VALUES (?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(decision_id) DO UPDATE SET ret_1=excluded.ret_1, "
+                "ret_3=excluded.ret_3, ret_5=excluded.ret_5, updated_at=excluded.updated_at",
+                (did, day, ticker, price, fwd[1], fwd[3], fwd[5],
+                 datetime.now(EASTERN_TZ).isoformat(timespec="seconds")))
+            done += 1
+            complete += fwd[5] is not None
+        conn.commit()
+        return {"graded": done, "complete": complete}
+    finally:
+        conn.close()
+
+
 # ============================================================ reporting
 
 def monthly_table(month: str = None, db_file: str = None) -> list:
@@ -482,6 +556,12 @@ def main() -> int:
         print(f"Graded {span}. Evaluated {total['evaluated']} "
               f"rejection(s); {total['resolved']} resolved. " + ", ".join(
                   f"{k}={v}" for k, v in sorted(total["by_outcome"].items())))
+        try:
+            w = grade_watch()
+            print(f"Watchlist: graded {w['graded']} name(s), {w['complete']} "
+                  f"complete (+1/+3/+5 sessions).")
+        except Exception as e:
+            print(f"Watchlist grading skipped: {e}")
         return 0
 
     if args.backfill:
