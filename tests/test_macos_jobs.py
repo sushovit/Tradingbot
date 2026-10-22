@@ -30,6 +30,7 @@ EXPECTED = {
     "catalysts_post": ["catalysts.py", "--post"],       # S36: 09:20 ET post
     "awake_week": ["jobs/awake_week.py"],               # CEO 10-21: Sun 20:00
     "scoreboard": ["scoreboard.py"],                    # CEO 10-21: Fri 16:30
+    "watch_movers": ["watch_movers.py"],                # CEO 10-23: every 30 min
 }
 
 
