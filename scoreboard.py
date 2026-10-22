@@ -148,7 +148,69 @@ def _m(x):
     return "-" if x is None else ("-" if x < 0 else "+") + f"{abs(x):,.2f}"
 
 
-def table_lines(rows, totals, day):
+# CEO 2026-10-22 (after KMI/SLB: Claude approved both, the shadow said no to
+# both): every account trade split by the SHADOW model's verdict on the same
+# signal - its local_shadow row for the ticker logged within 15 minutes after
+# the gatekeeper call. P&L to date: realized, or unrealized while open.
+SHADOW_MATCH_MIN = 15
+
+
+def shadow_verdict(conn, decision_id):
+    """'yes' / 'no' / None (no verdict, or the shadow errored)."""
+    if decision_id is None:
+        return None
+    row = conn.execute("SELECT ticker, timestamp FROM decisions WHERE id=?",
+                       (decision_id,)).fetchone()
+    if not row:
+        return None
+    ticker, ts = row
+    hit = conn.execute(
+        "SELECT approved, verdict FROM decisions WHERE source='local_shadow' AND ticker=? "
+        "AND timestamp >= ? AND timestamp <= datetime(?, ?) ORDER BY id LIMIT 1",
+        (ticker, ts, ts, f"+{SHADOW_MATCH_MIN} minutes")).fetchone()
+    if not hit:
+        return None
+    try:
+        if "error" in json.loads(hit[1] or "{}"):
+            return None
+    except ValueError:
+        return None
+    return "yes" if hit[0] else "no"
+
+
+def shadow_split(conn, open_positions):
+    """{'yes'|'no'|'none': {'n', 'pnl', 'tickers'}} over every trade on the
+    $5,000 account since it started (all setups)."""
+    out = {k: {"n": 0, "pnl": 0.0, "tickers": []} for k in ("no", "yes", "none")}
+    for t in trade_table.load_trades(conn):
+        if t["buy_ts"] < trade_table.ACCOUNT_START:
+            continue
+        if str(t.get("setup") or "").upper().startswith("INTERN"):
+            continue
+        closed = t["sell"] is not None and t["reason"] != "partial"
+        pnl = t["pnl"] if closed else (open_positions.get(t["ticker"]) or {}).get("unrealized")
+        did = conn.execute("SELECT decision_id FROM trades WHERE action='BUY' AND ticker=? "
+                           "AND timestamp=?", (t["ticker"], t["buy_ts"])).fetchone()
+        key = shadow_verdict(conn, did[0] if did else None) or "none"
+        out[key]["n"] += 1
+        out[key]["pnl"] += pnl or 0.0
+        out[key]["tickers"].append(t["ticker"])
+    return out
+
+
+def shadow_lines(split):
+    if not split:
+        return []
+    lab = {"no": "Shadow said NO ", "yes": "Shadow said YES", "none": "No shadow verdict"}
+    lines = ["Shadow vs trades (since 10-09, running):"]
+    for k in ("no", "yes", "none"):
+        v = split[k]
+        if v["n"] or k != "none":
+            lines.append(f"  {lab[k]}: {v['n']} tr {_m(v['pnl'])}")
+    return lines
+
+
+def table_lines(rows, totals, day, shadow=None):
     w = trade_table.WIDTH
     head = (f"{'TICK':<5} {'IN':<5} {'S':<1} {'LIVE $':>8} {'RULE $':>8} "
             f"{'OWNER $':>8} {'DIFF':>8}")
@@ -175,6 +237,7 @@ def table_lines(rows, totals, day):
         lines.append("† live result bent by a journaled bug")
     if totals["unscored"]:
         lines.append("No replay for: " + ", ".join(totals["unscored"]))
+    lines += shadow_lines(shadow)
     lines.append(f"Switch if owner > rule over >= {MIN_CLOSED} closed.")
     if totals["rule_met"]:
         lines.append(f"Rule MET ({totals['closed_n']} closed).")
@@ -226,10 +289,15 @@ def main(argv=None) -> int:
     from broker import Broker
     conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
     try:
-        rows, totals = build(day, conn, Broker(), config, positions)
+        broker = Broker()
+        rows, totals = build(day, conn, broker, config, positions)
+        try:
+            split = shadow_split(conn, trade_table.live_open_positions(broker))
+        except Exception:
+            split = None
     finally:
         conn.close()
-    lines = table_lines(rows, totals, day)
+    lines = table_lines(rows, totals, day, split)
     print("\n".join(lines))
     if a.no_post:
         return 0

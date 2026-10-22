@@ -1439,6 +1439,14 @@ def _worker_loop():
                 journal_pass_once(ticker, signal.setup_name, "max_positions", "")
                 status_updates.append(f"{ticker}: Pass (max positions)")
                 continue
+            # CEO 2026-10-22: max 1 open position per sector (KMI + SLB, both
+            # energy, entered 09:32 and both stopped). Before the gatekeeper.
+            _sector_block = risk.sector_cap_block(ticker, positions, config)
+            if _sector_block:
+                journal_pass_once(ticker, signal.setup_name, "sector_cap",
+                                  _sector_block)
+                status_updates.append(f"{ticker}: Pass (sector_cap)")
+                continue
 
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,
