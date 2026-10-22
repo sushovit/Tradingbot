@@ -21,6 +21,10 @@
         "scoreboard": true,
         "watching": true
     },
+    "watch_movers": {
+        "enabled": true,
+        "notes": false
+    },
     "catalysts": {
         "enabled": true,
         "min_gap_pct": 3.0,
