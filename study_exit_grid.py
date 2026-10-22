@@ -2461,6 +2461,189 @@ def s48_main(append=False, cache=S34_CACHE, etf_cache=S48_ETF_CACHE,
     return lines, {"base": base, "runs": kept, "verdict": verdict, "has": has,
                    "failed": failed, "cnt": cnt, "unmapped": unmapped,
                    "movers": mover_rows}
+# =========================================================== S49 (2026-10-22)
+# CEO 2026-10-22 after KMI/SLB (both energy reclaims, entered 09:32, both
+# stopped): (a) mean_reversion_reclaim entry timing - at the open (current,
+# the 09:31 cycle) vs not before 09:45 vs not before 10:00 ET; (b) the effect
+# of a max-1-open-per-sector cap on the live daily setups. Live daily exit
+# rule (S34 current). A delayed entry buys at the open of the first bar at or
+# after the time; its stop is the live ATR-clamped stop from THAT price, and
+# the trade is skipped ("avoided") if price traded through the structural
+# stop before the entry time.
+
+S49_TIMES = (None, (9, 45), (10, 0))
+S49_SETUPS = ("momentum_continuation", "mean_reversion_reclaim")
+
+
+def s49_label(t):
+    return "at the open (current)" if t is None else f"not before {t[0]:02d}:{t[1]:02d}"
+
+
+def simulate_with_exit(m5, daily_close, atr_day, entry_day, entry, stop, target, steps):
+    """simulate_half (no partial) that also returns the exit timestamp:
+    (r, reason, mfe_r, exit_ts) or None while open at the end of data."""
+    risk = entry - stop
+    bars = m5[m5.index.normalize() >= pd.Timestamp(entry_day).tz_convert(ET).normalize()]
+    if bars.empty:
+        return None
+    days = sorted({t.date() for t in bars.index})
+    day_no = {d: i + 1 for i, d in enumerate(days)}
+    live, hc, mfe, first, entry_date = stop, entry, 0.0, True, days[0]
+    for ts, b in bars.iterrows():
+        o, h, l, c = (float(b["open"]), float(b["high"]), float(b["low"]), float(b["close"]))
+        d = ts.date()
+        if not first and o <= live:
+            return (o - entry) / risk, "stop (gap)", mfe, ts
+        if not first and o >= target:
+            return (o - entry) / risk, "target (gap)", max(mfe, (o - entry) / risk), ts
+        n = day_no[d]
+        if (ts.hour, ts.minute) == (15, 55) and (n >= 10 or (n >= 5 and mfe < 0.5)):
+            return (o - entry) / risk, f"time stop day {n}", mfe, ts
+        first = False
+        mfe = max(mfe, (h - entry) / risk)
+        if l <= live:
+            return (live - entry) / risk, "stop", mfe, ts
+        if h >= target:
+            return (target - entry) / risk, "target", mfe, ts
+        if (ts.hour, ts.minute) >= (10, 0):
+            hc = max(hc, c)
+            cands = [entry + sr * risk for t, sr in steps if (hc - entry) / risk >= t]
+            if (hc - entry) / risk >= 2.0:
+                prior = [v for dd, v in daily_close.items() if entry_date <= dd < d]
+                a = atr_day.get(d)
+                if prior and a:
+                    cands.append(max(prior) - 2.5 * a)
+            if cands:
+                cand = math.ceil(max(cands) * 100 - 1e-6) / 100
+                if live < cand < c:
+                    live = cand
+    return None
+
+
+def s49_delayed_entry(m5_day, structural, not_before):
+    """(entry price, entry ts) at the open of the first bar at/after
+    `not_before`, or (None, 'avoided') if the structural stop traded first."""
+    if not_before is None:
+        return float(m5_day["open"].iloc[0]), m5_day.index[0]
+    before = m5_day[[(t.hour, t.minute) < not_before for t in m5_day.index]]
+    if not before.empty and float(before["low"].min()) <= structural:
+        return None, "avoided"
+    after = m5_day[[(t.hour, t.minute) >= not_before for t in m5_day.index]]
+    if after.empty:
+        return None, "no bar"
+    return float(after["open"].iloc[0]), after.index[0]
+
+
+def s49_run(signals, frames, setups=("mean_reversion_reclaim",), not_before=None,
+            sector_cap=False, sector_of=None):
+    """Trades {setup, sym, r, why, mfe_r, entry_ts, exit_ts, sector} plus the
+    count of signals avoided (stop traded before a delayed entry)."""
+    import sectors
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in params["steps"]]
+    cap = pm.target_cap_atr(_live_config())
+    sector_of = sector_of or sectors.sector_for
+    trades, busy, avoided, open_ = [], {}, 0, []
+    for setup, sym, day, entry0, structural in sorted(signals, key=lambda x: x[2]):
+        if setup not in setups:
+            continue
+        if sym in busy and day.date() <= busy[sym]:
+            continue
+        m5, daily = frames[sym]
+        day_bars = m5[m5.index.normalize() == pd.Timestamp(day).tz_convert(ET).normalize()]
+        if day_bars.empty:
+            continue
+        entry, ets = s49_delayed_entry(day_bars, structural, not_before)
+        if entry is None:
+            avoided += ets == "avoided"
+            continue
+        sec = sector_of(sym)
+        if sector_cap and sec and sec != sectors.UNCLASSIFIED:
+            open_ = [t for t in open_ if t["exit_ts"] > ets]
+            if any(t["sector"] == sec for t in open_):
+                continue
+        atrs = atr_by_day(daily)
+        atr = atrs.get(day.date())
+        if not atr:
+            continue
+        stop = pm.initial_stop(entry, structural, atr, params)
+        if stop >= entry:
+            continue
+        target = pm.capped_target(entry, stop, atr, cap, 3.0)
+        closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+        res = simulate_with_exit(m5[m5.index >= ets], closes, atrs, day, entry, stop,
+                                 target, steps)
+        if res is None:
+            busy[sym] = m5.index[-1].date()
+            continue
+        r, why, mfe, xts = res
+        busy[sym] = xts.date()
+        t = {"setup": setup, "sym": sym, "r": r, "why": why, "mfe_r": mfe,
+             "entry_ts": ets, "exit_ts": xts, "sector": sec}
+        trades.append(t)
+        open_.append(t)
+    return trades, avoided
+
+
+def s49_row(label, trades, avoided=None):
+    st = sc.aggregate(sorted(trades, key=lambda t: t["entry_ts"]))
+    return [label, st["trades"], f"{st['win_rate']}%" if st["trades"] else "-",
+            f"{st['expectancy_r']:+.3f}" if st["trades"] else "-",
+            f"{sum(t['r'] for t in trades):+.1f}", st["profit_factor"] if st["trades"] else "-",
+            st["max_drawdown_r"] if st["trades"] else "-",
+            "-" if avoided is None else avoided]
+
+
+def s49_decision(rows_by_time):
+    """The CEO rule: a later time qualifies if its expectancy >= current AND
+    its MaxDD is smaller. Returns the best qualifying time or None."""
+    cur = rows_by_time[None]
+    best = None
+    for t, st in rows_by_time.items():
+        if t is None or not st["trades"] or not cur["trades"]:
+            continue
+        if st["expectancy_r"] >= cur["expectancy_r"] and st["max_drawdown_r"] < cur["max_drawdown_r"]:
+            if best is None or st["expectancy_r"] > rows_by_time[best]["expectancy_r"]:
+                best = t
+    return best
+
+
+def s49_main(universe_file="universe_today.json"):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols, start="2025-10-14", setups=S49_SETUPS)
+    timing, stats = [], {}
+    for t in S49_TIMES:
+        tr, av = s49_run(signals, frames, ("mean_reversion_reclaim",), t)
+        stats[t] = sc.aggregate(sorted(tr, key=lambda x: x["entry_ts"]))
+        timing.append(s49_row(s49_label(t), tr, av))
+    best = s49_decision(stats)
+    caps = []
+    for setups, name in ((("mean_reversion_reclaim",), "reclaim"), (S49_SETUPS, "reclaim + momentum")):
+        a, _ = s49_run(signals, frames, setups)
+        b, _ = s49_run(signals, frames, setups, sector_cap=True)
+        caps.append(s49_row(f"{name}, no cap", a))
+        caps.append(s49_row(f"{name}, max 1 per sector", b))
+    lines = ["**S49 (CEO 2026-10-22) - reclaim entry timing and the sector cap.** "
+             f"5-minute replay of the live daily rule, 2025-10-14..2026-10-21, "
+             f"{len(frames)} symbols.", "", "*(a) mean_reversion_reclaim entry time*", ""]
+    lines += sc.table(["Entry", "Trades", "Win %", "Expectancy (R)", "Total R", "PF",
+                       "MaxDD (R)", "Avoided (stop hit before entry)"], timing)
+    lines += ["", ("**Rule met: " + s49_label(best) + "** (expectancy >= current and a "
+                   "smaller MaxDD) -> set in config before 09:00 ET." if best else
+                   "**Rule not met** - no later entry time has expectancy >= current "
+                   "AND a smaller MaxDD. No change."),
+              "", "*(b) max 1 open position per sector (live daily setups)*", ""]
+    lines += sc.table(["Book", "Trades", "Win %", "Expectancy (R)", "Total R", "PF",
+                       "MaxDD (R)", "-"], caps)
+    lines += ["", "**Limits.** Today's universe (survivorship); IEX 5-minute bars; "
+              "signals, not gatekeeper-approved trades; sectors from sectors.py "
+              "(unclassified names never capped); the max-positions cap and the "
+              "daily-loss breaker are not modelled.", "", sc.UPPER_BOUND]
+    print("\n".join(lines))
+    return lines, best
 
 
 def main():
@@ -2474,6 +2657,7 @@ def main():
     ap.add_argument("--s45", action="store_true")
     ap.add_argument("--s46", action="store_true")
     ap.add_argument("--s48", action="store_true")
+    ap.add_argument("--s49", action="store_true")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
@@ -2485,6 +2669,9 @@ def main():
             n = sc.append_agenda("Study: S48 gap-free intraday rallies (CEO P4, "
                                  "2026-10-22)", lines)
             print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+        return 0
+    if a.s49:
+        s49_main(a.universe_file)
         return 0
     if a.s46:
         s46_main(a.append, a.universe_file)

@@ -1700,7 +1700,38 @@ unchanged. The probation machinery (midday_probation.py, kill switch) was
 built and tested on branch s46-midday-probation and is NOT merged.
 ---
 
-## 28. Study: S48 gap-free intraday rallies (CEO P4, 2026-10-22)
+## 28. Study: S49 reclaim entry timing and the sector cap (2026-10-22)
+
+**S49 (CEO 2026-10-22) - reclaim entry timing and the sector cap.** 5-minute replay of the live daily rule, 2025-10-14..2026-10-21, 158 symbols.
+
+*(a) mean_reversion_reclaim entry time*
+
+| Entry | Trades | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Avoided (stop hit before entry) |
+|---|---|---|---|---|---|---|---|
+| at the open (current) | 1359 | 42.9% | +0.107 | +145.2 | 1.26 | 32.92 | 0 |
+| not before 09:45 | 1336 | 42.2% | +0.089 | +119.5 | 1.22 | 34.85 | 8 |
+| not before 10:00 | 1332 | 42.3% | +0.059 | +79.0 | 1.14 | 40.28 | 14 |
+
+**Rule not met** - no later entry time has expectancy >= current AND a smaller MaxDD. No change.
+
+*(b) max 1 open position per sector (live daily setups)*
+
+| Book | Trades | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | - |
+|---|---|---|---|---|---|---|---|
+| reclaim, no cap | 1359 | 42.9% | +0.107 | +145.2 | 1.26 | 32.92 | - |
+| reclaim, max 1 per sector | 325 | 41.2% | +0.107 | +34.8 | 1.26 | 17.8 | - |
+| reclaim + momentum, no cap | 1425 | 43.1% | +0.103 | +146.3 | 1.25 | 35.19 | - |
+| reclaim + momentum, max 1 per sector | 328 | 43.0% | +0.122 | +40.0 | 1.31 | 15.56 | - |
+
+**Limits.** Today's universe (survivorship); IEX 5-minute bars; signals, not gatekeeper-approved trades; sectors from sectors.py (unclassified names never capped); the max-positions cap and the daily-loss breaker are not modelled.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- **Entry timing: no change.** Waiting costs edge: +0.107R at the open, +0.089R not before 09:45, +0.059R not before 10:00, and MaxDD grows (32.9R -> 34.9R -> 40.3R). Few trades are 'avoided' by waiting (8 and 14 of ~1,350): a reclaim that fails usually fails later in the day, not in the first half hour. The rule (expectancy >= current AND smaller MaxDD) is not met.
+- **The sector cap (live since 2026-10-22, main a751a5a) keeps the edge per trade and halves the drawdown - but cuts the trade count by about three quarters.** Reclaim: +0.107R either way, MaxDD 32.9R -> 17.8R, trades 1,359 -> 325, total R +145 -> +35. Reclaim + momentum: +0.103R -> +0.122R, MaxDD 35.2R -> 15.6R, trades 1,425 -> 328. Signals cluster by sector (energy and semis move together), so most of the cut is same-day duplicates. This replay has no max-positions cap; live (max 4 open, max 2 on probation) already drops many of these, so the live effect is smaller than shown - but it works AGAINST the trade-count priority. **CEO decision:** keep max 1 per sector, or raise sector_cap.max_per_sector to 2.
+## 29. Study: S48 gap-free intraday rallies (CEO P4, 2026-10-22)
 
 **S48 (CEO P4, 2026-10-22) - gap-free intraday rallies, study only, no live change.** The movers our setups never see (DDOG, ZS, NET, CRWD on 2026-10-21 gapped only 0.4-2.8% and ran later). Definition:
 
