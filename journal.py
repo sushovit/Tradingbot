@@ -424,7 +424,8 @@ def shadow_dissent_report() -> dict:
 
 
 def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
-                   details: str = "", bar_key: str = None) -> int:
+                   details: str = "", bar_key: str = None,
+                   geometry: dict = None) -> int:
     """Journal a signal that fired but was killed by a DETERMINISTIC filter
     (ADX low, volume low, SPY bearish, circuit breaker, ...). Together with
     gatekeeper rows this makes the journal a complete record of every signal
@@ -469,6 +470,12 @@ def log_rules_pass(ticker: str, setup_name: str, filter_name: str,
     context = {"details": details}
     if bar_key:
         context["bar"] = str(bar_key)
+    # CEO 2026-10-22: the would-be entry/stop/target, where known, so
+    # outcomes.py can grade the rejection (evidence only).
+    for k in ("entry", "stop", "target"):
+        v = (geometry or {}).get(k)
+        if v is not None:
+            context[k] = v
     return log_decision(
         ticker, setup_name, context,
         {"approved": False, "rejection_reason": filter_name, "source": "rules"},

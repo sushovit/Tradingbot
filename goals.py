@@ -353,6 +353,49 @@ def tracker_evidence(conn, reason_keys) -> dict:
             "avg_r": avg if n else None}
 
 
+def blocker_stats(conn, start: str, end: str) -> list:
+    """CEO 2026-10-22: per blocker (rejection reason) for signals decided in
+    [start, end]: rejected n, graded n (the tracker has a resolved replay -
+    needs entry/stop/target, journaled on every rules rejection from
+    2026-10-22), win % and avg R of the graded ones. Most rejected first."""
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT reason_key, count(*), "
+            "sum(CASE WHEN resolved=1 AND r_achieved IS NOT NULL AND outcome IN "
+            "('target','stop','neither') THEN 1 ELSE 0 END), "
+            "sum(CASE WHEN resolved=1 AND r_achieved > 0 AND outcome IN "
+            "('target','stop','neither') THEN 1 ELSE 0 END), "
+            "avg(CASE WHEN resolved=1 AND r_achieved IS NOT NULL AND outcome IN "
+            "('target','stop','neither') THEN r_achieved END) "
+            "FROM rejection_outcomes WHERE decided_date BETWEEN ? AND ? "
+            "GROUP BY reason_key ORDER BY count(*) DESC", (start, end)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [{"blocker": k, "rejected": n, "graded": g or 0,
+             "win_pct": (100.0 * (w or 0) / g) if g else None,
+             "avg_r": a if g else None} for k, n, g, w, a in rows]
+
+
+def blocker_lines(conn, start: str, end: str) -> list:
+    rows = blocker_stats(conn, start, end)
+    out = [f"### Blockers ({start} .. {end})", "",
+           "| Blocker | Rejected | Graded | Win % | Avg R |", "|---|---|---|---|---|"]
+    for r in rows:
+        out.append(f"| {r['blocker']} | {r['rejected']} | {r['graded']} | "
+                   + (f"{r['win_pct']:.0f}%" if r["win_pct"] is not None else "-")
+                   + " | " + (f"{r['avg_r']:+.2f}" if r["avg_r"] is not None else "-")
+                   + " |")
+    if not rows:
+        out.append("| (no rejections) | 0 | 0 | - | - |")
+    out += ["", "_Graded = the outcome tracker replayed the rejected signal "
+            "through its would-be entry/stop/target to a target, a stop or the "
+            "10-session horizon. Rejections journaled before 2026-10-22 carry "
+            "no geometry and stay ungraded._"]
+    return out
+
+
 def guard(fix, conn) -> str:
     """The printed Fix line for one miss. Exposure proposals - flagged, or
     caught by EXPOSURE_PATTERN - need >= MIN_EVIDENCE tracker replays."""
@@ -615,6 +658,7 @@ def build(asof: date, conn, broker=None, goals: dict = None,
     lines += sheet_lines(wk, goals, "Week to date", monthly=False, conn=conn)
     lines += [""] + sheet_lines(mo, goals, "Month to date", monthly=True,
                                 conn=conn)
+    lines += [""] + blocker_lines(conn, *[d.isoformat() for d in week_bounds(asof)])
     lines += ["", DEFINITIONS]
     return lines, wk, mo
 

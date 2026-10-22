@@ -28,7 +28,7 @@ import logging
 
 import earnings as earnings_calendar
 
-from .base import Strategy, Signal, Rejection
+from .base import Strategy, Signal, Rejection, would_be
 
 GAP_PCT = 5.0
 GAP_VOL_MULT = 2.0
@@ -82,12 +82,14 @@ class PostEarningsContinuation(Strategy):
             # The trigger: FIRST close above the gap day's high.
             if float(bar["close"]) <= gap_high:
                 return None
+            _e = float(df["close"].iloc[-1])
+            geo = would_be(_e, gap_low, _e + (_e - gap_low) * TARGET_R)
             between = hist.iloc[-back:]
             if len(between) > 1 and bool(
                     (between["close"].iloc[:-1] > gap_high).any()):
                 return Rejection(self.name, ticker, "not_first_close_above",
                                  f"An earlier bar already closed above the gap "
-                                 f"high {gap_high:.2f}")
+                                 f"high {gap_high:.2f}", geometry=geo)
 
             # --- Earnings gate: this is what makes it the earnings class ---
             gap_day = _bar_date(hist, -1 - back) or datetime.date.today()
@@ -97,13 +99,13 @@ class PostEarningsContinuation(Strategy):
                 return Rejection(
                     self.name, ticker, "earnings_calendar_unavailable",
                     f"Could not confirm an earnings event near {gap_day} — "
-                    f"failing closed rather than trading a bare gap")
+                    f"failing closed rather than trading a bare gap", geometry=geo)
             if verdict is False:
                 return Rejection(
                     self.name, ticker, "no_earnings_event",
                     f"{gap_pct:+.1f}% gap on {gap_day} with no earnings event "
                     f"within {EARNINGS_SESSIONS} sessions — generic gap, not "
-                    f"the ratified setup")
+                    f"the ratified setup", geometry=geo)
 
             entry = float(df["close"].iloc[-1])
             stop = gap_low

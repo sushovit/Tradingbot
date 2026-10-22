@@ -15,7 +15,7 @@ high (the level price is reverting toward), floored at 2R.
 
 import pandas_ta as ta
 
-from .base import Strategy, Signal, Rejection
+from .base import Strategy, Signal, Rejection, would_be
 
 DRAWDOWN_PCT = 10.0
 VOLUME_MULT = 1.2
@@ -62,15 +62,20 @@ class MeanReversionReclaim(Strategy):
         if not (washed_out and reclaimed_prior_high):
             return None
 
+        # Would-be geometry (graded by the outcome tracker if a filter rejects)
+        _e, _s = float(df['close'].iloc[-1]), float(reclaim_bar['low'])
+        geo = would_be(_e, _s, max(high_20, _e + (_e - _s) * MIN_TARGET_R))
+
         # --- Deterministic filters ---
         ema9 = reclaim_bar.get('ema_9')
         if ema9 is None or not float(reclaim_bar['close']) > float(ema9):
             return Rejection(self.name, ticker, "below_ema9",
-                             "Reclaim bar closed below EMA9")
+                             "Reclaim bar closed below EMA9", geometry=geo)
         avg_volume = float(window['volume'].mean())
         if avg_volume <= 0:
             return Rejection(self.name, ticker, "volume_low",
-                             "No 20-bar average volume to measure against")
+                             "No 20-bar average volume to measure against",
+                             geometry=geo)
         volume_ratio = float(reclaim_bar['volume']) / avg_volume
         # The floor can never exceed the configured multiplier: a config that
         # sets the requirement BELOW 1.0x must not be tightened by this band.
@@ -79,7 +84,7 @@ class MeanReversionReclaim(Strategy):
             return Rejection(self.name, ticker, "volume_low",
                              f"Reclaim volume {reclaim_bar['volume']:.0f} = "
                              f"{volume_ratio:.2f}x avg {avg_volume:.0f}, below "
-                             f"the {soft_floor:.1f}x floor")
+                             f"the {soft_floor:.1f}x floor", geometry=geo)
         soft_volume = volume_ratio < vol_mult
 
         # Playbook Rule #3 (gap-abort): a reclaim entry is invalid if the next
@@ -90,7 +95,7 @@ class MeanReversionReclaim(Strategy):
         if entry_bar_open < reclaim_mid:
             return Rejection(self.name, ticker, "gap_below_reclaim_mid",
                              f"Open {entry_bar_open:.2f} < reclaim bar midpoint "
-                             f"{reclaim_mid:.2f}")
+                             f"{reclaim_mid:.2f}", geometry=geo)
 
         entry = float(df['close'].iloc[-1])
         stop = float(reclaim_bar['low'])     # thesis invalidation

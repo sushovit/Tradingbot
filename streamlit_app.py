@@ -227,11 +227,11 @@ def build_gatekeeper_kwargs(signal, df, risk_profile, interval_mins, news_headli
 
 
 def journal_rules_pass(ticker, setup_name, filter_name, details="",
-                       bar_key=None):
+                       bar_key=None, geometry=None):
     """Complete pass log: a detector fired but a deterministic filter killed it."""
     try:
         journal.log_rules_pass(ticker, setup_name, filter_name, details,
-                               bar_key=bar_key)
+                               bar_key=bar_key, geometry=geometry)
     except Exception as e:
         logger.error(f"Failed to journal rules pass for {ticker}: {e}")
 
@@ -998,7 +998,12 @@ def _worker_loop():
             broker_symbols = None  # unknown — don't infer exits this cycle
             broker_entries, broker_qtys = {}, {}
 
-        def journal_pass_once(t, setup_name, filter_name, details="", bar_key=None):
+        # CEO 2026-10-22: the current ticker's signal geometry, so every gate
+        # after the signal journals entry/stop/target with its pass row.
+        current_geo = {}
+
+        def journal_pass_once(t, setup_name, filter_name, details="", bar_key=None,
+                              geometry=None):
             """Journal a rules pass ONCE per (ticker, setup, filter, bar/day).
             The same rejection recurring every 30s cycle is noise, not signal —
             launch day wrote 2,000+ duplicate rows before this dedupe."""
@@ -1013,7 +1018,9 @@ def _worker_loop():
             # session, so the in-memory guard cannot stop a repeat across a
             # day boundary — only the database key can.
             journal_rules_pass(t, setup_name, filter_name, details,
-                               bar_key=bar_key)
+                               bar_key=bar_key,
+                               geometry=(geometry if geometry is not None
+                                         else (dict(current_geo) or None)))
 
         def journal_ops_once(kind, details):
             """One ops row per (kind, ticker, day). log_integrity_event already
@@ -1077,6 +1084,7 @@ def _worker_loop():
 
         status_updates = []
         for ticker in ticker_list:
+            current_geo.clear()
             open_positions_count = sum(1 for s in positions.values() if s.get("in_position"))
             # Cash actually deployed — entries must never push this above
             # effective equity (no margin, ever).
@@ -1295,7 +1303,8 @@ def _worker_loop():
                     # journal the pass once per signal bar, not per cycle.
                     bar_key = str(strat_df.index[-2]) if len(strat_df) >= 2 else None
                     journal_pass_once(ticker, result.setup_name, result.filter_name,
-                                      result.details, bar_key=bar_key)
+                                      result.details, bar_key=bar_key,
+                                      geometry=getattr(result, "geometry", None) or {})
                     pass_notes.append(f"Pass ({result.setup_name}: {result.filter_name})")
                 elif isinstance(result, Signal):
                     # Cache key: for DAILY strategies use the completed signal
@@ -1321,7 +1330,9 @@ def _worker_loop():
                             journal_pass_once(
                                 ticker, result.setup_name, "gap_below_signal_mid",
                                 f"open {open_p:.2f} < signal bar mid {mid:.2f}",
-                                bar_key=bar_key)
+                                bar_key=bar_key,
+                                geometry={"entry": result.entry, "stop": result.stop,
+                                          "target": result.target})
                             pass_notes.append(
                                 f"Pass ({result.setup_name}: gap_below_signal_mid)")
                             continue
@@ -1365,6 +1376,10 @@ def _worker_loop():
                     signal.extras["atr14"] = _atr
                     signal.stop = _new_stop
                     signal.target = round(signal.entry + _k * (signal.entry - _new_stop), 2)
+
+            current_geo.update(entry=round(float(signal.entry), 4),
+                               stop=round(float(signal.stop), 4),
+                               target=round(float(signal.target), 4))
 
             # --- Global deterministic gates: journaled as passes too ---
             # S36 (CEO 2026-10-21): catalyst names are WATCH-ONLY - no entry

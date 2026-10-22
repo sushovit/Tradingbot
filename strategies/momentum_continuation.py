@@ -10,7 +10,7 @@ low — if price falls back through the bar that broke out, the momentum thesis
 is invalid. Target is a minimum of 2R.
 """
 
-from .base import Strategy, Signal, Rejection
+from .base import Strategy, Signal, Rejection, would_be
 
 VOLUME_MULT = 1.5
 MIN_CHANGE_PCT = 3.0
@@ -49,14 +49,18 @@ class MomentumContinuation(Strategy):
         if not broke_out:
             return None
 
+        # Would-be geometry (graded by the outcome tracker if a filter rejects)
+        _e, _s = float(df['close'].iloc[-1]), float(breakout_bar['low'])
+        geo = would_be(_e, _s, _e + (_e - _s) * MIN_TARGET_R)
+
         # --- Deterministic filters ---
         if avg_volume <= 0 or float(breakout_bar['volume']) <= avg_volume * vol_mult:
             return Rejection(self.name, ticker, "volume_low",
                              f"Breakout volume {breakout_bar['volume']:.0f} <= "
-                             f"{vol_mult}x avg {avg_volume:.0f}")
+                             f"{vol_mult}x avg {avg_volume:.0f}", geometry=geo)
         if change_pct <= MIN_CHANGE_PCT:
             return Rejection(self.name, ticker, "change_too_small",
-                             f"Change {change_pct:.1f}% <= +{MIN_CHANGE_PCT}%")
+                             f"Change {change_pct:.1f}% <= +{MIN_CHANGE_PCT}%", geometry=geo)
 
         entry = float(df['close'].iloc[-1])          # next bar
         stop = float(breakout_bar['low'])            # thesis invalidation
