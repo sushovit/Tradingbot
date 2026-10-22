@@ -1881,6 +1881,137 @@ def s45_main(append=False, universe_file="universe_today.json", fetch=False,
     return 0
 
 
+# =========================================================== S46 (2026-10-23)
+# CEO 2026-10-23, agenda 27 decision: re-run trend_continuation's
+# outside_hours-blocked signals restricted to the MIDDAY window (entry bar
+# 11:30-14:00 ET) with a FORCED SAME-DAY EXIT at the 15:55 ET bar's open - no
+# overnight hold. Bar: >= +0.15R over >= 50 trades -> midday probation.
+# Two counts: every midday signal (one position per symbol), and as the live
+# probation would trade it - at most ONE midday position open at a time.
+
+S46_WINDOW = ((11, 30), (14, 0))
+S46_EXIT = (15, 55)
+
+
+def in_midday(ts):
+    t = (ts.hour, ts.minute)
+    return S46_WINDOW[0] <= t < S46_WINDOW[1]
+
+
+def simulate_intraday_eod(df, i, entry, stop, target, trail_atr, exit_at=S46_EXIT):
+    """The S33 intraday rule (stop, 3R target S28-capped, 2.5 ATR trail from
+    +1R floored at entry) PLUS a forced exit at the open of the `exit_at` bar
+    of the entry day - or the first bar of a later day. (px, reason, exit_i)."""
+    risk = entry - stop
+    live, reached = stop, False
+    o, h, l, c = (df[k].values for k in ("open", "high", "low", "close"))
+    atr = df["atr"].values
+    day = df.index[i].date()
+    for n in range(i + 1, len(df)):
+        ts = df.index[n]
+        if ts.date() != day or (ts.hour, ts.minute) >= exit_at:
+            return o[n], "time exit 15:55", n
+        if o[n] <= live:
+            return o[n], "stop (gap)", n
+        if o[n] >= target:
+            return o[n], "target (gap)", n
+        if l[n] <= live:
+            return live, "stop", n
+        if h[n] >= target:
+            return target, "target", n
+        if not reached and (c[n] - entry) / risk >= 1.0:
+            reached = True
+        if reached and not math.isnan(atr[n]):
+            cand = max(c[n] - trail_atr * atr[n], entry)
+            if live < cand < c[n]:
+                live = cand
+    return None
+
+
+def s46_trades(prepared, st, max_open=None):
+    """Midday outside_hours-only signals, replayed with the forced 15:55 exit.
+    max_open=1 models the probation's one-position limit across symbols."""
+    cands = []
+    for sym, (df, datr, cs) in prepared.items():
+        for c in cs:
+            if c["fails"] == ["outside_hours"] and in_midday(df.index[c["i"]]):
+                cands.append((c["ts"], sym, c))
+    cands.sort(key=lambda x: x[0])
+    trades, busy_sym, open_until = [], {}, None
+    for ts, sym, c in cands:
+        df, datr, _ = prepared[sym]
+        if c["i"] <= busy_sym.get(sym, -1):
+            continue
+        if max_open == 1 and open_until is not None and ts < open_until:
+            continue
+        entry = c["entry"]
+        stop = entry - st["atr_mult"] * c["atr"]
+        target = entry + st["rr"] * (entry - stop)
+        d_atr = datr.get(ts.date())
+        if d_atr:
+            target = min(target, entry + st["cap_atr"] * d_atr)
+        res = simulate_intraday_eod(df, c["i"], entry, stop, target, st["trail_atr"])
+        if res is None:
+            continue
+        px, why, n = res
+        busy_sym[sym] = n
+        open_until = df.index[n]
+        trades.append({"setup": S45_TREND, "sym": sym, "i": c["i"], "when": ts,
+                       "r": (px - entry) / (entry - stop), "why": why})
+    return trades
+
+
+def s46_render(all_t, one_t, n_symbols):
+    rows = []
+    for label, ts in (("all midday signals", all_t), ("max 1 open (probation)", one_t)):
+        st_ = sc.aggregate(sorted(ts, key=lambda t: pd.Timestamp(t["when"])))
+        weeks = (pd.Timestamp(S45_END) - pd.Timestamp(S45_START)).days / 7
+        time_exits = sum(1 for t in ts if t["why"].startswith("time exit"))
+        rows.append([label, st_["trades"], f"{st_['trades'] / weeks:.1f}",
+                     f"{st_['win_rate']}%" if st_["trades"] else "-",
+                     f"{st_['expectancy_r']:+.3f}" if st_["trades"] else "-",
+                     f"{sum(t['r'] for t in ts):+.1f}",
+                     st_["profit_factor"] if st_["trades"] else "-",
+                     st_["max_drawdown_r"] if st_["trades"] else "-",
+                     f"{100 * time_exits / len(ts):.0f}%" if ts else "-"])
+    lines = [f"**S46 (CEO 2026-10-23) - re-run of agenda 27's outside_hours "
+             f"finding, midday only (entries 11:30-14:00 ET), forced exit at "
+             f"15:55 ET the same day.** trend_continuation signals whose ONLY "
+             f"failure is the entry-window gate, {S45_START}..{S45_END}, "
+             f"{n_symbols} symbols; live intraday exit rule otherwise.", ""]
+    lines += sc.table(["Count", "Trades", "Trades/week", "Win %", "Expectancy (R)",
+                       "Total R", "PF", "MaxDD (R)", "Exited at 15:55"], rows)
+    return lines
+
+
+def s46_main(append=False, universe_file="universe_today.json", cache=S34_CACHE):
+    import study_adx_band as ab
+    symbols = [s for s in ab.study_universe(universe_file) if s != "SPY"]
+    config = _live_config()
+    st = ab.s33_settings(config)
+    spy_trend, _ = ab.spy_regime_maps(ab.load_m5("SPY", cache))
+    prepared = {}
+    for sym in symbols:
+        raw = ab.load_m5(sym, cache)
+        if raw is None or raw.empty:
+            continue
+        df = ab.add_indicators(raw)
+        datr = ab.prior_day_map(dict(zip(*ab._daily_atr(raw))))
+        prepared[sym] = (df, datr, s45_trend_candidates(df, sym, st, spy_trend))
+    all_t = s46_trades(prepared, st)
+    one_t = s46_trades(prepared, st, max_open=1)
+    lines = s46_render(all_t, one_t, len(prepared))
+    st1 = sc.aggregate(one_t)
+    ok = st1["trades"] >= S45_BAR_N and (st1["expectancy_r"] or 0) >= S45_BAR_R
+    lines += ["", (f"**Bar met (max 1 open): {st1['expectancy_r']:+.3f}R over "
+                   f"{st1['trades']} trades** -> midday probation per the CEO "
+                   f"order." if ok else
+                   f"**Bar not met (max 1 open): {st1['expectancy_r'] or 0:+.3f}R "
+                   f"over {st1['trades']} trades** -> no change.")]
+    print("\n".join(lines))
+    return lines, ok
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -1890,10 +2021,14 @@ def main():
     ap.add_argument("--s36", action="store_true")
     ap.add_argument("--s44", action="store_true")
     ap.add_argument("--s45", action="store_true")
+    ap.add_argument("--s46", action="store_true")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
     a = ap.parse_args()
+    if a.s46:
+        s46_main(a.append, a.universe_file)
+        return 0
     if a.s45:
         return s45_main(a.append, a.universe_file, a.fetch)
     if a.s34:

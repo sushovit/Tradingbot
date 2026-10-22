@@ -1677,3 +1677,24 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 
 **Limits.** Today's universe (survivorship); IEX 5-minute bars, daily bars resampled from them; signals, not gatekeeper-approved trades (an UPPER BOUND); one year only (2025-10-14..2026-10-21) - the half-year splits above show how much one regime carries; post_earnings_continuation excluded (no calendar). Study only; no live change.
 
+
+### Decision re-run (CEO 2026-10-23): midday window with a forced 15:55 exit - NO CHANGE
+
+The CEO asked for the outside_hours finding to be re-run on the MIDDAY
+window only (trend_continuation entries 11:30-14:00 ET) with a forced exit
+at 15:55 ET the same day (no overnight), judged as the probation would trade
+it - at most one midday position open at a time. `python study_exit_grid.py
+--s46` (5-minute IEX bars, 2025-10-14..2026-10-21, 162 symbols):
+
+| Count | Trades | Trades/week | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Exited at 15:55 |
+|---|---|---|---|---|---|---|---|---|
+| all midday signals | 195 | 3.7 | 46.7% | +0.145 | +28.2 | 1.31 | 12.14 | 17% |
+| max 1 open (probation) | 115 | 2.2 | 42.6% | +0.010 | +1.2 | 1.02 | 9.79 | 17% |
+
+**Bar (>= +0.15R over >= 50 trades) not met: +0.010R over 115 trades as the
+probation would trade it** (+0.145R even with every midday signal taken).
+Removing the overnight hold removed most of agenda 27's +0.199R, as its
+Reading warned. **No change:** no probation window, the entry windows stay
+09:30-11:30 / 14:00-15:00 ET, the 15:00-16:00 window and the SPY gate are
+unchanged. The probation machinery (midday_probation.py, kill switch) was
+built and tested on branch s46-midday-probation and is NOT merged.
