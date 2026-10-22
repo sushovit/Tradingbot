@@ -38,6 +38,28 @@ class Rejection:
     ticker: str
     filter_name: str        # e.g. "adx_low", "volume_low", "rsi_low"
     details: str = ""
+    # CEO 2026-10-22: the entry/stop/target the signal WOULD have had, so the
+    # outcome tracker can grade every rejection. Evidence only - it never
+    # changes what is filtered or traded.
+    geometry: dict = None
+
+
+def would_be(entry, stop, target=None):
+    """{'entry','stop','target'} for a rejected signal, or None when the
+    geometry is not a valid long trade (stop at or above entry)."""
+    try:
+        entry, stop = float(entry), float(stop)
+    except (TypeError, ValueError):
+        return None
+    if not (entry > 0 and 0 < stop < entry):
+        return None
+    out = {"entry": round(entry, 4), "stop": round(stop, 4)}
+    if target is not None:
+        try:
+            out["target"] = round(float(target), 4)
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 class Strategy:

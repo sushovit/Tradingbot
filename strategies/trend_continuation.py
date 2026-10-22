@@ -11,7 +11,7 @@ import math
 
 import pandas_ta as ta
 
-from .base import Strategy, Signal, Rejection
+from .base import Strategy, Signal, Rejection, would_be
 
 
 class TrendContinuation(Strategy):
@@ -58,6 +58,14 @@ class TrendContinuation(Strategy):
         if not is_golden_cross:
             return None
 
+        # Would-be geometry (graded by the outcome tracker if a filter rejects)
+        _atr0 = last_closed.get('atrr_14', float('nan'))
+        geo = None
+        if isinstance(_atr0, (int, float)) and _atr0 == _atr0 and _atr0 > 0:
+            _e = float(df['close'].iloc[-1])
+            _s = _e - _atr0 * atr_multiplier
+            geo = would_be(_e, _s, _e + (_e - _s) * rr_ratio)
+
         # --- Deterministic filters (rejections are journaled by the caller) ---
         if 'adx_14' not in last_closed or last_closed['adx_14'] < adx_threshold:
             # Shown rounded DOWN to 2 decimals, so a rejected value always
@@ -66,18 +74,20 @@ class TrendContinuation(Strategy):
             _adx = last_closed.get('adx_14', float('nan'))
             _shown = math.floor(_adx * 100) / 100 if _adx == _adx else _adx
             return Rejection(self.name, ticker, "adx_low",
-                             f"ADX {_shown:.2f} < {adx_threshold}")
+                             f"ADX {_shown:.2f} < {adx_threshold}", geometry=geo)
         if use_rsi_filter and ('rsi_14' not in last_closed
                                or last_closed['rsi_14'] < rsi_threshold):
             return Rejection(self.name, ticker, "rsi_low",
-                             f"RSI {last_closed.get('rsi_14', float('nan')):.1f} < {rsi_threshold}")
+                             f"RSI {last_closed.get('rsi_14', float('nan')):.1f} < {rsi_threshold}",
+                             geometry=geo)
         if use_confirmation_candle and not (df.iloc[-1]['ema_fast'] > df.iloc[-1]['ema_slow']):
             return Rejection(self.name, ticker, "no_confirmation",
-                             "Confirmation candle did not hold above the cross")
+                             "Confirmation candle did not hold above the cross",
+                             geometry=geo)
         if use_volume_filter and ('volume_ema_20' not in last_closed
                                   or last_closed['volume'] < last_closed['volume_ema_20']):
             return Rejection(self.name, ticker, "volume_low",
-                             "Signal volume below its 20-bar EMA")
+                             "Signal volume below its 20-bar EMA", geometry=geo)
 
         entry = float(df['close'].iloc[-1])
         atr_value = last_closed.get('atrr_14', float('nan'))
