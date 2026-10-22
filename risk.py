@@ -391,6 +391,30 @@ def check_setup_probation(setup_name: str, open_for_setup: int,
     return True, None
 
 
+def sector_cap_block(ticker: str, positions: dict, config: dict = None,
+                     sector_of=None):
+    """CEO 2026-10-22 (after the KMI/SLB double loss, both energy, 09:32):
+    at most `sector_cap.max_per_sector` (default 1) open positions per
+    sector. Returns a reason string if `ticker` must be refused, else None.
+    Unclassified names are never capped against each other - the tag says
+    nothing about how they move together."""
+    import sectors
+    cfg = (config or {}).get("sector_cap") or {}
+    if not cfg.get("enabled", True):
+        return None
+    limit = int(cfg.get("max_per_sector", 1))
+    sector_of = sector_of or sectors.sector_for
+    mine = sector_of(ticker)
+    if not mine or mine == sectors.UNCLASSIFIED:
+        return None
+    held = sorted(t for t, s in (positions or {}).items()
+                  if s.get("in_position") and t != ticker
+                  and (s.get("sector") or sector_of(t)) == mine)
+    if len(held) >= limit:
+        return f"{mine} already held: {', '.join(held)} (max {limit} per sector)"
+    return None
+
+
 def zero_size_reason(entry: float, equity: float,
                      position_cap_pct: float = None) -> str:
     """Why did sizing produce < 1 whole share? Journaled as a rules pass so we

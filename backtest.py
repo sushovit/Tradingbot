@@ -587,7 +587,8 @@ RESEARCH_TARGET_R = 3.0
 # on what is wired live, so the status is declared HERE and rendered, not
 # retyped into the markdown by hand where it would go stale.
 RESEARCH_STATUS = {
-    "pullback_in_uptrend": ("LIVE (probation)", "2026-09-02"),
+    # CEO 2026-10-21 (agenda 22): retired from live trading.
+    "pullback_in_uptrend": ("RETIRED", "2026-10-21"),
     "post_earnings_continuation": ("LIVE (probation)", "2026-09-02"),
 }
 

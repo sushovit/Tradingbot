@@ -52,8 +52,8 @@ def test_neither_lane_is_in_the_live_config():
 
 
 def test_the_live_setups_were_not_disturbed():
-    """The two lanes already on probation keep their status."""
-    assert bt.RESEARCH_STATUS["pullback_in_uptrend"][0] == "LIVE (probation)"
+    """post_earnings stays on probation; pullback was retired 2026-10-21."""
+    assert bt.RESEARCH_STATUS["pullback_in_uptrend"][0] == "RETIRED"
     assert bt.RESEARCH_STATUS["post_earnings_continuation"][0] == "LIVE (probation)"
 
 

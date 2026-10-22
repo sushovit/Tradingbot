@@ -179,3 +179,44 @@ def test_rule_met_ends_with_ceo_action_switch():
 def test_the_scoreboard_never_edits_the_config():
     src = open("scoreboard.py", encoding="utf-8").read()
     assert '"w"' not in src and "json.dump" not in src
+
+
+# ---------------------------------------- shadow said no (CEO 2026-10-22)
+
+def _trade_with_shadow(j, ticker, buy, sell, shadow_ok, shadow_error=False):
+    did = j.log_decision(ticker, "mean_reversion_reclaim", {"entry": buy, "stop": buy - 2},
+                         {"approved": True, "conviction_score": 72})
+    if shadow_ok is not None:
+        j.log_decision(ticker, "mean_reversion_reclaim", {"entry": buy},
+                       ({"error": "timeout"} if shadow_error else
+                        {"approved": shadow_ok, "conviction_score": 80 if shadow_ok else 15}),
+                       source="local_shadow")
+    j.log_trade(ticker, "BUY", 1, buy, reason="mean_reversion_reclaim", decision_id=did)
+    if sell is not None:
+        j.log_trade(ticker, "SELL", 1, sell, pnl_usd=sell - buy, reason="Stop Loss",
+                    decision_id=did)
+
+
+def test_trades_split_by_the_shadow_verdict(temp_journal):
+    j = temp_journal
+    _trade_with_shadow(j, "KMI", 34.0, 33.0, False)          # shadow no, -1
+    _trade_with_shadow(j, "SLB", 50.0, 48.0, False)          # shadow no, -2
+    _trade_with_shadow(j, "AAA", 10.0, 13.0, True)           # shadow yes, +3
+    _trade_with_shadow(j, "BBB", 20.0, None, None)           # no shadow row, open
+    _trade_with_shadow(j, "CCC", 30.0, 29.0, True, shadow_error=True)   # errored
+    conn = sqlite3.connect(j.DB_FILE)
+    s = sb.shadow_split(conn, {"BBB": {"unrealized": 0.5}})
+    assert (s["no"]["n"], s["no"]["pnl"]) == (2, -3.0)
+    assert (s["yes"]["n"], s["yes"]["pnl"]) == (1, 3.0)
+    assert (s["none"]["n"], s["none"]["pnl"]) == (2, -0.5)    # BBB open +0.5, CCC -1
+    lines = sb.shadow_lines(s)
+    assert "  Shadow said NO : 2 tr -3.00" in lines and "  Shadow said YES: 1 tr +3.00" in lines
+
+
+def test_shadow_rows_sit_above_the_ceo_action_line():
+    rows, tot = sb.score([], {}, lambda tk, since: None, None)
+    split = {"no": {"n": 2, "pnl": -3.0, "tickers": []}, "yes": {"n": 0, "pnl": 0.0, "tickers": []},
+             "none": {"n": 0, "pnl": 0.0, "tickers": []}}
+    lines = sb.table_lines(rows, tot, date(2026, 10, 23), split)
+    i = lines.index("Shadow vs trades (since 10-09, running):")
+    assert i < lines.index("CEO action: none") and lines[-1] == "CEO action: none"

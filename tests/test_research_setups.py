@@ -59,8 +59,10 @@ def test_both_setups_run_on_daily_bars_at_4r():
     with open("bot_config.json", encoding="utf-8") as f:
         config = json.load(f)
     for name in ("pullback_in_uptrend", "post_earnings_continuation"):
-        assert REGISTRY[name].timeframe == "daily"
-        assert config["strategy_timeframes"][name] == "daily"
+        assert REGISTRY[name].timeframe == "daily"     # the class says daily
+    # retired 2026-10-21: no config label left for pullback
+    assert config["strategy_timeframes"]["post_earnings_continuation"] == "daily"
+    assert "pullback_in_uptrend" not in config["strategy_timeframes"]
     assert pui.TARGET_R == 4.0
     assert pec.TARGET_R == 4.0
 
@@ -68,9 +70,9 @@ def test_both_setups_run_on_daily_bars_at_4r():
 def test_backtest_report_declares_the_live_status():
     """Item 5: the report is the source of truth on status, and the status is
     declared in code so it cannot go stale in the markdown."""
-    assert backtest.RESEARCH_STATUS["pullback_in_uptrend"] ==         ("LIVE (probation)", "2026-09-02")
+    assert backtest.RESEARCH_STATUS["pullback_in_uptrend"] == ("RETIRED", "2026-10-21")
     assert backtest.RESEARCH_STATUS["post_earnings_continuation"] ==         ("LIVE (probation)", "2026-09-02")
-    assert "LIVE (probation) since 2026-09-02" ==         backtest.research_status("pullback_in_uptrend")
+    assert "RETIRED since 2026-10-21" == backtest.research_status("pullback_in_uptrend")
 
 
 # ============================================================ bar helpers
