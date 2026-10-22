@@ -7,6 +7,7 @@ or trading change.
     python study_exit_grid.py --s35 [--append]      # S35 pullback replay
     python study_exit_grid.py --s36 [--append]      # S36 catalyst vs rest
     python study_exit_grid.py --s44                 # S44 morning momentum
+    python study_exit_grid.py --s48 [--append]      # S48 gap-free intraday rallies
     python study_exit_grid.py --s45 [--fetch] [--append]  # S45 funnel per blocker
 
 A 5-minute replay of the LIVE daily rule as built, then six variants:
@@ -2012,6 +2013,454 @@ def s46_main(append=False, universe_file="universe_today.json", cache=S34_CACHE)
     return lines, ok
 
 
+# =========================================================== S48 (2026-10-22)
+# CEO P4: GAP-FREE INTRADAY RALLIES - the movers our setups never see (e.g.
+# DDOG, ZS, NET, CRWD on 2026-10-21 gapped only 0.4-2.8% and ran later).
+# Study only, no live change.
+#   - Gap-free day: |first RTH open vs prior RTH close| < 3%. No news gap:
+#     exclude the day if |gap| >= 1.5% AND Finnhub company news exists in the
+#     18 h before 09:30 ET (news fetched only for those days that trigger;
+#     a failed fetch counts as no news).
+#   - Trigger: within the first two hours (bars starting 09:30-11:25 ET), the
+#     first completed 5-min close >= +3.0% above the prior RTH close, AND the
+#     symbol's sector ETF is up on the day at that bar's close (ETF close >
+#     its prior RTH close; the ETF bar at or before the trigger bar).
+#   - Entry: next bar's open. Stop: the day's lowest low 09:30..trigger bar;
+#     skip if risk <= 0. Target: entry + 2R. Forced exit at the 15:55 ET bar's
+#     open. A bar opening through a level fills at its open; a bar spanning
+#     stop and target takes the stop. One trade per symbol per day.
+
+S48_START, S48_END = "2025-10-14", "2026-10-21"
+S48_GAP_MAX = 0.03
+S48_NEWS_GAP = 0.015
+S48_UP = 0.03
+S48_TRIG_LAST = 685          # last trigger bar starts 11:25 ET
+S48_EXIT = 955               # 15:55 ET
+S48_TARGETS = (2.0, 1.5, 3.0)
+S48_BASE_K = 2.0
+S48_BAR_R, S48_BAR_N = 0.15, 50
+S48_ETF_CACHE = os.path.join("data", "s48")
+S48_NEWS_DIR = os.path.join("data", "s48_news")
+S48_MOVERS = ("DDOG", "ZS", "NET", "CRWD")
+S48_MOVER_DAY = "2026-10-21"
+# sectors.py tag -> SPDR ETF. sectors.py has no semiconductor tag and one
+# combined utilities_reit tag, so two explicit sub-lists split them.
+S48_ETF = {"technology": "XLK", "financials": "XLF", "energy": "XLE",
+           "healthcare": "XLV", "consumer_discretionary": "XLY",
+           "consumer_staples": "XLP", "industrials": "XLI",
+           "materials": "XLB", "communication": "XLC"}
+S48_SEMIS = {"NVDA", "AMD", "INTC", "QCOM", "TXN", "MU", "AMAT", "LRCX",
+             "KLAC", "ADI", "NXPI", "MRVL", "ON", "SWKS", "MCHP", "AVGO",
+             "ARM", "TER", "ENTG"}
+S48_REITS = {"PLD", "AMT", "CCI", "SPG", "O"}
+
+
+def s48_etf_for(sym):
+    """SPDR ETF for a symbol, or None (crypto_dat / unclassified: excluded)."""
+    import sectors
+    tag = sectors.sector_for(sym)
+    if tag == "technology" and sym.upper() in S48_SEMIS:
+        return "SMH"
+    if tag == "utilities_reit":
+        return "XLRE" if sym.upper() in S48_REITS else "XLU"
+    return S48_ETF.get(tag)
+
+
+def s48_gap_free(gap, limit=S48_GAP_MAX):
+    return gap is not None and not pd.isna(gap) and abs(gap) < limit
+
+
+def s48_needs_news(gap, lo=S48_NEWS_GAP):
+    """True when the day is only kept if Finnhub shows no news pre-open."""
+    return abs(gap) >= lo
+
+
+def s48_etf_up(etf_bars, etf_prev, ts):
+    """ETF close of the bar at or before `ts` (same session) > etf_prev."""
+    if etf_bars is None or etf_prev is None or etf_bars.empty:
+        return False
+    sel = etf_bars[etf_bars.index <= ts]
+    if sel.empty:
+        return False
+    return float(sel["close"].iloc[-1]) > etf_prev
+
+
+def s48_trigger(bars, prev_close, etf_bars, etf_prev, up=S48_UP, both=False):
+    """(i, status). Main rule (both=False): the FIRST bar starting 09:30..11:25
+    whose close >= prev_close x (1+up); status 'ok' if the ETF is up at that
+    bar, 'etf_down' otherwise. both=True (sensitivity): the first such bar at
+    which the ETF is also up. (None, 'no_trigger') when no bar qualifies."""
+    lvl = prev_close * (1.0 + up)
+    seen = False
+    for i, ts in enumerate(bars.index):
+        m = _hm(ts)
+        if m > S48_TRIG_LAST:
+            break
+        if m < 570 or float(bars["close"].iloc[i]) < lvl:
+            continue
+        seen = True
+        if s48_etf_up(etf_bars, etf_prev, ts):
+            return i, "ok"
+        if not both:
+            return i, "etf_down"
+    return None, ("etf_down" if seen else "no_trigger")
+
+
+def s48_simulate(bars, i, entry, stop, target):
+    """(exit price, reason, exit time) walking from bar i (filled at its open);
+    forced exit at the 15:55 ET bar's open."""
+    last = None
+    for ts, b in bars.iloc[i:].iterrows():
+        o, h, l, c = (float(b[k]) for k in ("open", "high", "low", "close"))
+        if _hm(ts) >= S48_EXIT:
+            return o, "time 15:55", ts
+        if o <= stop:
+            return o, "stop (gap)", ts
+        if o >= target:
+            return o, "target (gap)", ts
+        if l <= stop:
+            return stop, "stop", ts
+        if h >= target:
+            return target, "target", ts
+        last = (c, ts)
+    return last[0], "time (last bar)", last[1]
+
+
+def s48_trade(bars, prev_close, etf_bars, etf_prev, k=S48_BASE_K, both=False):
+    """One symbol-day. dict with status: no_trigger / etf_down / no_fill_bar /
+    no_risk / traded (then r, why, entry, stop, target, risk_pct, t_trig,
+    t_entry, t_exit)."""
+    i, why = s48_trigger(bars, prev_close, etf_bars, etf_prev, both=both)
+    if i is None or why != "ok":
+        return {"status": why, "t_trig": bars.index[i] if i is not None else None}
+    if i + 1 >= len(bars) or _hm(bars.index[i + 1]) >= S48_EXIT:
+        return {"status": "no_fill_bar"}
+    stop = float(bars["low"].iloc[: i + 1].min())
+    entry = float(bars["open"].iloc[i + 1])
+    risk = entry - stop
+    if risk <= 0:
+        return {"status": "no_risk", "entry": entry, "stop": stop}
+    target = entry + k * risk
+    px, how, t_exit = s48_simulate(bars, i + 1, entry, stop, target)
+    return {"status": "traded", "r": (px - entry) / risk, "why": how,
+            "entry": entry, "stop": stop, "target": target, "exit": px,
+            "risk_pct": 100 * risk / entry, "t_trig": bars.index[i],
+            "t_entry": bars.index[i + 1], "t_exit": t_exit}
+
+
+def s48_max_open(trades, n=1):
+    """Trades taken when at most n positions (any symbol) may be open; a
+    position exiting at a bar's open frees its slot for an entry at that open."""
+    out, open_ = [], []
+    for t in sorted(trades, key=lambda t: (t["t_entry"], t["sym"])):
+        open_ = [x for x in open_ if x > t["t_entry"]]
+        if len(open_) >= n:
+            continue
+        out.append(t)
+        open_.append(t["t_exit"])
+    return out
+
+
+def s48_sessions(m5):
+    """{date: that session's RTH bars} and {date: prior session's close}."""
+    days = {}
+    for d, b in m5.groupby(m5.index.date):
+        days[d] = b
+    order = sorted(days)
+    prev = {order[j]: float(days[order[j - 1]]["close"].iloc[-1])
+            for j in range(1, len(order))}
+    return days, prev
+
+
+def s48_scan(frames, etfs, start=S48_START, end=S48_END, ks=S48_TARGETS,
+             both=False):
+    """Every gap-free symbol-day in the window run through the setup at each
+    target k. Returns ({k: [traded dicts]}, counters, unmapped symbols)."""
+    lo, hi = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+    out = {k: [] for k in ks}
+    cnt = {"symbol_days": 0, "gap_excluded": 0, "gap_free": 0}
+    unmapped = []
+    for sym in sorted(frames):
+        etf = s48_etf_for(sym)
+        if etf is None or etf not in etfs:
+            unmapped.append(sym)
+            continue
+        days, prev = frames[sym]
+        edays, eprev = etfs[etf]
+        for d in sorted(days):
+            if d < lo or d > hi or d not in prev:
+                continue
+            bars = days[d]
+            cnt["symbol_days"] += 1
+            gap = float(bars["open"].iloc[0]) / prev[d] - 1.0
+            if not s48_gap_free(gap):
+                cnt["gap_excluded"] += 1
+                continue
+            cnt["gap_free"] += 1
+            for k in ks:
+                t = s48_trade(bars, prev[d], edays.get(d), eprev.get(d), k, both)
+                if k == ks[0]:
+                    cnt[t["status"]] = cnt.get(t["status"], 0) + 1
+                if t["status"] == "traded":
+                    t.update(sym=sym, day=d, gap=gap, etf=etf, k=k)
+                    out[k].append(t)
+    for k in ks:
+        out[k].sort(key=lambda t: (t["t_entry"], t["sym"]))
+    return out, cnt, unmapped
+
+
+def s48_news_filter(trades, has_news):
+    """Drop the days with |gap| >= 1.5% and pre-open news."""
+    return [t for t in trades
+            if not (s48_needs_news(t["gap"]) and (t["sym"], t["day"]) in has_news)]
+
+
+def s48_fetch_news(need, client, limiter, cache_dir=S48_NEWS_DIR, log=None):
+    """need = {(sym, date)}. Returns (has_news set, failed symbols, n articles,
+    earliest article date)."""
+    by_sym = {}
+    for s, d in need:
+        by_sym.setdefault(s, []).append(d)
+    has, failed, n_art, first = set(), [], 0, None
+    for j, sym in enumerate(sorted(by_sym)):
+        arts, bad = s36_news(sym, by_sym[sym], client, limiter, cache_dir)
+        if bad:
+            failed.append(sym)
+            arts = []
+        n_art += len(arts)
+        for a in arts:
+            if a.get("datetime"):
+                dd = pd.Timestamp(int(a["datetime"]), unit="s").date()
+                first = dd if first is None or dd < first else first
+        has.update((sym, d) for d in by_sym[sym] if s36_has_news(arts, d))
+        if log and (j + 1) % 20 == 0:
+            log(f"  news: {j + 1}/{len(by_sym)} symbols")
+    return has, failed, n_art, first
+
+
+def s48_row(label, trades, weeks=None):
+    st = sc.aggregate(trades)
+    if not trades:
+        return [label, 0] + ["-"] * 7
+    risk = sorted(t["risk_pct"] for t in trades)
+    n = len(risk)
+    med = risk[n // 2] if n % 2 else (risk[n // 2 - 1] + risk[n // 2]) / 2
+    pf = st["profit_factor"]
+    return [label, st["trades"], f"{st['trades'] / weeks:.2f}" if weeks else "-",
+            f"{st['win_rate']}%", f"{st['expectancy_r']:+.3f}",
+            f"{sum(t['r'] for t in trades):+.1f}",
+            "inf" if pf == float("inf") else pf, st["max_drawdown_r"],
+            f"{med:.2f}%"]
+
+
+def s48_verdict(trades):
+    st = sc.aggregate(trades)
+    ok = st["trades"] >= S48_BAR_N and (st["expectancy_r"] or 0) >= S48_BAR_R
+    return ("candidate for probation (CEO decision)" if ok else "not proposed"), ok
+
+
+def s48_mover(sym, day, frames, etfs, has_news, news_failed, k=S48_BASE_K):
+    """One row for the 2026-10-21 movers: gap, trigger, entry, result."""
+    d = pd.Timestamp(day).date()
+    etf = s48_etf_for(sym)
+    if sym not in frames:
+        return [sym, "-", etf or "-", "no bars cached", "-", "-", "-"]
+    days, prev = frames[sym]
+    if d not in days or d not in prev:
+        return [sym, "-", etf or "-", "no bars that day", "-", "-", "-"]
+    bars = days[d]
+    gap = float(bars["open"].iloc[0]) / prev[d] - 1.0
+    gtxt = f"{gap * 100:+.2f}%"
+    if not s48_gap_free(gap):
+        return [sym, gtxt, etf, "not gap-free", "-", "-", "-"]
+    edays, eprev = etfs.get(etf, ({}, {}))
+    t = s48_trade(bars, prev[d], edays.get(d), eprev.get(d), k)
+    hi = float(bars["high"].iloc[[_hm(x) <= S48_TRIG_LAST for x in bars.index]].max())
+    if t["status"] != "traded":
+        if t["status"] == "etf_down":
+            why = f"+3% close at {t['t_trig'].strftime('%H:%M')} but {etf} down"
+        elif t["status"] == "no_trigger":
+            why = (f"no 5-min close >= +3% by 11:30 (high to 11:30 "
+                   f"{(hi / prev[d] - 1) * 100:+.1f}%)")
+        else:
+            why = t["status"]
+        return [sym, gtxt, etf, why, "-", "-", "-"]
+    excl = s48_needs_news(gap) and (sym, d) in has_news
+    note = " (Finnhub failed: no news assumed)" if sym in news_failed else ""
+    trig = t["t_trig"].strftime("%H:%M") + (" - EXCLUDED: gap >= 1.5% + news"
+                                            if excl else "") + note
+    return [sym, gtxt, etf, trig,
+            f"{t['t_entry'].strftime('%H:%M')} @ {t['entry']:.2f} "
+            f"(stop {t['stop']:.2f}, risk {t['risk_pct']:.2f}%)",
+            f"{t['r']:+.2f}R ({t['why']}, {t['t_exit'].strftime('%H:%M')})",
+            "no" if excl else "yes"]
+
+
+def s48_load(cache, symbols):
+    out = {}
+    for sym in symbols:
+        m5 = load_m5_rth(sym, cache)
+        if m5 is None or m5.empty:
+            continue
+        out[sym] = s48_sessions(m5)
+    return out
+
+
+def s48_main(append=False, cache=S34_CACHE, etf_cache=S48_ETF_CACHE,
+             client=None, limiter=None, start=S48_START, end=S48_END,
+             log=None):
+    log = log or (lambda m: print(m, file=sys.stderr))
+    symbols = sorted(f[3:-4] for f in os.listdir(cache)
+                     if f.startswith("m5_") and f.endswith(".csv"))
+    symbols = [s for s in symbols if s != "SPY"]
+    frames = s48_load(cache, symbols)
+    etfs = s48_load(etf_cache, sorted(set(S48_ETF.values()) | {"SMH", "XLU", "XLRE"}))
+    spy5 = load_m5_rth("SPY", cache)
+    spy = s44_spy_trend(daily_from_m5(spy5)) if spy5 is not None else {}
+    runs, cnt, unmapped = s48_scan(frames, etfs, start, end)
+    both, _c2, _u2 = s48_scan(frames, etfs, start, end, ks=(S48_BASE_K,), both=True)
+    need = {(t["sym"], t["day"]) for k in runs for t in runs[k] + both[S48_BASE_K]
+            if s48_needs_news(t["gap"])}
+    for sym in S48_MOVERS:
+        days, prev = frames.get(sym, ({}, {}))
+        d = pd.Timestamp(S48_MOVER_DAY).date()
+        if d in days and d in prev:
+            g = float(days[d]["open"].iloc[0]) / prev[d] - 1
+            if s48_needs_news(g) and s48_gap_free(g):
+                need.add((sym, d))
+    if client is None:
+        import finnhub
+        from dotenv import load_dotenv
+        load_dotenv("/Users/ranasaradb/TradingBot/.env")
+        client = finnhub.Client(api_key=os.environ.get("FINNHUB_API_KEY", ""))
+    log(f"S48: {len(need)} symbol-days need a news check")
+    has, failed, n_art, first_news = s48_fetch_news(
+        need, client, limiter or S36Limiter(), log=log)
+    kept = {k: s48_news_filter(v, has) for k, v in runs.items()}
+    base = kept[S48_BASE_K]
+    for t in base:
+        t["spy"] = spy.get(t["day"])
+    weeks = (pd.Timestamp(end) - pd.Timestamp(start)).days / 7
+    hdr = ["Rows", "Trades", "Trades/week", "Win %", "Expectancy (R)", "Total R",
+           "PF", "MaxDD (R)", "Median risk %"]
+    rows = [s48_row(f"**{S48_BASE_K:g}R target (main definition)**", base, weeks)]
+    for k in S48_TARGETS[1:]:
+        rows.append(s48_row(f"sensitivity: {k:g}R target", kept[k], weeks))
+    rows.append(s48_row("split @2R: SPY trending (prior close > 20d EMA)",
+                        [t for t in base if t["spy"] is True], weeks))
+    rows.append(s48_row("split @2R: SPY not trending",
+                        [t for t in base if t["spy"] is not True], weeks))
+    rows.append(s48_row("sensitivity @2R: max 1 open across symbols",
+                        s48_max_open(base, 1), weeks))
+    rows.append(s48_row("sensitivity @2R: trigger = first bar with +3% AND ETF up",
+                        s48_news_filter(both[S48_BASE_K], has), weeks))
+    rows.append(s48_row("reference @2R: no news exclusion", runs[S48_BASE_K], weeks))
+    mrows = [s48_row(m, [t for t in base if t["day"].strftime("%Y-%m") == m])
+             for m in sorted({t["day"].strftime("%Y-%m") for t in base})]
+    verdict, _ok = s48_verdict(base)
+    st = sc.aggregate(base)
+    whys = {}
+    for t in base:
+        w = t["why"].split(" ")[0]
+        whys[w] = whys.get(w, 0) + 1
+    n_excl = len(runs[S48_BASE_K]) - len(base)
+    mover_rows = [s48_mover(s, S48_MOVER_DAY, frames, etfs, has, failed)
+                  for s in S48_MOVERS]
+    etf_map = {}
+    for s in frames:
+        e = s48_etf_for(s)
+        if e:
+            etf_map.setdefault(e, 0)
+            etf_map[e] += 1
+    lines = [
+        "**S48 (CEO P4, 2026-10-22) - gap-free intraday rallies, study only, "
+        "no live change.** The movers our setups never see (DDOG, ZS, NET, "
+        "CRWD on 2026-10-21 gapped only 0.4-2.8% and ran later). Definition:",
+        "",
+        "> - Gap-free day: |first RTH open vs prior RTH close| < 3%. \"No news "
+        "gap\": exclude the day if the gap is >= 1.5% AND Finnhub company news "
+        "exists in the 18 h before 09:30 ET (fetch news only for those >= 1.5% "
+        "gap days; if Finnhub fails, treat as no news and say so).",
+        "> - Trigger: within the FIRST TWO HOURS (bars starting 09:30-11:25 ET), "
+        "the first completed 5-min close >= +3.0% above the prior RTH close, AND "
+        "the symbol's sector ETF is up on the day at that bar's close (ETF close "
+        "> its prior RTH close).",
+        "> - Entry: the next bar's open. Stop: the day's lowest low from 09:30 "
+        "through the trigger bar; skip if risk <= 0. Target: entry + 2R. Forced "
+        "exit at the 15:55 ET bar's open (no overnight). Fills: a bar opening "
+        "through a level fills at its open; a bar spanning stop and target takes "
+        "the stop. One trade per symbol per day.",
+        "> - Sensitivities: SPY trending (prior close > 20d EMA) vs not; targets "
+        "1.5R and 3R; a max-1-open-across-symbols count.",
+        "",
+        "Implementation notes: the 1.5% news test uses |gap| (gap up or down). "
+        "News is fetched only for >= 1.5% gap days that actually trigger (a "
+        "non-triggering day cannot trade, so its news cannot change a result). "
+        "\"ETF up at that bar's close\" = the ETF's 5-min close at the trigger "
+        "bar's timestamp (or the last ETF bar before it that session) above the "
+        "ETF's prior RTH close. If the first +3% close comes with the ETF down, "
+        "the day is not traded (main rule); the row \"first bar with +3% AND ETF "
+        "up\" instead waits for the ETF within the same window. SPY trending is "
+        "as of the previous session.",
+        "",
+        f"ETF map (sectors.sector_for tag -> ETF): technology -> XLK, except "
+        f"semiconductors {', '.join(sorted(S48_SEMIS & set(frames)))} -> SMH; "
+        "communication -> XLC; consumer_discretionary -> XLY; consumer_staples "
+        "-> XLP; financials -> XLF; healthcare -> XLV; industrials -> XLI; "
+        "energy -> XLE; materials -> XLB; utilities_reit split: "
+        f"{', '.join(sorted(S48_REITS & set(frames)))} -> XLRE, the rest -> XLU. "
+        "AMZN, GOOGL, META, PYPL, SHOP follow the house 'technology' tag (XLK). "
+        f"Symbols per ETF: {', '.join(f'{e} {n}' for e, n in sorted(etf_map.items()))}. "
+        f"**Unmapped, excluded ({len(unmapped)}):** {', '.join(unmapped) or '-'} "
+        "(crypto_dat and unclassified tags).",
+        "",
+        f"Window {start}..{end} ({weeks:.1f} weeks), {len(frames) - len(unmapped)} "
+        f"mapped symbols. {cnt['symbol_days']} symbol-days, {cnt['gap_excluded']} "
+        f"with |gap| >= 3% dropped, {cnt['gap_free']} gap-free; outcomes at 2R: "
+        f"no trigger {cnt.get('no_trigger', 0)}, +3% with ETF down "
+        f"{cnt.get('etf_down', 0)}, no risk {cnt.get('no_risk', 0)}, traded "
+        f"{cnt.get('traded', 0)}; {n_excl} of those excluded as >= 1.5% gap + "
+        f"news. Finnhub: {len(need)} symbol-days checked on "
+        f"{len({s for s, _ in need})} symbols, {len(has)} with news, "
+        f"{n_art} articles, earliest {first_news or '-'}; "
+        f"{len(failed)} symbol(s) failed and count as no-news"
+        + (f" ({', '.join(failed)})" if failed else "") + ". Exits at 2R: "
+        + ", ".join(f"{k} {v}" for k, v in sorted(whys.items())) + ".",
+        "",
+    ]
+    lines += sc.table(hdr, rows)
+    lines += ["", "**By month (2R target, main definition).**", ""]
+    lines += sc.table(["Month"] + hdr[1:], mrows)
+    lines += ["", f"**Bar** (expectancy >= +{S48_BAR_R:.2f}R over >= "
+              f"{S48_BAR_N} trades, main definition): {st['trades']} trades at "
+              f"{(st['expectancy_r'] or 0):+.3f}R -> **{verdict}**.", "",
+              f"**Would it have caught the {S48_MOVER_DAY} movers?**", ""]
+    lines += sc.table(["Ticker", "Gap", "ETF", "Trigger", "Entry", "Result (2R)",
+                       "Counted"], mover_rows)
+    lines += [
+        "",
+        "### Reading",
+        "",
+        "_(Reading: written on the agenda item.)_",
+        "",
+        "### Limits",
+        "",
+        "- Today's universe (survivorship): the 162 names cached for S33, not "
+        "each day's list.",
+        "- IEX 5-minute bars (the live feed) for the symbols and the ETFs: the "
+        "09:30 print and closes can differ from the consolidated tape, so the "
+        "gap, the +3% trigger and the ETF test are IEX-based.",
+        "- Finnhub free tier: about one year of company news; days before "
+        "coverage starts count as no-news. Finnhub is the only news source "
+        "(no PR wires, no earnings calendar).",
+        "- No gatekeeper, no whole-share sizing, no slippage or spread on the "
+        "next-bar-open fill, no daily-loss breaker: an UPPER BOUND.",
+        "",
+        "Reproduce with `python study_exit_grid.py --s48`.",
+    ]
+    return lines, {"base": base, "runs": kept, "verdict": verdict, "has": has,
+                   "failed": failed, "cnt": cnt, "unmapped": unmapped,
+                   "movers": mover_rows}
 # =========================================================== S49 (2026-10-22)
 # CEO 2026-10-22 after KMI/SLB (both energy reclaims, entered 09:32, both
 # stopped): (a) mean_reversion_reclaim entry timing - at the open (current,
@@ -2207,11 +2656,20 @@ def main():
     ap.add_argument("--s44", action="store_true")
     ap.add_argument("--s45", action="store_true")
     ap.add_argument("--s46", action="store_true")
+    ap.add_argument("--s48", action="store_true")
     ap.add_argument("--s49", action="store_true")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
     a = ap.parse_args()
+    if a.s48:
+        lines, _ = s48_main(a.append)
+        print("\n".join(lines))
+        if a.append:
+            n = sc.append_agenda("Study: S48 gap-free intraday rallies (CEO P4, "
+                                 "2026-10-22)", lines)
+            print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+        return 0
     if a.s49:
         s49_main(a.universe_file)
         return 0
