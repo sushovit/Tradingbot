@@ -2646,6 +2646,142 @@ def s49_main(universe_file="universe_today.json"):
     return lines, best
 
 
+# =========================================================== S50 (2026-10-23)
+# CEO 2026-10-23: re-anchor the initial stop to the BROKER FILL. Live fills
+# have come in BELOW the signal price on every entry of the $5k account
+# (TXN -0.91%, REGN -0.45%, KMI -0.83%, SLB -0.51%), and the stop is set from
+# the signal price, so the real fill-to-stop distance is shorter than planned.
+#   current:     stop = initial_stop(signal price) (1.5-2.5 ATR clamp from
+#                the SIGNAL); shares sized from the signal; target from the
+#                signal, then the S28 cap from the fill.
+#   re-anchored: stop = initial_stop(FILL) (the same clamp from the FILL);
+#                the SAME share count; target = fill + min(3R, 3 ATR).
+# The replay fills at the day's open; the signal price is modelled as
+# fill / (1 - gap). Main case: the median live gap; sensitivities 0% and the
+# worst live gap. Money at the live sizing: $5,000, 1% risk, 25% notional.
+
+S50_GAPS = (("median live gap 0.67%", 0.0067), ("no gap", 0.0), ("worst live gap 0.91%", 0.0091))
+S50_SETUPS = ("momentum_continuation", "mean_reversion_reclaim")
+S50_EQUITY, S50_RISK_PCT, S50_CAP = 5000.0, 1.0, 0.25
+
+
+def s50_levels(fill, structural, atr, gap, params, cap_atr):
+    """{'shares', 'current': (stop, target), 'anchored': (stop, target)} or None."""
+    import risk
+    sig = fill / (1.0 - gap)
+    stop_s = pm.initial_stop(sig, structural, atr, params)
+    if stop_s is None or stop_s >= fill:
+        return None
+    shares = risk.position_size(S50_EQUITY, S50_RISK_PCT, sig, stop_s,
+                                position_cap_pct=S50_CAP)
+    if shares < 1:
+        return None
+    tgt_s = sig + 3.0 * (sig - stop_s)
+    tgt_s = min(tgt_s, pm.capped_target(fill, stop_s, atr, cap_atr, 3.0))   # S28 cap at the fill
+    stop_f = pm.initial_stop(fill, structural, atr, params)
+    if stop_f is None or stop_f >= fill:
+        return None
+    tgt_f = pm.capped_target(fill, stop_f, atr, cap_atr, 3.0)
+    return {"shares": shares, "current": (stop_s, tgt_s), "anchored": (stop_f, tgt_f)}
+
+
+def s50_run(signals, frames, gap):
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in params["steps"]]
+    cap = pm.target_cap_atr(_live_config())
+    out = {"current": [], "anchored": []}
+    busy = {}
+    for setup, sym, day, fill, structural in sorted(signals, key=lambda x: x[2]):
+        if sym in busy and day.date() <= busy[sym]:
+            continue
+        m5, daily = frames[sym]
+        atrs = atr_by_day(daily)
+        atr = atrs.get(day.date())
+        if not atr:
+            continue
+        lv = s50_levels(fill, structural, atr, gap, params, cap)
+        if lv is None:
+            continue
+        closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+        last_exit = None
+        for k in ("current", "anchored"):
+            stop, target = lv[k]
+            res = simulate_with_exit(m5, closes, atrs, day, fill, stop, target, steps)
+            if res is None:
+                continue
+            r, why, mfe, xts = res
+            risk_usd = lv["shares"] * (fill - stop)
+            out[k].append({"setup": setup, "sym": sym, "when": day, "r": r,
+                           "pnl": r * risk_usd, "risk_usd": risk_usd, "why": why})
+            last_exit = xts if last_exit is None else max(last_exit, xts)
+        busy[sym] = last_exit.date() if last_exit is not None else m5.index[-1].date()
+    return out
+
+
+def s50_stats(trades, budget=S50_EQUITY * S50_RISK_PCT / 100):
+    ts = sorted(trades, key=lambda t: t["when"])
+    n = len(ts)
+    if not n:
+        return None
+    eq = peak = dd = 0.0
+    for t in ts:
+        eq += t["pnl"]
+        peak = max(peak, eq)
+        dd = max(dd, peak - eq)
+    wins = sum(1 for t in ts if t["pnl"] > 0)
+    return {"trades": n, "win": round(100 * wins / n, 1),
+            "exp_usd": sum(t["pnl"] for t in ts) / n,
+            "exp_r": sum(t["pnl"] for t in ts) / n / budget,       # per $50 budget
+            "total_usd": sum(t["pnl"] for t in ts), "maxdd_usd": dd,
+            "avg_risk": sum(t["risk_usd"] for t in ts) / n,
+            "over_budget": round(100 * sum(1 for t in ts if t["risk_usd"] > budget + 0.01) / n, 1)}
+
+
+def s50_decision(cur, anc, budget=S50_EQUITY * S50_RISK_PCT / 100):
+    return bool(cur and anc and anc["exp_usd"] >= cur["exp_usd"] and anc["avg_risk"] <= budget)
+
+
+def s50_main(universe_file="universe_today.json"):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols, start="2025-10-14", setups=S50_SETUPS)
+    rows, verdict = [], None
+    for label, gap in S50_GAPS:
+        res = s50_run(signals, frames, gap)
+        cur, anc = s50_stats(res["current"]), s50_stats(res["anchored"])
+        for name, st in (("current (stop from signal)", cur), ("re-anchored to the fill", anc)):
+            rows.append([label, name, st["trades"], f"{st['win']}%", f"${st['exp_usd']:+.2f}",
+                         f"{st['exp_r']:+.3f}", f"${st['total_usd']:+,.0f}",
+                         f"${st['maxdd_usd']:,.0f}", f"${st['avg_risk']:.2f}",
+                         f"{st['over_budget']}%"])
+        if verdict is None:
+            verdict = (s50_decision(cur, anc), cur, anc)
+    ok, cur, anc = verdict
+    lines = [f"**S50 (CEO 2026-10-23) - initial stop re-anchored to the broker fill vs "
+             f"the signal price.** 5-minute replay of the live daily rule (momentum "
+             f"+ reclaim), 2025-10-14..2026-10-22, {len(frames)} symbols; $5,000, 1% "
+             f"risk ($50), 25% notional; the share count is sized from the signal "
+             f"in both rows.", ""]
+    lines += sc.table(["Signal-to-fill gap", "Stop", "Trades", "Win %", "Expectancy $",
+                       "Expectancy (R of $50)", "Total $", "MaxDD $", "Avg $ at risk",
+                       "Risk > $50"], rows)
+    lines += ["", (f"**Rule met (median gap): expectancy ${anc['exp_usd']:+.2f} >= "
+                   f"${cur['exp_usd']:+.2f} and avg risk ${anc['avg_risk']:.2f} <= $50** "
+                   f"-> adopt: re-anchor the initial stop to the fill." if ok else
+                   f"**Rule not met (median gap):** re-anchored expectancy "
+                   f"${anc['exp_usd']:+.2f} vs current ${cur['exp_usd']:+.2f}, avg risk "
+                   f"${anc['avg_risk']:.2f} (limit $50). No change."),
+              "", "**Limits.** The signal price is MODELLED from four live fills "
+              "(the replay fills at the open); fractional effects of whole-share "
+              "sizing are kept (live sizing); today's universe; IEX bars; signals, "
+              "not gatekeeper-approved trades; max positions / sector cap / daily "
+              "breaker not modelled.", "", sc.UPPER_BOUND]
+    print("\n".join(lines))
+    return lines, ok
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -2658,6 +2794,7 @@ def main():
     ap.add_argument("--s46", action="store_true")
     ap.add_argument("--s48", action="store_true")
     ap.add_argument("--s49", action="store_true")
+    ap.add_argument("--s50", action="store_true")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
@@ -2669,6 +2806,9 @@ def main():
             n = sc.append_agenda("Study: S48 gap-free intraday rallies (CEO P4, "
                                  "2026-10-22)", lines)
             print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+        return 0
+    if a.s50:
+        s50_main(a.universe_file)
         return 0
     if a.s49:
         s49_main(a.universe_file)

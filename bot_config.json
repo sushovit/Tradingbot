@@ -1,6 +1,7 @@
 {
     "exits": {
-        "target_cap_atr": 3.0
+        "target_cap_atr": 3.0,
+        "reanchor_stop_to_fill": true
     },
     "goals": {
         "trades_per_week": 3,

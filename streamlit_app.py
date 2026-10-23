@@ -1055,6 +1055,26 @@ def _worker_loop():
         if _entry_fixed:
             write_positions(positions)
 
+        # S50 (CEO 2026-10-23): re-anchor a new daily position's initial stop
+        # to the broker fill (same ATR clamp, same shares) - after the fill
+        # reconcile, BEFORE the target cap so the cap measures R from it.
+        if (config.get("exits") or {}).get("reanchor_stop_to_fill", True):
+            for _t, _st in positions.items():
+                if not _st.get("in_position") or _t not in broker_entries:
+                    continue
+                try:
+                    _last = None
+                    for _p in _held_now:
+                        if _p.symbol == _t:
+                            _last = float(getattr(_p, "current_price", 0) or 0) or None
+                    position_mgmt.maybe_reanchor_stop(
+                        broker, _t, _st,
+                        config['risk_profiles'][ticker_profiles.get(_t, 'Moderate')],
+                        last_price=_last, persist=lambda: write_positions(positions),
+                        journal_event=journal_ops_once)
+                except Exception as e:        # never costs the cycle
+                    logger.warning(f"{_t}: stop re-anchor skipped this cycle: {e}")
+
         # S28 target cap: after the entry reconcile (the real fill), before
         # any lock/trail math. Once per position; the broker leg moves only
         # when fill + min(3R, cap x ATR14) is below the current target.
@@ -1705,6 +1725,9 @@ def _worker_loop():
                 "signal_price": signal.entry,
                 # S28: ATR14 as of the entry day - the target cap's yardstick
                 "atr14": signal.extras.get("atr14"),
+                # S50: the structural low the ATR-clamped stop was built from
+                # (re-anchored to the fill once it is confirmed)
+                "structural_stop": signal.extras.get("structural_stop", signal.stop),
                 "entry_fill_confirmed": bool(fill_confirmed),
                 "shares_held": qty,
                 # initial_stop is the PLAYBOOK-STRUCTURAL stop (reclaim/
