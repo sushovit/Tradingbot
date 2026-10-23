@@ -3,6 +3,12 @@
 Items here are **not** implemented. They change trading policy and need a
 decision; the evidence is recorded so the decision can be made on numbers.
 
+> **Standing adoption rule for every study (CEO 2026-10-23).** A variant is
+> adopted only if, against the current live rule on the same replay:
+> **expectancy >= current + 0.02R**, **AND MaxDD <= 110% of current**, **AND
+> it is measured over >= 200 trades.** Anything less is a **tie -> no change.**
+> This replaces the per-study rules from now on.
+
 ---
 
 ## 1. Universe quality floor (raised 2026-08-20, from the BMNR approval)
@@ -1876,3 +1882,10 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 
 _Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
 
+### Decision (CEO 2026-10-23): NOT adopted - a tie
+
+The 1-minute ratchet met the old per-study rule only on rounding (+0.00004R
+per trade, +0.01 pp capture; 8 of 1,499 trades differ, net +0.06R in a year).
+The CEO ruled it a tie: **the ladder keeps ratcheting on 5-minute closes.**
+Under the standing rule now in the header (expectancy >= current + 0.02R,
+MaxDD <= 110%, >= 200 trades) it would not qualify either.
