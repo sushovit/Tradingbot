@@ -129,11 +129,17 @@ def test_adx_uses_the_detectors_window_not_the_full_series():
         pytest.skip("NVDA daily cache unavailable")
     full = ta.adx(df["high"], df["low"], df["close"], length=14)
     col = [c for c in full.columns if c.startswith("ADX")][0]
-    pos = 400
-    windowed = sc.adx_at(df, pos)
-    assert windowed is not None
+    # The 3-year window moves forward every day, so ONE fixed bar is a
+    # moving target (2026-10-23: bar 400 differed by only 0.43). The claim
+    # is that the detector's window gives different numbers than the full
+    # series - check it over a stretch of bars, not at one point.
+    diffs = []
+    for pos in range(300, min(len(df), 500), 5):
+        windowed = sc.adx_at(df, pos)
+        assert windowed is not None
+        diffs.append(abs(windowed - float(full[col].iloc[pos])))
     # They must actually differ, or the fix was pointless.
-    assert abs(windowed - float(full[col].iloc[pos])) > 0.5
+    assert max(diffs) > 0.5
 
 
 def test_volume_ratio_is_the_signal_bar_over_its_trailing_average():
