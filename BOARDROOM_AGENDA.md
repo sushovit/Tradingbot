@@ -1802,4 +1802,30 @@ Window 2025-10-14..2026-10-21 (53.1 weeks), 155 mapped symbols. 39656 symbol-day
 - No gatekeeper, no whole-share sizing, no slippage or spread on the next-bar-open fill, no daily-loss breaker: an UPPER BOUND.
 
 Reproduce with `python study_exit_grid.py --s48`.
+---
+
+## 30. Study + decision: S50 initial stop re-anchored to the broker fill (2026-10-23)
+
+**S50 (CEO 2026-10-23) - initial stop re-anchored to the broker fill vs the signal price.** 5-minute replay of the live daily rule (momentum + reclaim), 2025-10-14..2026-10-22, 164 symbols; $5,000, 1% risk ($50), 25% notional; the share count is sized from the signal in both rows.
+
+| Signal-to-fill gap | Stop | Trades | Win % | Expectancy $ | Expectancy (R of $50) | Total $ | MaxDD $ | Avg $ at risk | Risk > $50 |
+|---|---|---|---|---|---|---|---|---|---|
+| median live gap 0.67% | current (stop from signal) | 1477 | 41.2% | $+3.49 | +0.070 | $+5,152 | $1,917 | $37.77 | 0.0% |
+| median live gap 0.67% | re-anchored to the fill | 1476 | 43.0% | $+4.41 | +0.088 | $+6,510 | $1,577 | $41.01 | 0.2% |
+| no gap | current (stop from signal) | 1483 | 43.1% | $+4.79 | +0.096 | $+7,104 | $1,664 | $42.92 | 0.0% |
+| no gap | re-anchored to the fill | 1483 | 43.1% | $+4.79 | +0.096 | $+7,104 | $1,664 | $42.92 | 0.0% |
+| worst live gap 0.91% | current (stop from signal) | 1476 | 40.9% | $+3.27 | +0.065 | $+4,823 | $1,854 | $36.11 | 0.0% |
+| worst live gap 0.91% | re-anchored to the fill | 1475 | 43.0% | $+4.38 | +0.088 | $+6,465 | $1,516 | $40.25 | 0.1% |
+
+**Rule met (median gap): expectancy $+4.41 >= $+3.49 and avg risk $41.01 <= $50** -> adopt: re-anchor the initial stop to the fill.
+
+**Limits.** The signal price is MODELLED from four live fills (the replay fills at the open); fractional effects of whole-share sizing are kept (live sizing); today's universe; IEX bars; signals, not gatekeeper-approved trades; max positions / sector cap / daily breaker not modelled.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading and decision
+
+- Every live entry on the $5k account filled below its signal price (TXN -0.91%, REGN -0.45%, KMI -0.83%, SLB -0.51%), so a stop set from the signal sat closer to the real entry than the R/ATR rule intends - a tighter stop that the ordinary noise of a reclaim hits more often.
+- At the median live gap, re-anchoring the 1.5-2.5 ATR clamp to the FILL lifts expectancy from $+3.49 to $+4.41 per trade (+0.070R -> +0.088R of the $50 budget), win rate 41.2% -> 43.0%, total $+5,152 -> $+6,510, and LOWERS MaxDD ($1,917 -> $1,577). Average risk rises $37.77 -> $41.01, still under the $50 (1%) budget; 0.2% of trades exceed it by cents. With no gap the two are identical, as they must be.
+- **Adopted (CEO rule: expectancy >= current and avg risk <= 1%).** Live from the next session: once a new daily R/ATR position's fill is confirmed, its initial stop is recomputed from the fill (same clamp, same shares), before the S28 target cap. Once per position; never after the ladder has raised the stop; never at or above the market. Journaled as ops event stop_reanchored. Switch: exits.reanchor_stop_to_fill.
 

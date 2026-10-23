@@ -1011,3 +1011,67 @@ def verify_protection(broker, positions: dict, broker_qty: dict,
             if journal_event:
                 journal_event("protection_repaired", f"{ticker}: check failed: {e}")
     return lines
+
+
+
+# --- S50: initial stop re-anchored to the broker fill (CEO 2026-10-23) -------
+# Fills have come in below the signal price on every $5k-account entry, so a
+# stop set from the signal sat closer to the real entry than the R/ATR rule
+# intends. Once the fill is confirmed, a daily R/ATR position's initial stop
+# is recomputed with the SAME 1.5-2.5 ATR clamp from the FILL (same shares).
+# Once per position, only while the stop is still the original one (never
+# after the ladder raised it), and only to a level below the market.
+
+def reanchor_target(state: dict, risk_profile: dict, last_price=None):
+    """The fill-anchored initial stop for this position, or None if it does
+    not apply / would not change."""
+    if (state.get("timeframe") != "daily" or state.get("stop_reanchored")
+            or not state.get("entry_fill_confirmed")):
+        return None
+    if trailing_type_for(state, risk_profile) != R_ATR:
+        return None
+    entry, structural, atr = (state.get("entry_price"), state.get("structural_stop"),
+                              state.get("atr14"))
+    current = state.get("trailing_stop_price")
+    orig = state.get("original_stop", state.get("initial_stop"))
+    if None in (entry, structural, atr, current, orig):
+        return None
+    if abs(float(current) - float(orig)) > 0.005:
+        return None                      # the ladder already moved it
+    new = initial_stop(float(entry), float(structural), float(atr),
+                       r_atr_params(risk_profile))
+    if new is None or new >= float(entry) or abs(new - float(current)) <= 0.005:
+        return None
+    if last_price is not None and new >= float(last_price):
+        return None
+    return new
+
+
+def maybe_reanchor_stop(broker, ticker: str, state: dict, risk_profile: dict,
+                        last_price=None, persist=None, journal_event=None) -> bool:
+    """Apply reanchor_target at the broker. Returns True when the stop moved.
+    Marks the position done either way once the fill is confirmed, so it is
+    decided exactly once."""
+    if state.get("stop_reanchored") or not state.get("entry_fill_confirmed"):
+        return False
+    new = reanchor_target(state, risk_profile, last_price)
+    if new is None:
+        if state.get("timeframe") == "daily":
+            state["stop_reanchored"] = True
+            if persist:
+                persist()
+        return False
+    old = float(state["trailing_stop_price"])
+    order = broker.replace_stop(state["stop_order_id"], new)
+    state["stop_order_id"] = str(getattr(order, "id", state["stop_order_id"]))
+    state["stop_signal_anchored"] = old
+    state["initial_stop"] = state["original_stop"] = state["trailing_stop_price"] = new
+    state["stop_reanchored"] = True
+    if persist:
+        persist()
+    msg = (f"{ticker}: initial stop re-anchored to the fill {state['entry_price']}: "
+           f"{old:.2f} -> {new:.2f} (same 1.5-2.5 ATR clamp, same shares)")
+    logger.info(msg)
+    if journal_event:
+        journal_event("stop_reanchored", msg)
+    return True
