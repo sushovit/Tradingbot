@@ -1828,4 +1828,51 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - Every live entry on the $5k account filled below its signal price (TXN -0.91%, REGN -0.45%, KMI -0.83%, SLB -0.51%), so a stop set from the signal sat closer to the real entry than the R/ATR rule intends - a tighter stop that the ordinary noise of a reclaim hits more often.
 - At the median live gap, re-anchoring the 1.5-2.5 ATR clamp to the FILL lifts expectancy from $+3.49 to $+4.41 per trade (+0.070R -> +0.088R of the $50 budget), win rate 41.2% -> 43.0%, total $+5,152 -> $+6,510, and LOWERS MaxDD ($1,917 -> $1,577). Average risk rises $37.77 -> $41.01, still under the $50 (1%) budget; 0.2% of trades exceed it by cents. With no gap the two are identical, as they must be.
 - **Adopted (CEO rule: expectancy >= current and avg risk <= 1%).** Live from the next session: once a new daily R/ATR position's fill is confirmed, its initial stop is recomputed from the fill (same clamp, same shares), before the S28 target cap. Once per position; never after the ladder has raised the stop; never at or above the market. Journaled as ops event stop_reanchored. Switch: exits.reanchor_stop_to_fill.
+---
+
+## 31. Study: S51 R/ATR ladder ratchet on 1-minute vs 5-minute closes (2026-10-23)
+
+**S51 (CEO 2026-10-23) - R/ATR ladder ratchet on 1-minute vs 5-minute closes.** Study only. Both variants replayed on 1-minute IEX bars (stops, targets, gaps and the time stop checked on every 1-minute bar); only the ladder cadence differs. Signals 2025-10-14..2026-10-22, momentum_continuation + mean_reversion_reclaim, 2620 signals on 164 symbols with 5-minute bars, 161 with 1-minute bars; 0 signals skipped for lack of 1-minute bars; 8 of 1499 trades end with a different R.
+
+| Setup | Ratchet on | Trades | Win % | Expectancy (R) | Total R | PF | MaxDD (R) | Capture | Give-back |
+|---|---|---|---|---|---|---|---|---|---|
+| all | 5-minute closes (current) | 1499 | 42.7% | +0.105 | +156.9 | 1.26 | 41.01 | 12.6% | 5.1% |
+| all | 1-minute closes | 1499 | 42.7% | +0.105 | +157.0 | 1.26 | 40.62 | 12.6% | 4.9% |
+| momentum_continuation | 5-minute closes (current) | 240 | 45.0% | +0.103 | +24.6 | 1.27 | 16.34 | 13.4% | 5.0% |
+| momentum_continuation | 1-minute closes | 240 | 45.0% | +0.109 | +26.3 | 1.29 | 16.7 | 14.2% | 4.6% |
+| mean_reversion_reclaim | 5-minute closes (current) | 1259 | 42.3% | +0.105 | +132.3 | 1.26 | 38.55 | 12.5% | 5.1% |
+| mean_reversion_reclaim | 1-minute closes | 1259 | 42.3% | +0.104 | +130.7 | 1.25 | 38.16 | 12.3% | 4.9% |
+
+**Rule met on the letter: 1-minute closes** (unrounded expectancy +0.10472 >= +0.10468 and capture 12.63% > 12.62%; total R +0.06).
+
+*The 8 trades that differ (R: 5-minute -> 1-minute)*
+
+| Symbol | Entry | Setup | MFE (R) | 5-minute | 1-minute |
+|---|---|---|---|---|---|
+| AMZN | 2026-01-07 | momentum_continuation | 1.03 | -1.00 (stop) | +0.00 (stop) |
+| LRCX | 2026-01-12 | mean_reversion_reclaim | 1.20 | +0.41 (time stop day 10) | +0.00 (stop) |
+| BMY | 2026-02-23 | mean_reversion_reclaim | 1.00 | -0.31 (time stop day 10) | +0.00 (stop) |
+| DAL | 2026-03-17 | mean_reversion_reclaim | 1.05 | -0.07 (time stop day 10) | +0.00 (stop) |
+| SMCI | 2026-05-29 | momentum_continuation | 1.13 | -1.00 (stop) | +0.00 (stop) |
+| ANET | 2026-06-30 | mean_reversion_reclaim | 2.01 | +2.00 (target) | -0.01 (stop (gap)) |
+| NET | 2026-07-08 | momentum_continuation | 1.33 | +0.33 (time stop day 10) | -0.03 (stop (gap)) |
+| AMGN | 2026-09-23 | mean_reversion_reclaim | 1.13 | -0.45 (time stop day 10) | +0.00 (stop) |
+
+**Method.** Live ladder from bot_config (Moderate daily_r_atr: +1R -> entry, +1.5R -> entry, +2R -> entry + 1R, then highest completed daily close - 2.5 x ATR14), initial stop = structural - 0.25 ATR clamped 1.5-2.5 ATR, S28 target = fill + min(3R, 3 ATR), entry at the entry day's open, time stop at the first bar at/after 15:55 ET of day 5 if MFE < +0.5R / day 10 regardless. Both rows replay the SAME 1-minute bars with the same fills (a bar opening through a level fills at its open; a bar spanning stop and target takes the stop); 5-minute = the ladder steps only on the last printed minute of each 5-minute bucket starting >= 10:00 ET (its close = the 5-minute close); 1-minute = it steps on every 1-minute close >= 10:00. Paired: one position per symbol, busy until the later exit of the two rows, so both rows trade the same 1,499 signals. Signals and daily bars (ATR, daily closes) from 5-minute IEX bars resampled, as S34/S49/S50. Cross-check: the 5-minute row on 1-minute bars matches the S34/S50 5-minute simulator (`simulate_with_exit` on 5-minute bars) within 0.02R on 1,457 of 1,499 trades and on total R (+156.9 both); the rest differ only by intrabar gap fills. Reproduce with `python study_exit_grid.py --s51 --fetch` (fetch caches data/m5 + data/m1; both deleted after this run).
+
+### Reading
+
+- The cadence almost never matters: 8 of 1,499 trades (0.5%) end differently. A 1-minute close crosses a ladder trigger a few minutes before the 5-minute close does, and that only changes the outcome when price falls back to the new stop inside the same 5-minute bucket or the 5-minute close never confirms the trigger.
+- The 8 trades split both ways. 1-minute closes saved two full stops (AMZN, SMCI: -1R -> 0R) and turned three day-10 losers to scratch (BMY, DAL, AMGN), but scratched two winners (LRCX +0.41R, NET +0.33R) and cost the one large winner (ANET: +2.0R target -> -0.01R). Net +0.06R over a year, i.e. one trade's worth of noise.
+- All setups: expectancy +0.10472 vs +0.10468, capture 12.63% vs 12.62%, give-back 4.9% vs 5.1%, MaxDD 40.6R vs 41.0R. The adopt rule (expectancy >= current AND higher capture) is met ON THE LETTER, by +0.00004R per trade and +0.01 pp of capture - a tie, not an edge. By setup it splits: momentum_continuation better on 1-minute (+0.109 vs +0.103, capture 14.2% vs 13.4%), mean_reversion_reclaim (84% of trades) slightly worse (+0.104 vs +0.105, capture 12.3% vs 12.5%).
+- Verdict for the CEO: the rule is technically met, but the measured difference is within one trade; there is no evidence either way that 1-minute ratcheting improves the exit. Adoption would be a coin-flip change to live exit code (and 5x the ladder evaluations); keeping 5-minute closes costs nothing measurable. No live code was changed by this study.
+
+### Limits
+
+- Today's universe (survivorship); IEX bars only (sparse minutes on thin names: a missing minute simply has no close); signals, not gatekeeper-approved trades; max positions / sector cap / daily-loss breaker and earnings exits not modelled.
+- The live desk polls on its own cycle; this models the ladder as if each qualifying close were acted on before the next bar (both rows alike).
+- Only 8 differing trades: no statistical power to rank the two cadences; the per-setup split rests on 3 (momentum) and 5 (reclaim) trades.
+- No trimming: all 2,620 signals on 161 symbols had 1-minute bars (969 merged windows, entry day .. +15 calendar days; ~300 MB, deleted after the run).
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
 
