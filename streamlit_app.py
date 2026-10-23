@@ -1921,17 +1921,29 @@ def _render_owner_sell(broker, open_rows, desk):
                          type="primary", width='stretch'):
                 st.session_state["owner_sell_confirm"] = pick
         armed = st.session_state.get("owner_sell_confirm")
+        import sell_pin
+        if not sell_pin.configured():
+            st.caption("Selling is disabled until a sell PIN is set up.")
+            return
         if armed and armed in qty:
             st.warning(f"Sell all {qty[armed]:g} {armed} shares at market? This "
                        f"cancels its stop and target orders first.")
+            pin = st.text_input("Sell PIN", type="password", key="owner_sell_pin",
+                                max_chars=12, placeholder="Enter your sell PIN")
             k1, k2 = st.columns(2)
             go = k1.button(f"Yes, sell {armed}", key="owner_sell_yes",
                            type="primary", width='stretch')
             if k2.button("Cancel", key="owner_sell_no", width='stretch'):
                 st.session_state.pop("owner_sell_confirm", None)
+                st.session_state.pop("owner_sell_pin", None)
                 st.rerun()
             if go:
+                ok, msg = sell_pin.check(pin)
+                if not ok:
+                    st.error(msg)
+                    return
                 st.session_state.pop("owner_sell_confirm", None)
+                st.session_state.pop("owner_sell_pin", None)
                 _execute_owner_sell(broker, armed, desk)
 
 

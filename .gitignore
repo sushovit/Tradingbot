@@ -48,3 +48,4 @@ venv/
 # S28: local LoRA adapters (large, machine-specific)
 adapters/
 shadow_busy.marker
+sell_pin_state.json
