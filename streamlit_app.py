@@ -1854,6 +1854,48 @@ def _cached_equity_points(_broker, minute_key):
     return dashboard_charts.equity_points(_broker)
 
 
+@st.cache_resource(show_spinner=False)
+def _live_bars():
+    """S20: ONE live 1-minute candle book per dashboard process (one IEX
+    websocket). Never created in the worker (live_stream refuses)."""
+    import live_stream
+    return live_stream.LiveBars(Broker(), live_stream.default_factory)
+
+
+@st.fragment(run_every=5)
+def _render_live_candles(items, session):
+    """S20 (CEO 2026-10-23): the selected stocks as live candles, redrawn
+    every 5 s; 1m / 5m / 15m, default 1m. Display only - bot decisions stay
+    on 5-minute bars. A past session (no live data) keeps the 5-minute line."""
+    import dashboard_charts as dc
+    tf = st.segmented_control("Candles", ["1m", "5m", "15m"], default="1m",
+                              key="candle_tf", label_visibility="collapsed") or "1m"
+    today = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
+    live = None
+    try:
+        live = _live_bars()
+        tickers = [it["ticker"] for it in items]
+        live.ensure(tickers)
+        live.poll(tickers)                       # REST fallback if the stream is down
+    except Exception as e:
+        st.caption(f"Live candles unavailable ({e}); showing 5-minute closes.")
+    cols = st.columns(2)
+    for i, item in enumerate(items):
+        with cols[i % 2]:
+            frame = None
+            if live is not None and (item["status"] == "open" or session == today):
+                frame = live.candles(item["ticker"], tf, today)
+            if frame is not None and not frame.empty:
+                st.altair_chart(dc.candle_chart(item, frame, tf), width='stretch')
+            else:
+                st.altair_chart(dc.selected_chart(item), width='stretch')
+    if live is not None:
+        src = ("IEX websocket" if live.streaming else
+               "REST every 5 s (websocket unavailable" +
+               (f": {live.last_error[:60]}" if live.last_error else "") + ")")
+        st.caption(f"Live {tf} candles from {src}. Bot decisions use 5-minute bars.")
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_intraday(_broker, tickers, minute_key):
     return _broker.get_bars(list(tickers), timeframe_minutes=5, lookback_days=4)
@@ -2052,14 +2094,12 @@ def _render_live_charts(broker, broker_err):
         items += dc.selected_items({}, cands, bars, session,
                                    limit=6 - len(items))
         st.caption(f"Open positions today, then the stocks the gatekeeper "
-                   f"looked at on {session} — 5-minute price with the entry, "
+                   f"looked at on {session} — live candles with the entry, "
                    f"stop and target the desk set.")
         if not items:
             st.caption("No intraday bars for these yet.")
-        cols = st.columns(2)
-        for i, item in enumerate(items):
-            with cols[i % 2]:
-                st.altair_chart(dc.selected_chart(item), width='stretch')
+        else:
+            _render_live_candles(items, session)
         with st.expander("Table view"):
             st.dataframe(pd.DataFrame([{
                 "Ticker": it["ticker"], "Status": it["status"],

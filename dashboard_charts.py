@@ -257,6 +257,55 @@ def selected_chart(item: dict) -> alt.Chart:
     return alt.layer(*layers).properties(height=170, title=title_for(item))
 
 
+CANDLE_UP = "#2a9d8f"      # candle closed up (polarity, not a status colour)
+CANDLE_DOWN = "#e76f51"    # candle closed down
+
+
+def candle_chart(item: dict, candles: pd.DataFrame, timeframe: str = "1m") -> alt.Chart:
+    """S20 (2026-10-23): live candles (ts, open, high, low, close) with the
+    entry / stop / target the desk set. Same levels and labels as
+    selected_chart; the y-domain holds every level."""
+    frame = candles.copy()
+    frame["up"] = frame["close"] >= frame["open"]
+    levels = [(name, float(val), col, dash) for name, val, col, dash in (
+        ("target", item.get("target"), GOOD, [6, 3]),
+        ("entry", item.get("entry"), MUTED, [2, 2]),
+        ("stop", item.get("stop"), CRITICAL, [6, 3])) if val is not None]
+    ys = list(frame["low"]) + list(frame["high"]) + [v for _, v, _, _ in levels]
+    pad = (max(ys) - min(ys)) * 0.08 or 1.0
+    scale = alt.Scale(domain=[min(ys) - pad, max(ys) + pad])
+    color = alt.condition("datum.up", alt.value(CANDLE_UP), alt.value(CANDLE_DOWN))
+    x = alt.X("ts:T", title=None, axis=alt.Axis(format="%H:%M"))
+    tip = [alt.Tooltip("ts:T", title="Time (ET)", format="%H:%M"),
+           alt.Tooltip("open:Q", format="$,.2f"), alt.Tooltip("high:Q", format="$,.2f"),
+           alt.Tooltip("low:Q", format="$,.2f"), alt.Tooltip("close:Q", format="$,.2f")]
+    base = alt.Chart(frame).encode(x=x, color=color, tooltip=tip)
+    layers = [
+        base.mark_rule(strokeWidth=1).encode(
+            y=alt.Y("low:Q", title=None, scale=scale), y2="high:Q"),
+        base.mark_bar(width={"band": 0.7} if len(frame) > 1 else 4).encode(
+            y=alt.Y("open:Q", scale=scale), y2="close:Q"),
+    ]
+    last_ts = frame["ts"].max()
+    for name, val, col, dash in levels:
+        one = pd.DataFrame({"price": [val], "ts": [last_ts],
+                            "label": [f"{name} ${val:,.2f}"]})
+        layers.append(alt.Chart(one).mark_rule(
+            color=col, strokeWidth=1.5, strokeDash=dash).encode(y="price:Q"))
+        below = name == "stop"
+        layers.append(alt.Chart(one).mark_text(
+            align="right", baseline="top" if below else "bottom",
+            dy=2 if below else -2, fontSize=11,
+            color="#52514e").encode(x="ts:T", y="price:Q", text="label:N"))
+    last = float(frame["close"].iloc[-1])
+    chg = (last / float(item["entry"]) - 1) * 100 if item.get("entry") else None
+    status = {"open": "open position", "approved": "gatekeeper approved",
+              "rejected": "gatekeeper rejected"}.get(item.get("status"), "")
+    title = (f"{item['ticker']} · {status} · {timeframe} · ${last:,.2f}"
+             + (f" ({chg:+.2f}% vs entry)" if chg is not None else ""))
+    return alt.layer(*layers).properties(height=190, title=title)
+
+
 def title_for(item: dict) -> str:
     chg = item.get("change_pct")
     move = f" · {chg:+.2f}% vs entry" if chg is not None else ""
