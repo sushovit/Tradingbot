@@ -9,6 +9,7 @@ or trading change.
     python study_exit_grid.py --s44                 # S44 morning momentum
     python study_exit_grid.py --s48 [--append]      # S48 gap-free intraday rallies
     python study_exit_grid.py --s45 [--fetch] [--append]  # S45 funnel per blocker
+    python study_exit_grid.py --s51 [--fetch]       # S51 1m vs 5m ladder ratchet
 
 A 5-minute replay of the LIVE daily rule as built, then six variants:
 
@@ -2782,6 +2783,336 @@ def s50_main(universe_file="universe_today.json"):
     return lines, ok
 
 
+# =========================================================== S51 (2026-10-23)
+# CEO 2026-10-23: is the live R/ATR ladder's ratchet better decided on
+# 1-MINUTE closes than on 5-MINUTE closes (current)? Both variants replay on
+# 1-minute IEX bars, so stop/target/gap/time-stop hits are identical in
+# kind; ONLY the ratchet cadence differs:
+#   5m (current): the ladder updates at each completed 5-minute bar (the
+#                 last 1-minute bar of the bucket; its close = the 5m close),
+#                 buckets starting at/after 10:00 ET.
+#   1m:           the ladder updates on every 1-minute close at/after 10:00.
+# Signals: momentum_continuation + mean_reversion_reclaim (live SPY gate),
+# from daily bars resampled from 5-minute IEX bars, exactly as S34/S49/S50.
+# One position per symbol at a time, busy until the LATER exit of the two
+# variants, so both rows replay the same signals (a paired comparison).
+
+S51_SETUPS = ("momentum_continuation", "mean_reversion_reclaim")
+S51_MODES = (("5m", "5-minute closes (current)"), ("1m", "1-minute closes"))
+S51_START, S51_END = "2025-10-14", "2026-10-22"
+S51_HOLD_DAYS = 15                 # calendar days of 1m bars after the entry day
+S51_M5_CACHE = os.path.join("data", "m5")
+S51_M1_CACHE = os.path.join("data", "m1")
+
+
+def s51_windows(days, hold=S51_HOLD_DAYS):
+    """Merged [(first, last)] calendar-date ranges covering entry day ..
+    entry day + `hold` for every date in `days`. Pure."""
+    from datetime import timedelta
+    out = []
+    for d in sorted(set(days)):
+        lo, hi = d, d + timedelta(days=hold)
+        if out and lo <= out[-1][1] + timedelta(days=1):
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def s51_bucket(minute_of_day, width=5):
+    """Start minute of the `width`-minute bucket holding this minute."""
+    return minute_of_day - minute_of_day % width
+
+
+def s51_qualifying(minutes, days, mode, not_before=600):
+    """[bool] per 1-minute bar: does this bar's close move the ladder?
+    `minutes` = minute of day of each bar's START, `days` = its date.
+    1m: every bar starting at/after `not_before`. 5m: the LAST bar of each
+    5-minute bucket starting at/after `not_before` (sparse IEX minutes: the
+    bucket's last printed minute closes the 5-minute bar). Pure."""
+    n = len(minutes)
+    out = [False] * n
+    for i in range(n):
+        if mode == "1m":
+            out[i] = minutes[i] >= not_before
+            continue
+        b = s51_bucket(minutes[i])
+        if b < not_before:
+            continue
+        last = (i == n - 1 or days[i + 1] != days[i]
+                or s51_bucket(minutes[i + 1]) != b)
+        out[i] = last
+    return out
+
+
+def simulate_m1(m1, daily_close, atr_day, entry_day, entry, stop, target, steps,
+                mode):
+    """The live daily exit replayed on 1-minute bars (no partial), the ladder
+    stepping on the closes `mode` qualifies. Stop/target/gap checks on every
+    1-minute bar; time stop at the open of the first bar at/after 15:55 ET of
+    day 5 (MFE < +0.5R) / day 10 (or that day's last bar's close if no bar
+    printed after 15:55). (r, reason, mfe_r, exit_ts) or None while open."""
+    risk = entry - stop
+    bars = m1[m1.index.normalize() >= pd.Timestamp(entry_day).tz_convert(ET).normalize()]
+    if bars.empty:
+        return None
+    idx = bars.index
+    o_, h_, l_, c_ = (bars[k].to_numpy(float) for k in ("open", "high", "low", "close"))
+    dts = [t.date() for t in idx]
+    mins = [t.hour * 60 + t.minute for t in idx]
+    qual = s51_qualifying(mins, dts, mode)
+    order = sorted(set(dts))
+    day_no = {d: i + 1 for i, d in enumerate(order)}
+    closes = sorted(daily_close.items())
+    live, hc, mfe, entry_date = stop, entry, 0.0, order[0]
+    n = len(idx)
+    for i in range(n):
+        o, h, l, c, d = o_[i], h_[i], l_[i], c_[i], dts[i]
+        if i:
+            if o <= live:
+                return (o - entry) / risk, "stop (gap)", mfe, idx[i]
+            if o >= target:
+                return (o - entry) / risk, "target (gap)", max(mfe, (o - entry) / risk), idx[i]
+        k = day_no[d]
+        due = k >= 10 or (k >= 5 and mfe < 0.5)
+        if due and mins[i] >= 955:
+            return (o - entry) / risk, f"time stop day {k}", mfe, idx[i]
+        mfe = max(mfe, (h - entry) / risk)
+        if l <= live:
+            return (live - entry) / risk, "stop", mfe, idx[i]
+        if h >= target:
+            return (target - entry) / risk, "target", mfe, idx[i]
+        if qual[i]:
+            hc = max(hc, c)
+            cands = [entry + sr * risk for t, sr in steps if (hc - entry) / risk >= t]
+            if (hc - entry) / risk >= 2.0:
+                prior = [v for dd, v in closes if entry_date <= dd < d]
+                a = atr_day.get(d)
+                if prior and a:
+                    cands.append(max(prior) - 2.5 * a)
+            if cands:
+                cand = math.ceil(max(cands) * 100 - 1e-6) / 100
+                if live < cand < c:
+                    live = cand
+        last_of_day = i == n - 1 or dts[i + 1] != d
+        if due and last_of_day and mins[i] < 955 and i < n - 1:
+            return (c - entry) / risk, f"time stop day {k} (last bar)", mfe, idx[i]
+    return None
+
+
+def s51_run(signals, frames, m1_frames, steps=None):
+    """{'5m': trades, '1m': trades}; trades carry setup, sym, day, r, mfe_r,
+    why, exit_ts. Signals without 1-minute bars on the entry day are skipped
+    (counted in 'no_m1')."""
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in (steps or params["steps"])]
+    cap = pm.target_cap_atr(_live_config())
+    out = {m: [] for m, _ in S51_MODES}
+    out["no_m1"] = 0
+    busy = {}
+    hi = pd.Timestamp(S51_END).date()
+    for setup, sym, day, entry, structural in sorted(signals, key=lambda x: x[2]):
+        if setup not in S51_SETUPS or day.date() > hi:
+            continue
+        if sym in busy and day.date() <= busy[sym]:
+            continue
+        m5, daily = frames[sym]
+        m1 = m1_frames.get(sym)
+        if m1 is None or not (m1.index.normalize() == pd.Timestamp(day).tz_convert(ET).normalize()).any():
+            out["no_m1"] += 1
+            continue
+        atrs = atr_by_day(daily)
+        atr = atrs.get(day.date())
+        if not atr:
+            continue
+        stop = pm.initial_stop(entry, structural, atr, params)
+        if stop >= entry:
+            continue
+        target = pm.capped_target(entry, stop, atr, cap, 3.0)
+        closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+        last = None
+        for mode, _ in S51_MODES:
+            res = simulate_m1(m1, closes, atrs, day, entry, stop, target, steps, mode)
+            if res is None:
+                last = m1.index[-1]
+                continue
+            r, why, mfe, xts = res
+            out[mode].append({"setup": setup, "sym": sym, "day": day.date(), "r": r,
+                              "mfe_r": mfe, "why": why, "exit_ts": xts})
+            last = xts if last is None else max(last, xts)
+        busy[sym] = last.date()
+    return out
+
+
+def s51_stats(trades):
+    """trades, win %, expectancy, total R, PF, MaxDD, capture, give-back."""
+    ts = sorted(trades, key=lambda t: (t["day"], t["sym"]))
+    st, capture, giveback = metrics(ts)
+    st["total_r"] = sum(t["r"] for t in ts)
+    st["exp_exact"] = st["total_r"] / len(ts) if ts else None   # unrounded
+    st["capture"], st["giveback"] = capture, giveback
+    return st
+
+
+def s51_diffs(a, b):
+    """[(5m trade, 1m trade)] for the same signal whose R differs. Pure."""
+    key = lambda t: (t["day"], t["sym"], t["setup"])
+    bk = {key(t): t for t in b}
+    return [(t, bk[key(t)]) for t in sorted(a, key=key)
+            if key(t) in bk and abs(t["r"] - bk[key(t)]["r"]) > 1e-9]
+
+
+def s51_decision(cur, new):
+    """ADOPT 1-minute only if expectancy >= current AND capture higher
+    (unrounded expectancy)."""
+    return bool(cur["trades"] and new["trades"]
+                and new["exp_exact"] >= cur["exp_exact"]
+                and new["capture"] is not None and cur["capture"] is not None
+                and new["capture"] > cur["capture"])
+
+
+def s51_row(setup, label, st):
+    if not st["trades"]:
+        return [setup, label, 0] + ["-"] * 7
+    return [setup, label, st["trades"], f"{st['win_rate']}%",
+            f"{st['expectancy_r']:+.3f}", f"{st['total_r']:+.1f}", st["profit_factor"],
+            st["max_drawdown_r"],
+            f"{st['capture'] * 100:.1f}%" if st["capture"] is not None else "-",
+            f"{st['giveback']:.1f}%" if st["giveback"] is not None else "-"]
+
+
+def s51_load_m1(sym, cache=S51_M1_CACHE):
+    path = os.path.join(cache, f"m1_{sym}.csv")
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path, index_col=0)
+    df.index = pd.to_datetime(df.index, utc=True).tz_convert(ET)
+    hm = df.index.hour * 60 + df.index.minute
+    return df[(hm >= 570) & (hm < 960)].sort_index()
+
+
+def s51_fetch_m1(needs, cache=S51_M1_CACHE, workers=4, per_min=150, log=print):
+    """1-minute IEX bars for {sym: [(first, last)]}, one CSV per symbol
+    (written atomically when ALL its windows are in: resume skips it).
+    Every API page passes one shared limiter (<= `per_min` pages a minute)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from broker import Broker
+    os.makedirs(cache, exist_ok=True)
+    client = Broker().data
+    lim, lock = S36Limiter(per_min), threading.Lock()
+
+    def page(sym, lo, hi):
+        frames = []
+        while True:
+            with lock:
+                lim.wait()
+            req = StockBarsRequest(symbol_or_symbols=sym, timeframe=TimeFrame.Minute,
+                                   start=lo, end=hi, feed=DataFeed.IEX, limit=10000)
+            df = client.get_stock_bars(req).df
+            if df is not None and not df.empty:
+                if isinstance(df.index, pd.MultiIndex):
+                    df = df.xs(sym, level="symbol")
+                frames.append(df[["open", "high", "low", "close", "volume"]])
+            # limit=10000 = one API page: continue from the last timestamp
+            if df is None or df.empty or len(df) < 10000:
+                return frames
+            lo = df.index[-1].to_pydatetime() + timedelta(minutes=1)
+
+    def one(sym):
+        path = os.path.join(cache, f"m1_{sym}.csv")
+        if os.path.exists(path):
+            return sym, "cached"
+        parts = []
+        for a, b in needs[sym]:
+            lo = datetime(a.year, a.month, a.day, 13, 0)          # 09:00 ET-ish UTC
+            hi = datetime(b.year, b.month, b.day) + timedelta(days=1)
+            for attempt in range(3):
+                try:
+                    parts += page(sym, lo, hi)
+                    break
+                except Exception as e:  # noqa: BLE001 - retry, then give up on the symbol
+                    if attempt == 2:
+                        return sym, f"failed ({str(e)[:80]})"
+                    import time
+                    time.sleep(15)
+        if not parts:
+            return sym, "empty"
+        df = pd.concat(parts)
+        df = df[~df.index.duplicated()].sort_index()
+        df.to_csv(path + ".tmp")
+        os.replace(path + ".tmp", path)
+        return sym, len(df)
+
+    with ThreadPoolExecutor(workers) as ex:
+        for i, (sym, res) in enumerate(ex.map(one, sorted(needs))):
+            log(f"m1 {i + 1}/{len(needs)} {sym}: {res}")
+
+
+def s51_main(universe_file="universe_today.json", fetch=False, symbols=None,
+             m5_cache=S51_M5_CACHE, m1_cache=S51_M1_CACHE):
+    import json
+    if symbols is None:
+        with open(universe_file, encoding="utf-8") as f:
+            symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                       if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols, cache=m5_cache, start=S51_START,
+                                  setups=S51_SETUPS)
+    hi = pd.Timestamp(S51_END).date()
+    signals = [s for s in signals if s[2].date() <= hi]
+    needs = {}
+    for _setup, sym, day, *_ in signals:
+        needs.setdefault(sym, []).append(day.date())
+    needs = {s: s51_windows(d) for s, d in needs.items()}
+    print(f"S51: {len(signals)} signals on {len(needs)} symbols, "
+          f"{sum(len(w) for w in needs.values())} 1m windows", flush=True)
+    if fetch:
+        s51_fetch_m1(needs, m1_cache, log=lambda m: print(m, flush=True))
+    m1_frames = {s: s51_load_m1(s, m1_cache) for s in needs}
+    m1_frames = {s: f for s, f in m1_frames.items() if f is not None and not f.empty}
+    res = s51_run(signals, frames, m1_frames)
+    rows, stats = [], {}
+    for setup in (None,) + S51_SETUPS:
+        for mode, label in S51_MODES:
+            st = s51_stats([t for t in res[mode] if setup is None or t["setup"] == setup])
+            stats[(setup, mode)] = st
+            rows.append(s51_row(setup or "all", label, st))
+    cur, new = stats[(None, "5m")], stats[(None, "1m")]
+    ok = s51_decision(cur, new)
+    pairs = s51_diffs(res["5m"], res["1m"])
+    diff = len(pairs)
+    lines = [f"**S51 (CEO 2026-10-23) - R/ATR ladder ratchet on 1-minute vs "
+             f"5-minute closes.** Study only. Both variants replayed on 1-minute "
+             f"IEX bars (stops, targets, gaps and the time stop checked on every "
+             f"1-minute bar); only the ladder cadence differs. Signals "
+             f"{S51_START}..{S51_END}, momentum_continuation + "
+             f"mean_reversion_reclaim, {len(signals)} signals on {len(frames)} "
+             f"symbols with 5-minute bars, {len(m1_frames)} with 1-minute bars; "
+             f"{res['no_m1']} signals skipped for lack of 1-minute bars; "
+             f"{diff} of {len(res['5m'])} trades end with a different R.", ""]
+    lines += sc.table(["Setup", "Ratchet on", "Trades", "Win %", "Expectancy (R)",
+                       "Total R", "PF", "MaxDD (R)", "Capture", "Give-back"], rows)
+    lines += ["", (f"**Rule met on the letter: 1-minute closes** (unrounded expectancy "
+                   f"{new['exp_exact']:+.5f} >= {cur['exp_exact']:+.5f} and capture "
+                   f"{new['capture'] * 100:.2f}% > {cur['capture'] * 100:.2f}%; total R "
+                   f"{new['total_r'] - cur['total_r']:+.2f})." if ok else
+                   f"**Rule not met - no change.** 1-minute expectancy "
+                   f"{new['exp_exact']:+.5f} vs {cur['exp_exact']:+.5f}, capture "
+                   f"{(new['capture'] or 0) * 100:.2f}% vs {(cur['capture'] or 0) * 100:.2f}% "
+                   f"(adopt needs expectancy >= current AND higher capture).")]
+    lines += ["", f"*The {diff} trades that differ (R: 5-minute -> 1-minute)*", ""]
+    lines += sc.table(["Symbol", "Entry", "Setup", "MFE (R)", "5-minute", "1-minute"],
+                      [[a["sym"], a["day"], a["setup"], f"{a['mfe_r']:.2f}",
+                        f"{a['r']:+.2f} ({a['why']})", f"{b['r']:+.2f} ({b['why']})"]
+                       for a, b in pairs])
+    print("\n".join(lines))
+    return lines, ok, res
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -2795,6 +3126,7 @@ def main():
     ap.add_argument("--s48", action="store_true")
     ap.add_argument("--s49", action="store_true")
     ap.add_argument("--s50", action="store_true")
+    ap.add_argument("--s51", action="store_true")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
@@ -2806,6 +3138,9 @@ def main():
             n = sc.append_agenda("Study: S48 gap-free intraday rallies (CEO P4, "
                                  "2026-10-22)", lines)
             print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+        return 0
+    if a.s51:
+        s51_main(a.universe_file, a.fetch)
         return 0
     if a.s50:
         s50_main(a.universe_file)
