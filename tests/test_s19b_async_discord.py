@@ -40,6 +40,11 @@ def hung_discord(monkeypatch):
     alerts.drain(5)
 
 
+def _title(p):
+    """Embed title; plain-text posts (e.g. the credit report) have none."""
+    return p.get("title", "") if isinstance(p, dict) else ""
+
+
 def _wait_for(pred, timeout=3.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -140,7 +145,7 @@ def test_ceo_buy_completes_in_normal_time_and_alerts(hung_discord, temp_journal,
     start = time.monotonic()
     result = orders.execute_order(order, ExecBroker(), None, {})
     assert time.monotonic() - start < FAST and "BUY SPCX" in result
-    assert _wait_for(lambda: any("BUY SPCX" in p["title"] for p in hung_discord))
+    assert _wait_for(lambda: any("BUY SPCX" in _title(p) for p in hung_discord))
 
 
 def test_ceo_close_completes_in_normal_time_and_alerts(hung_discord, temp_journal):
@@ -153,7 +158,7 @@ def test_ceo_close_completes_in_normal_time_and_alerts(hung_discord, temp_journa
     result = orders.execute_order({"action": "CLOSE", "ticker": "PLTR"},
                                   ExecBroker(), did, positions)
     assert time.monotonic() - start < FAST and "closed" in result
-    assert _wait_for(lambda: any("SELL PLTR" in p["title"] for p in hung_discord))
+    assert _wait_for(lambda: any("SELL PLTR" in _title(p) for p in hung_discord))
 
 
 class ClosedSell:
@@ -177,7 +182,7 @@ def test_sync_journals_an_exit_in_normal_time_and_alerts(hung_discord, temp_jour
     start = time.monotonic()
     orders.sync(broker=SyncBroker())
     assert time.monotonic() - start < FAST
-    assert _wait_for(lambda: any("SELL ON" in p["title"] for p in hung_discord))
+    assert _wait_for(lambda: any("SELL ON" in _title(p) for p in hung_discord))
 
 
 # ================================================== a full worker cycle
@@ -253,7 +258,7 @@ def test_full_cycles_run_in_normal_time_with_discord_hung(hung_discord, temp_jou
     assert [c.split(" |")[0] for c in cycles] == ["Cycle #1", "Cycle #2", "Cycle #3"]
     assert elapsed < FAST
     assert _wait_for(lambda: len(hung_discord) >= 1)
-    ups = [p for p in hung_discord if "Desk up" in p["title"]]
+    ups = [p for p in hung_discord if "Desk up" in _title(p)]
     assert len(ups) == 1                       # once per start, not per cycle
     f = dict(ups[0]["fields"])
     assert f["First cycle"] == "#1 completed" and f["Capital"] == "$5,000.00"
@@ -265,9 +270,9 @@ def test_desk_up_posts_once_per_worker_start(hung_discord, temp_journal,
     import streamlit_app as app
     for _ in range(2):                          # two worker starts
         _run_worker(app, monkeypatch, tmp_path, cycles=2)
-    assert _wait_for(lambda: sum("Desk up" in p["title"] for p in hung_discord) == 2)
+    assert _wait_for(lambda: sum("Desk up" in _title(p) for p in hung_discord) == 2)
     time.sleep(0.2)
-    assert sum("Desk up" in p["title"] for p in hung_discord) == 2
+    assert sum("Desk up" in _title(p) for p in hung_discord) == 2
 
 
 def test_no_broker_read_for_desk_up_before_the_loop():
