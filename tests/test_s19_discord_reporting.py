@@ -160,7 +160,8 @@ def test_shipped_config_has_every_switch_on():
                               "missed_movers": True,      # S33
                               "catalysts": True,          # S36
                               "scoreboard": True,         # CEO 10-21
-                              "watching": True}           # CEO 10-23
+                              "watching": True,           # CEO 10-23
+                              "credit_report": True}      # CEO 10-24
 
 
 def test_the_worker_fires_alerts_in_the_background():
