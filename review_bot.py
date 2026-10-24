@@ -529,6 +529,7 @@ def request_review(bundle: dict) -> dict:
                 messages=[{"role": "user", "content": user_prompt}],
             ) as stream:
                 resp = stream.get_final_message()
+            claude_integration._record_usage("review", model, resp)
             text = claude_integration.extract_text(resp)
             diag = call_diagnostics(resp, max_tokens, text)
             print(f"review call: model={model} " +

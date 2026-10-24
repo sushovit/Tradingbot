@@ -20,7 +20,8 @@
         "missed_movers": true,
         "catalysts": true,
         "scoreboard": true,
-        "watching": true
+        "watching": true,
+        "credit_report": true
     },
     "watch_movers": {
         "enabled": true,
@@ -242,5 +243,15 @@
             "mean_reversion_reclaim": 5
         },
         "exclude_trade_ids": [37]
+    },
+    "anthropic_prices": {
+        "_note": "USD per million tokens. Anthropic list prices, https://platform.claude.com/docs/en/about-claude/pricing (read 2026-10-24). cache_write = 5-minute cache write.",
+        "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_write": 2.5, "cache_read": 0.2},
+        "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3}
+    },
+    "anthropic_credit": {
+        "_note": "CEO sets balance_usd + as_of (ET 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS') from the owner's console figure; remaining = balance - spend since as_of.",
+        "balance_usd": null,
+        "as_of": null
     }
 }

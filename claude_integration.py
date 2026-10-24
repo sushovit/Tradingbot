@@ -100,11 +100,13 @@ def credit_preflight(client=None) -> dict:
         result["detail"] = "ANTHROPIC_API_KEY is not set"
         return result
     try:
-        client.messages.create(
-            model=get_model("gatekeeper"),
+        model = get_model("gatekeeper")
+        resp = client.messages.create(
+            model=model,
             max_tokens=1,
             messages=[{"role": "user", "content": "ok"}],
         )
+        _record_usage("preflight", model, resp)
         result.update(ok=True, reason="ok", detail="credits available")
         return result
     except Exception as e:
@@ -146,8 +148,20 @@ def extract_text(response) -> str:
                 return text
     return ""
 
-def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> dict:
-    """Calls Claude claude-sonnet-4-6 synchronously with retry logic. Returns a parsed dict."""
+def _record_usage(purpose: str, model: str, response):
+    """CEO 2026-10-24: every billed call goes to journal.db api_usage.
+    credit.record never raises; this guard covers the import."""
+    try:
+        import credit
+        credit.record(purpose, model, response)
+    except Exception as e:
+        logger.error(f"api_usage not recorded ({purpose}): {e}")
+
+
+def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 4000,
+                    purpose: str = "analysis") -> dict:
+    """Calls the configured gatekeeper model synchronously with retry logic.
+    Returns a parsed dict. `purpose` labels the api_usage row."""
     client = _get_client()
     if not client:
         return {"error": "ANTHROPIC_API_KEY not found in environment variables."}
@@ -162,6 +176,7 @@ def call_claude_api(system_prompt: str, user_prompt: str, max_tokens: int = 4000
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}]
             )
+            _record_usage(purpose, model, response)
             text = extract_text(response)
             return json.loads(strip_fences(text))
         except (anthropic.APIConnectionError, anthropic.RateLimitError) as e:
@@ -287,7 +302,8 @@ def get_gatekeeper_decision(
     # left too little for the verdict: on 2026-07-29 live signals were being
     # blocked by "Unterminated string" JSON parse errors — the response was
     # cut mid-string. Budget the thinking AND the JSON.
-    result = call_claude_api(GATEKEEPER_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
+    result = call_claude_api(GATEKEEPER_SYSTEM_PROMPT, user_prompt, max_tokens=4000,
+                             purpose="gatekeeper")
 
     # Normalise the approved field — Claude may return string "true"/"false"
     if "error" not in result:

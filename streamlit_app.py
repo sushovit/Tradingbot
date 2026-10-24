@@ -806,6 +806,18 @@ def _worker_loop():
         startup_checks.append(("Gatekeeper (Anthropic)", False,
                                f"pre-flight could not run: {str(e)[:80]}"))
 
+    # CEO 2026-10-24: credit report at session start - Claude credit left,
+    # today / 7-day spend, and the Alpaca account. A pre-flight failure the
+    # block above already alerted (billing/auth/no_key) is not repeated.
+    try:
+        import credit
+        _pf = locals().get("preflight")
+        if _pf and _pf.get("reason") in ("billing", "auth", "no_key"):
+            _pf = None
+        credit.post(credit.report(broker, _pf))
+    except Exception as e:
+        logger.warning(f"credit report not posted: {e}")
+
     # Hold off system sleep for the session: on 2026-08-31 the machine slept
     # at 12:36 ET and the frozen worker looked exactly like a hang.
     if session_clock.keep_awake(True):
@@ -1819,6 +1831,24 @@ def _worker_loop():
 # --- STREAMLIT UI ---
 # -----------------------------------------------------------------------------
 st.title("📈 Algorithmic Trading Suite")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _credit_lines(minute_key):
+    """CEO 2026-10-24: the credit report's two lines (Claude credit + Alpaca
+    account), refreshed at most once a minute. Never raises."""
+    import credit
+    try:
+        from broker import Broker
+        return credit.lines(Broker())
+    except Exception as e:
+        return [credit.credit_line(credit.status()),
+                f"💵 Account: unavailable ({type(e).__name__})"]
+
+
+if not desk_config.in_worker():
+    for _line in _credit_lines(datetime.now(EASTERN_TZ).strftime("%Y%m%d%H%M")):
+        st.markdown(_line.replace("$", "\\$"))   # "$" would start LaTeX
 tab1, tab2, tab3, tab4 = st.tabs(["🤖 Live Trading Bot", "Backtesting Suite",
                                   "🔬 AI Analysis Tools", "🎓 Intern Desk"])
 
