@@ -244,11 +244,10 @@ def s34_variants():
 
 
 def load_m5_rth(symbol, cache=S34_CACHE):
-    path = os.path.join(cache, f"m5_{symbol}.csv")
-    if not os.path.exists(path):
+    df = bars_store.read(symbol, cache)
+    if df is None:
         return None
-    df = pd.read_csv(path, index_col=0)
-    df.index = pd.to_datetime(df.index, utc=True).tz_convert(ET)
+    df.index = df.index.tz_convert(ET)
     hm = df.index.hour * 60 + df.index.minute
     return df[(hm >= 570) & (hm < 960)]
 
@@ -2312,8 +2311,7 @@ def s48_main(append=False, cache=S34_CACHE, etf_cache=S48_ETF_CACHE,
              client=None, limiter=None, start=S48_START, end=S48_END,
              log=None):
     log = log or (lambda m: print(m, file=sys.stderr))
-    symbols = sorted(f[3:-4] for f in os.listdir(cache)
-                     if f.startswith("m5_") and f.endswith(".csv"))
+    symbols = bars_store.stored_symbols(cache)
     symbols = [s for s in symbols if s != "SPY"]
     frames = s48_load(cache, symbols)
     etfs = s48_load(etf_cache, sorted(set(S48_ETF.values()) | {"SMH", "XLU", "XLRE"}))

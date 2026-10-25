@@ -1737,6 +1737,11 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 
 - **Entry timing: no change.** Waiting costs edge: +0.107R at the open, +0.089R not before 09:45, +0.059R not before 10:00, and MaxDD grows (32.9R -> 34.9R -> 40.3R). Few trades are 'avoided' by waiting (8 and 14 of ~1,350): a reclaim that fails usually fails later in the day, not in the first half hour. The rule (expectancy >= current AND smaller MaxDD) is not met.
 - **The sector cap (live since 2026-10-22, main a751a5a) keeps the edge per trade and halves the drawdown - but cuts the trade count by about three quarters.** Reclaim: +0.107R either way, MaxDD 32.9R -> 17.8R, trades 1,359 -> 325, total R +145 -> +35. Reclaim + momentum: +0.103R -> +0.122R, MaxDD 35.2R -> 15.6R, trades 1,425 -> 328. Signals cluster by sector (energy and semis move together), so most of the cut is same-day duplicates. This replay has no max-positions cap; live (max 4 open, max 2 on probation) already drops many of these, so the live effect is smaller than shown - but it works AGAINST the trade-count priority. **CEO decision:** keep max 1 per sector, or raise sector_cap.max_per_sector to 2.
+
+### Decision (CEO 2026-10-25): sector cap stays at 1
+
+sector_cap.max_per_sector stays 1. **Review 2026-11-06** with the graded sector_cap rejections: the nightly outcomes job (16:45 ET) grades every `sector_cap` pass (journaled with entry/stop/target) under reason_key `sector_cap`; on 11-06 report `outcomes.class_summary('sector_cap', '2026-10-22')` - n, resolved, win %, avg R of the trades the cap blocked.
+
 ## 29. Study: S48 gap-free intraday rallies (CEO P4, 2026-10-22)
 
 **S48 (CEO P4, 2026-10-22) - gap-free intraday rallies, study only, no live change.** The movers our setups never see (DDOG, ZS, NET, CRWD on 2026-10-21 gapped only 0.4-2.8% and ran later). Definition:
@@ -1808,6 +1813,7 @@ Window 2025-10-14..2026-10-21 (53.1 weeks), 155 mapped symbols. 39656 symbol-day
 - No gatekeeper, no whole-share sizing, no slippage or spread on the next-bar-open fill, no daily-loss breaker: an UPPER BOUND.
 
 Reproduce with `python study_exit_grid.py --s48`.
+
 ---
 
 ## 30. Study + decision: S50 initial stop re-anchored to the broker fill (2026-10-23)
@@ -1933,6 +1939,11 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 ### Reading under the standing rule (CEO 2026-10-23)
 
 Re-run 2026-10-25 on the permanent store (data/bars_5m, 2025-10-14..2026-10-23, 161 symbols). Median live gap: re-anchored +0.087R vs signal stop +0.070R = **+0.017R (needs +0.02R)**; MaxDD $1,542 vs $1,860 (83%, passes); 1,443 trades (passes). Worst gap: +0.019R. **Under the standing rule S50 is a tie.** It was adopted 10-23 under the old per-study rule and stays live unless the CEO reverts it.
+
+### Decision (CEO 2026-10-25): KEEP the fill-anchored stop
+
+A tie under the standing rule (+0.017R, MaxDD 83%); the tie-break is correct risk sizing - the stop is measured from the price actually paid, so the $ at risk is what the sizing intended. S50 stays live.
+
 ---
 
 ## 34. Study: S53 patience - initial stop x hold (CEO 2026-10-25; first labelled S52)
@@ -2020,6 +2031,11 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - **The full year erases it:** the same variant is +0.001R over 499 trades; every variant is between -0.017R and +0.013R. The last 3 months were the setup's best stretch, not its norm.
 - **Recommendation: do NOT put the morning dip on probation.** One marginal pass out of nine variants on 84 trades, with a flat year behind it, is noise. Standing rule: no adoption.
 - This is a first definition of 'morning dip' (none existed); a different spec is a new run on the same store.
+
+### Decision (CEO 2026-10-25): S52 REJECTED
+
+The morning dip is not put on probation: the one phase-1 pass (+0.052R, 84 trades) does not survive the full year (+0.001R, 499 trades).
+
 ---
 
 ## 36. Study: S53 stops x holds - phase 1, last 3 months (CEO 2026-10-25)
@@ -2053,3 +2069,6 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - Nothing beats the live rule by +0.02R; the year (item 34) says the same. **No change, nothing for probation.**
 - 2.5 x ATR + ladder: +0.107R with MaxDD 96% of live over 3 months; over the year +0.081R. Not adoptable.
 
+### Decision (CEO 2026-10-25): S53 - NO CHANGE
+
+The live stop and the live daily ladder stay as they are.

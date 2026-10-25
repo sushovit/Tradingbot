@@ -33,6 +33,8 @@ EXPECTED = {
     "watch_movers": ["watch_movers.py"],                # CEO 10-23: every 30 min
     "credit_report": ["credit.py"],                     # CEO 10-24: 16:20 ET
     "bars_5m": ["bars_store.py", "--append"],          # CEO 10-25: 17:00 ET
+    "shadow_unload": ["local_analyst.py", "--unload"],  # CEO 10-25: 16:30 ET
+    "cleanup": ["disk_cleanup.py", "--apply"],          # CEO 10-25: Sat 12:00 ET
 }
 
 
