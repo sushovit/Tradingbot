@@ -32,6 +32,7 @@ EXPECTED = {
     "scoreboard": ["scoreboard.py"],                    # CEO 10-21: Fri 16:30
     "watch_movers": ["watch_movers.py"],                # CEO 10-23: every 30 min
     "credit_report": ["credit.py"],                     # CEO 10-24: 16:20 ET
+    "bars_5m": ["bars_store.py", "--append"],          # CEO 10-25: 17:00 ET
 }
 
 

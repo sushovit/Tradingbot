@@ -233,7 +233,8 @@ S34_SPY_EXEMPT = ("mean_reversion_reclaim",)
 S34_TARGETS = (1.5, 2.0, 2.5, 3.0)
 S34_CURRENT = (3.0, False)
 S34_START = "2025-10-14"
-S34_CACHE = os.path.join("data", "s33")
+import bars_store                       # CEO 2026-10-25: the permanent store
+S34_CACHE = bars_store.BARS_DIR
 S34_MIN_TRADES = 200
 
 

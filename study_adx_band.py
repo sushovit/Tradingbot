@@ -127,7 +127,8 @@ def render(buckets, total, unbanded, years):
 
 S33_START, S33_END = "2025-10-14", "2026-10-19"
 S33_WARMUP_DAYS = 60
-S33_CACHE = os.path.join("data", "s33")
+import bars_store                       # CEO 2026-10-25: the permanent store
+S33_CACHE = bars_store.BARS_DIR
 RTH = (dtime(9, 30), dtime(16, 0))
 ENTRY_WINDOWS = ((dtime(9, 30), dtime(11, 30)), (dtime(14, 0), dtime(15, 0)))
 EXPECTANCY_BAR = 0.15
