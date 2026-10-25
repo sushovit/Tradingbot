@@ -83,3 +83,17 @@ def test_cleanup_never_touches_the_bar_store(tmp_path):
     assert not disk_cleanup.is_kept(str(old), str(root))
     assert list(disk_cleanup.old_logs(str(root))) == [str(old)]
     assert "data/bars_5m" in disk_cleanup.KEEP
+
+
+def test_s52_hold_limit_forces_the_exit_at_1555_of_the_last_session():
+    import study_exit_grid as g
+    idx = pd.date_range("2026-10-21 09:30", "2026-10-21 15:55", freq="5min",
+                        tz="America/New_York")
+    idx = idx.append(pd.date_range("2026-10-22 09:30", "2026-10-22 15:55", freq="5min",
+                                   tz="America/New_York"))
+    m5 = pd.DataFrame({"open": 100.5, "high": 101.0, "low": 100.0, "close": 100.5,
+                       "volume": 1.0}, index=idx)
+    args = (m5, {}, {}, idx[0], 100.0, 98.0, 110.0, [(1.0, 0.0)])
+    r1 = g.simulate_hold(*args, max_days=1)
+    assert r1[1] == "hold limit day 1" and r1[3].strftime("%m-%d %H:%M") == "10-21 15:55"
+    assert g.simulate_hold(*args, max_days=None) is None       # live: still open

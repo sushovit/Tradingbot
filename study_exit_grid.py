@@ -3114,6 +3114,179 @@ def s51_main(universe_file="universe_today.json", fetch=False, symbols=None,
     return lines, ok, res
 
 
+# ===================================================================== S52
+# CEO 2026-10-25 - S52 "patience": the live daily signals (momentum +
+# reclaim, live SPY gate) on the permanent 5-minute store, 2025-10-14..
+# 2026-10-23, crossed: 4 initial stops x 3 holds. Fill at the open, the
+# signal modelled from the median live gap (S50). Every variant sized at the
+# fill from ITS stop ($5,000, 1% = $50, 25% notional), target = the live S28
+# cap fill + min(3R, 3 x ATR14). Paired: one position per symbol, busy until
+# the latest exit of the 12 variants. Baseline = the LIVE rule since
+# 2026-10-23: (b) stop re-anchored to the fill + the live daily ladder.
+# Adoption = the standing rule (exp >= base + 0.02R of $50, MaxDD <= 110%,
+# >= 200 trades). No morning-dip ENTRY filter: none has been defined.
+
+S52_STOPS = ("a stop from the signal (pre-10-23)", "b re-anchored to fill (LIVE)",
+             "c 2.0 x ATR from fill", "d 2.5 x ATR from fill")
+S52_HOLDS = (("same-day exit 15:55", 1), ("hold up to 3 sessions", 3),
+             ("live daily ladder (LIVE)", None))
+S52_GAP = 0.0067
+S52_BASE = (S52_STOPS[1], S52_HOLDS[2][0])
+
+
+def simulate_hold(m5, daily_close, atr_day, entry_day, entry, stop, target, steps,
+                  max_days=None):
+    """simulate_with_exit plus a forced exit at the 15:55 bar's open of
+    session `max_days` (None = the live day-5/day-10 time stops only)."""
+    risk = entry - stop
+    bars = m5[m5.index.normalize() >= pd.Timestamp(entry_day).tz_convert(ET).normalize()]
+    if bars.empty:
+        return None
+    days = sorted({t.date() for t in bars.index})
+    day_no = {d: i + 1 for i, d in enumerate(days)}
+    live, hc, mfe, first, entry_date = stop, entry, 0.0, True, days[0]
+    for ts, b in bars.iterrows():
+        o, h, l, c = (float(b["open"]), float(b["high"]), float(b["low"]), float(b["close"]))
+        d = ts.date()
+        if not first and o <= live:
+            return (o - entry) / risk, "stop (gap)", mfe, ts
+        if not first and o >= target:
+            return (o - entry) / risk, "target (gap)", max(mfe, (o - entry) / risk), ts
+        n = day_no[d]
+        if (ts.hour, ts.minute) == (15, 55):
+            if max_days is not None and n >= max_days:
+                return (o - entry) / risk, f"hold limit day {n}", mfe, ts
+            if n >= 10 or (n >= 5 and mfe < 0.5):
+                return (o - entry) / risk, f"time stop day {n}", mfe, ts
+        first = False
+        mfe = max(mfe, (h - entry) / risk)
+        if l <= live:
+            return (live - entry) / risk, "stop", mfe, ts
+        if h >= target:
+            return (target - entry) / risk, "target", mfe, ts
+        if (ts.hour, ts.minute) >= (10, 0):
+            hc = max(hc, c)
+            cands = [entry + sr * risk for t, sr in steps if (hc - entry) / risk >= t]
+            if (hc - entry) / risk >= 2.0:
+                prior = [v for dd, v in daily_close.items() if entry_date <= dd < d]
+                a = atr_day.get(d)
+                if prior and a:
+                    cands.append(max(prior) - 2.5 * a)
+            if cands:
+                cand = math.ceil(max(cands) * 100 - 1e-6) / 100
+                if live < cand < c:
+                    live = cand
+        last_of_day = (ts.hour, ts.minute) >= (15, 55)
+        if max_days is not None and n >= max_days and last_of_day:
+            return (c - entry) / risk, f"hold limit day {n}", mfe, ts
+    return None
+
+
+def s52_stops(fill, structural, atr, params, gap=S52_GAP):
+    def fl(x):
+        return math.floor(x * 100 + 1e-6) / 100
+    sig = fill / (1.0 - gap)
+    return dict(zip(S52_STOPS, (pm.initial_stop(sig, structural, atr, params),
+                                pm.initial_stop(fill, structural, atr, params),
+                                fl(fill - 2.0 * atr), fl(fill - 2.5 * atr))))
+
+
+def s52_run(signals, frames):
+    import risk as _risk
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in params["steps"]]
+    cap = pm.target_cap_atr(_live_config())
+    out = {(st, h): [] for st in S52_STOPS for h, _ in S52_HOLDS}
+    busy = {}
+    for setup, sym, day, fill, structural in sorted(signals, key=lambda x: x[2]):
+        if sym in busy and day.date() <= busy[sym]:
+            continue
+        m5, daily = frames[sym]
+        atrs = atr_by_day(daily)
+        atr = atrs.get(day.date())
+        if not atr:
+            continue
+        stops = s52_stops(fill, structural, atr, params)
+        if any(v is None or v >= fill for v in stops.values()):
+            continue
+        closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+        last_exit, rows = None, []
+        for st, stop in stops.items():
+            shares = _risk.position_size(S50_EQUITY, S50_RISK_PCT, fill, stop,
+                                         position_cap_pct=S50_CAP)
+            if shares < 1:
+                rows = None
+                break
+            target = pm.capped_target(fill, stop, atr, cap, 3.0)
+            for h, max_days in S52_HOLDS:
+                res = simulate_hold(m5, closes, atrs, day, fill, stop, target, steps, max_days)
+                if res is None:          # still open at the end of the data
+                    rows = None
+                    break
+                r, why, mfe, xts = res
+                risk_usd = shares * (fill - stop)
+                rows.append(((st, h), {"setup": setup, "sym": sym, "when": day, "r": r,
+                                       "pnl": r * risk_usd, "risk_usd": risk_usd, "why": why}))
+                last_exit = xts if last_exit is None else max(last_exit, xts)
+            if rows is None:
+                break
+        if rows is None:
+            continue                     # paired: a signal counts in all 12 or none
+        for k, t in rows:
+            out[k].append(t)
+        busy[sym] = last_exit.date()
+    return out
+
+
+def s52_verdict(st, base):
+    """Standing rule (CEO 2026-10-23) vs the live baseline."""
+    if st is None or base is None:
+        return "-"
+    ok = (st["exp_r"] >= base["exp_r"] + 0.02 and st["maxdd_usd"] <= 1.10 * base["maxdd_usd"]
+          and st["trades"] >= 200)
+    return "ADOPT" if ok else "tie"
+
+
+def s52_main(universe_file="universe_today.json"):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    signals, frames = s34_signals(symbols, start="2025-10-14", setups=S50_SETUPS)
+    res = s52_run(signals, frames)
+    stats = {k: s50_stats(v) for k, v in res.items()}
+    base = stats[S52_BASE]
+    rows = []
+    for (stop, hold), st in stats.items():
+        if st is None:
+            continue
+        rows.append([stop, hold, st["trades"], f"{st['win']}%", f"{st['exp_r']:+.3f}",
+                     f"${st['exp_usd']:+.2f}", f"${st['total_usd']:+,.0f}",
+                     f"${st['maxdd_usd']:,.0f}", f"{100 * st['maxdd_usd'] / base['maxdd_usd']:.0f}%",
+                     f"${st['avg_risk']:.2f}",
+                     "BASE (live)" if (stop, hold) == S52_BASE else s52_verdict(st, base)])
+    lines = [f"**S52 (CEO 2026-10-25) - patience: initial stop x hold.** 5-minute "
+             f"replay of the live daily signals (momentum + reclaim), 2025-10-14.."
+             f"2026-10-23, {len(frames)} symbols, permanent store data/bars_5m; "
+             f"$5,000, 1% risk ($50), 25% notional, each variant sized from its own "
+             f"stop at the fill; target fill + min(3R, 3 x ATR14). Paired signals. "
+             f"Baseline = the live rule ({S52_BASE[0]} + {S52_BASE[1]}).", ""]
+    lines += sc.table(["Stop", "Hold", "Trades", "Win %", "Exp (R of $50)", "Exp $",
+                       "Total $", "MaxDD $", "MaxDD vs live", "Avg $ at risk",
+                       "Standing rule"], rows)
+    winners = [r for r in rows if r[-1] == "ADOPT"]
+    lines += ["", ("**Standing rule met by:** " + "; ".join(f"{r[0]} + {r[1]} ({r[4]})"
+                                                       for r in winners)
+                   if winners else "**Standing rule not met by any variant - tie, no change.**"),
+              "", "**Limits.** No morning-dip entry filter (none defined); the signal "
+              "price is modelled from the median live gap; today's universe "
+              "(survivorship); IEX bars; signals, not gatekeeper-approved trades; "
+              "max positions / sector cap / daily breaker not modelled; signals still "
+              "open at the end of the data are left out of all 12 rows.", "", sc.UPPER_BOUND]
+    print("\n".join(lines))
+    return lines, stats
+
+
 # ===================================================================== S54
 # CEO 2026-10-25 "patience test": the 10-22 KMI and SLB reclaim entries,
 # replayed on IEX 1-minute bars from the minute AFTER the broker fill, under
@@ -3248,6 +3421,7 @@ def main():
     ap.add_argument("--s50", action="store_true")
     ap.add_argument("--s51", action="store_true")
     ap.add_argument("--s54", action="store_true")
+    ap.add_argument("--s52", action="store_true")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--universe-file", default="universe_today.json")
@@ -3259,6 +3433,9 @@ def main():
             n = sc.append_agenda("Study: S48 gap-free intraday rallies (CEO P4, "
                                  "2026-10-22)", lines)
             print(f"\nAppended to BOARDROOM_AGENDA.md as item {n}.")
+        return 0
+    if a.s52:
+        s52_main(a.universe_file)
         return 0
     if a.s54:
         rows, lines = s54_main()
