@@ -97,3 +97,14 @@ def test_s52_hold_limit_forces_the_exit_at_1555_of_the_last_session():
     r1 = g.simulate_hold(*args, max_days=1)
     assert r1[1] == "hold limit day 1" and r1[3].strftime("%m-%d %H:%M") == "10-21 15:55"
     assert g.simulate_hold(*args, max_days=None) is None       # live: still open
+
+
+def test_s52_morning_dip_triggers_on_the_reclaim_of_the_open():
+    import study_exit_grid as g
+    idx = pd.date_range("2026-10-21 09:30", periods=12, freq="5min", tz="America/New_York")
+    px = [(100, 100.2, 99.0, 99.2), (99.2, 99.3, 98.6, 98.8), (98.8, 99.4, 98.7, 99.3),
+          (99.3, 100.1, 99.2, 100.05), (100.1, 100.5, 100.0, 100.4)] + [(100.4, 100.6, 100.3, 100.5)] * 7
+    bars = pd.DataFrame(px, index=idx, columns=["open", "high", "low", "close"])
+    ts, fill, low = g.s52_day_signal(bars, atr=2.0)          # dip 1.4 >= 0.5 x 2.0
+    assert ts.strftime("%H:%M") == "09:50" and fill == 100.1 and low == 98.6
+    assert g.s52_day_signal(bars, atr=4.0) is None             # dip 1.4 < 0.5 x 4.0

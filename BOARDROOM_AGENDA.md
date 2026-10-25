@@ -1908,7 +1908,7 @@ MaxDD <= 110%, >= 200 trades) it would not qualify either.
 
 Both: a -$73.44, b -$87.64, c -$12.16, d +$41.79. Neither reached +1R by 10-23, so the live exit rules equal hold-to-close.
 
-**Reading.** Two trades are an anecdote, not evidence (the standing rule needs >= 200); the year-long test is S52 (item 34).
+**Reading.** Two trades are an anecdote, not evidence (the standing rule needs >= 200); the year-long test is S53 (item 34).
 ---
 
 ## 33. Check: S50 fill-anchored stop under the standing rule (CEO 2026-10-25)
@@ -1935,9 +1935,9 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 Re-run 2026-10-25 on the permanent store (data/bars_5m, 2025-10-14..2026-10-23, 161 symbols). Median live gap: re-anchored +0.087R vs signal stop +0.070R = **+0.017R (needs +0.02R)**; MaxDD $1,542 vs $1,860 (83%, passes); 1,443 trades (passes). Worst gap: +0.019R. **Under the standing rule S50 is a tie.** It was adopted 10-23 under the old per-study rule and stays live unless the CEO reverts it.
 ---
 
-## 34. Study: S52 patience - initial stop x hold (CEO 2026-10-25)
+## 34. Study: S53 patience - initial stop x hold (CEO 2026-10-25; first labelled S52)
 
-**S52 (CEO 2026-10-25) - patience: initial stop x hold.** 5-minute replay of the live daily signals (momentum + reclaim), 2025-10-14..2026-10-23, 161 symbols, permanent store data/bars_5m; $5,000, 1% risk ($50), 25% notional, each variant sized from its own stop at the fill; target fill + min(3R, 3 x ATR14). Paired signals. Baseline = the live rule (b re-anchored to fill (LIVE) + live daily ladder (LIVE)).
+**S53 (CEO 2026-10-25) - patience: initial stop x hold.** 5-minute replay of the live daily signals (momentum + reclaim), 2025-10-14..2026-10-23, 161 symbols, permanent store data/bars_5m; $5,000, 1% risk ($50), 25% notional, each variant sized from its own stop at the fill; target fill + min(3R, 3 x ATR14). Paired signals. Baseline = the live rule (b re-anchored to fill (LIVE) + live daily ladder (LIVE)).
 
 | Stop | Hold | Trades | Win % | Exp (R of $50) | Exp $ | Total $ | MaxDD $ | MaxDD vs live | Avg $ at risk | Standing rule |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1966,4 +1966,90 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - **Patience pays only through the ladder.** Same-day exits win more often (53%) but earn about 0.04R: the ladder's multi-day winners are what carry the edge. Holding up to 3 sessions earns +0.052R.
 - **Wider stops cut drawdown but cost edge.** 2.5 x ATR + ladder: MaxDD $1,027 (68% of live), but +0.081R (-0.023R). 2.0 x ATR + ladder: MaxDD 80%, +0.090R. Neither meets expectancy >= live + 0.02R.
 - KMI/SLB (item 32) were the case where a wide stop would have saved the trade; over the year the win rate rises (43% -> 49% at 2.5 x ATR) but every trade carries fewer shares for the same $50 risk, so the winners earn less and expectancy falls.
+---
+
+## 35. Study: S52 morning dip - phase 1 (3 months) and phase 2 (1 year) (CEO 2026-10-25)
+
+### Phase 1 - last 3 months (2026-07-23..2026-10-23)
+
+**S52 (CEO 2026-10-25) - morning dip (new intraday entry).** Prior close above its 20-day EMA; the morning dips >= 0.5 x ATR14 below the open; the first 5-minute close back above the open 09:45-10:55 ET triggers, fill at the next bar's open; structural stop = the morning low. 2026-07-23..2026-10-23, 161 symbols, 114 raw signals; $5,000, 1% risk ($50), 25% notional; target fill + min(3R, 3 x ATR14). One position per symbol, paired across the 9 variants.
+
+| Stop | Hold | Trades | Win % | Exp (R of $50) | Exp $ | Total $ | MaxDD $ | MaxDD vs live | Probation (>=50, >+0.05R) | Standing rule |
+|---|---|---|---|---|---|---|---|---|---|---|
+| live geometry from fill | same-day exit 15:55 | 84 | 47.6% | +0.009 | $+0.44 | $+37 | $131 | - | no | - |
+| live geometry from fill | hold up to 3 sessions | 84 | 54.8% | +0.052 | $+2.58 | $+216 | $176 | - | YES | - |
+| live geometry from fill | live daily ladder (LIVE) | 84 | 35.7% | +0.035 | $+1.75 | $+147 | $422 | - | no | - |
+| 2.0 x ATR from fill | same-day exit 15:55 | 84 | 47.6% | +0.011 | $+0.54 | $+45 | $97 | - | no | - |
+| 2.0 x ATR from fill | hold up to 3 sessions | 84 | 56.0% | +0.050 | $+2.48 | $+208 | $145 | - | no | - |
+| 2.0 x ATR from fill | live daily ladder (LIVE) | 84 | 40.5% | +0.005 | $+0.27 | $+22 | $350 | - | no | - |
+| 2.5 x ATR from fill | same-day exit 15:55 | 84 | 47.6% | +0.004 | $+0.21 | $+18 | $84 | - | no | - |
+| 2.5 x ATR from fill | hold up to 3 sessions | 84 | 56.0% | +0.033 | $+1.66 | $+140 | $109 | - | no | - |
+| 2.5 x ATR from fill | live daily ladder (LIVE) | 84 | 45.2% | +0.038 | $+1.88 | $+158 | $200 | - | no | - |
+
+**Phase-1 probation bar (>= 50 trades, > +0.05R) met by:** live geometry from fill + hold up to 3 sessions (+0.052, 84 trades)
+
+**Limits.** A first definition of 'morning dip' (no earlier spec); no SPY gate, gatekeeper, max-positions cap, sector cap or daily breaker modelled; today's universe (survivorship); IEX bars.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Phase 2 - the full year (2025-10-14..2026-10-23)
+
+**S52 (CEO 2026-10-25) - morning dip (new intraday entry).** Prior close above its 20-day EMA; the morning dips >= 0.5 x ATR14 below the open; the first 5-minute close back above the open 09:45-10:55 ET triggers, fill at the next bar's open; structural stop = the morning low. 2025-10-14..2026-10-23, 161 symbols, 633 raw signals; $5,000, 1% risk ($50), 25% notional; target fill + min(3R, 3 x ATR14). One position per symbol, paired across the 9 variants.
+
+| Stop | Hold | Trades | Win % | Exp (R of $50) | Exp $ | Total $ | MaxDD $ | MaxDD vs live | Probation (>=50, >+0.05R) | Standing rule |
+|---|---|---|---|---|---|---|---|---|---|---|
+| live geometry from fill | same-day exit 15:55 | 499 | 48.9% | -0.003 | $-0.13 | $-64 | $393 | - | no | - |
+| live geometry from fill | hold up to 3 sessions | 499 | 48.9% | +0.001 | $+0.04 | $+22 | $809 | - | no | - |
+| live geometry from fill | live daily ladder (LIVE) | 499 | 35.7% | -0.005 | $-0.26 | $-130 | $1,777 | - | no | - |
+| 2.0 x ATR from fill | same-day exit 15:55 | 499 | 48.9% | -0.001 | $-0.03 | $-13 | $281 | - | no | - |
+| 2.0 x ATR from fill | hold up to 3 sessions | 499 | 50.5% | +0.002 | $+0.08 | $+39 | $669 | - | no | - |
+| 2.0 x ATR from fill | live daily ladder (LIVE) | 499 | 41.7% | -0.017 | $-0.87 | $-434 | $1,869 | - | no | - |
+| 2.5 x ATR from fill | same-day exit 15:55 | 499 | 48.9% | -0.002 | $-0.12 | $-60 | $238 | - | no | - |
+| 2.5 x ATR from fill | hold up to 3 sessions | 499 | 50.7% | +0.002 | $+0.10 | $+49 | $625 | - | no | - |
+| 2.5 x ATR from fill | live daily ladder (LIVE) | 499 | 44.1% | +0.013 | $+0.67 | $+337 | $1,119 | - | no | - |
+
+**Phase-1 probation bar not met by any variant.**
+
+**Limits.** A first definition of 'morning dip' (no earlier spec); no SPY gate, gatekeeper, max-positions cap, sector cap or daily breaker modelled; today's universe (survivorship); IEX bars.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- **Phase 1 bar met by one variant of nine, by a hair:** live geometry + hold up to 3 sessions, +0.052R over 84 trades ($+216 in 3 months). Its neighbour (2.0 x ATR + 3 sessions) is +0.050R and misses.
+- **The full year erases it:** the same variant is +0.001R over 499 trades; every variant is between -0.017R and +0.013R. The last 3 months were the setup's best stretch, not its norm.
+- **Recommendation: do NOT put the morning dip on probation.** One marginal pass out of nine variants on 84 trades, with a flat year behind it, is noise. Standing rule: no adoption.
+- This is a first definition of 'morning dip' (none existed); a different spec is a new run on the same store.
+---
+
+## 36. Study: S53 stops x holds - phase 1, last 3 months (CEO 2026-10-25)
+
+**S53 (CEO 2026-10-25) - patience: initial stop x hold.** 5-minute replay of the live daily signals (momentum + reclaim), 2026-07-23..2026-10-23, 161 symbols, permanent store data/bars_5m; $5,000, 1% risk ($50), 25% notional, each variant sized from its own stop at the fill; target fill + min(3R, 3 x ATR14). Paired signals. Baseline = the live rule (b re-anchored to fill (LIVE) + live daily ladder (LIVE)).
+
+| Stop | Hold | Trades | Win % | Exp (R of $50) | Exp $ | Total $ | MaxDD $ | MaxDD vs live | Probation (>=50, >+0.05R) | Standing rule |
+|---|---|---|---|---|---|---|---|---|---|---|
+| a stop from the signal (pre-10-23) | same-day exit 15:55 | 305 | 49.2% | +0.027 | $+1.35 | $+412 | $233 | 38% | no | tie |
+| a stop from the signal (pre-10-23) | hold up to 3 sessions | 305 | 50.8% | +0.038 | $+1.92 | $+585 | $538 | 88% | no | tie |
+| a stop from the signal (pre-10-23) | live daily ladder (LIVE) | 305 | 43.0% | +0.130 | $+6.49 | $+1,978 | $784 | 128% | YES | tie |
+| b re-anchored to fill (LIVE) | same-day exit 15:55 | 305 | 49.2% | +0.022 | $+1.08 | $+330 | $261 | 42% | no | tie |
+| b re-anchored to fill (LIVE) | hold up to 3 sessions | 305 | 51.1% | +0.033 | $+1.63 | $+498 | $474 | 77% | no | tie |
+| b re-anchored to fill (LIVE) | live daily ladder (LIVE) | 305 | 44.3% | +0.124 | $+6.22 | $+1,898 | $614 | 100% | YES | BASE (live) |
+| c 2.0 x ATR from fill | same-day exit 15:55 | 305 | 49.2% | +0.021 | $+1.03 | $+316 | $208 | 34% | no | tie |
+| c 2.0 x ATR from fill | hold up to 3 sessions | 305 | 52.8% | +0.029 | $+1.45 | $+443 | $415 | 68% | no | tie |
+| c 2.0 x ATR from fill | live daily ladder (LIVE) | 305 | 48.5% | +0.105 | $+5.24 | $+1,600 | $617 | 101% | YES | tie |
+| d 2.5 x ATR from fill | same-day exit 15:55 | 305 | 49.2% | +0.017 | $+0.83 | $+254 | $166 | 27% | no | tie |
+| d 2.5 x ATR from fill | hold up to 3 sessions | 305 | 53.1% | +0.029 | $+1.45 | $+444 | $278 | 45% | no | tie |
+| d 2.5 x ATR from fill | live daily ladder (LIVE) | 305 | 51.5% | +0.107 | $+5.37 | $+1,639 | $591 | 96% | YES | tie |
+
+**Standing rule not met by any variant - tie, no change.**
+
+**Limits.** The signal price is modelled from the median live gap; today's universe (survivorship); IEX bars; signals, not gatekeeper-approved trades; max positions / sector cap / daily breaker not modelled; signals still open at the end of the data are left out of all 12 rows.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- Phase-1 bar (>= 50, > +0.05R) is met only by the four live-ladder rows - the live rule itself is one of them (+0.124R, 305 trades). No same-day or 3-session hold reaches +0.04R.
+- Nothing beats the live rule by +0.02R; the year (item 34) says the same. **No change, nothing for probation.**
+- 2.5 x ATR + ladder: +0.107R with MaxDD 96% of live over 3 months; over the year +0.081R. Not adoptable.
 
