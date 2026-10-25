@@ -39,7 +39,8 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 # full gatekeeper JSON in well under 20 seconds.
 LOCAL_MODEL = os.getenv("LOCAL_ANALYST_MODEL", "qwen3:4b")   # legacy default
 REQUEST_TIMEOUT = 45  # seconds per attempt (S28: was 30)
-# S28: never unload the model. Ollama's default keep_alive (5 min) unloaded
+# S28: never unload the model DURING the session (CEO 2026-10-25: the 16:30 ET
+# job unloads it after the close - see unload()). Ollama's default keep_alive (5 min) unloaded
 # it between the 09:25 warm-up and the first 09:31 signals, so the first
 # calls of the day paid a cold load inside their timeout.
 KEEP_ALIVE = -1
@@ -308,10 +309,35 @@ def get_gatekeeper_decision(
     return {"error": f"Local analyst failed after {max_retries} attempts: {last_err}"}
 
 
+def unload(config: dict = None, post=None, get=None) -> dict:
+    """CEO 2026-10-25: free the shadow model's ~16 GB after the close (the
+    16:30 ET launchd job). keep_alive -1 holds it all day; resident overnight
+    it pushed the Mac into ~10 GB of swap on disk. The 09:20 warm job loads
+    it again before the session. {'ok', 'model', 'detail'}; never raises."""
+    post = post or requests.post
+    get = get or requests.get
+    model = shadow_model(config)
+    try:
+        post(f"{OLLAMA_URL}/api/generate", json={"model": model, "keep_alive": 0},
+             timeout=30)
+        loaded = [m.get("name") for m in
+                  (get(f"{OLLAMA_URL}/api/ps", timeout=10).json().get("models") or [])]
+        if model in loaded:
+            return {"ok": False, "model": model, "detail": "still loaded after keep_alive 0"}
+        return {"ok": True, "model": model, "detail": "unloaded"}
+    except Exception as e:
+        return {"ok": False, "model": model,
+                "detail": f"unload failed ({type(e).__name__}: {str(e)[:120]})"}
+
+
 if __name__ == "__main__":
     # S28: `python local_analyst.py --warm` - the 09:20 ET launchd job loads
     # the shadow model (keep_alive -1) before the worker's 09:25 start.
     pass  # sys already imported
+    if "--unload" in sys.argv:
+        r = unload()
+        print(f"shadow model {r['model']}: {r['detail']}")
+        sys.exit(0 if r["ok"] else 1)
     if "--warm" in sys.argv:
         state = ensure_ollama(warm=True)
         print(f"shadow model {shadow_model()}: {state['detail']} "

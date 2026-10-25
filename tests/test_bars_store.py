@@ -41,7 +41,7 @@ def test_backfill_then_append_only_adds_new_bars(tmp_path):
     assert 0 < first < 200
     r2 = bars_store.update(["KMI"], start="2026-10-22 13:30", end="2026-10-23 07:00",
                            store=store, data_client=fake, log=lambda *_: None, pause_s=0)
-    df = pd.read_csv(bars_store.path_for("KMI", store), index_col=0)
+    df = bars_store.read("KMI", store)
     assert len(df) == first + r2["added"] == 200
     assert not df.index.duplicated().any()
     # the second request starts after the last stored bar, not from the beginning
@@ -79,7 +79,7 @@ def test_cleanup_never_touches_the_bar_store(tmp_path):
     old = root / "logs" / "old.log"
     old.write_text("x")
     os.utime(old, (0, 0))
-    assert disk_cleanup.is_kept(str(root / "data" / "bars_5m" / "m5_SPY.csv"), str(root))
+    assert disk_cleanup.is_kept(str(root / "data" / "bars_5m" / "m5_SPY.parquet"), str(root))
     assert not disk_cleanup.is_kept(str(old), str(root))
     assert list(disk_cleanup.old_logs(str(root))) == [str(old)]
     assert "data/bars_5m" in disk_cleanup.KEEP
@@ -108,3 +108,62 @@ def test_s52_morning_dip_triggers_on_the_reclaim_of_the_open():
     ts, fill, low = g.s52_day_signal(bars, atr=2.0)          # dip 1.4 >= 0.5 x 2.0
     assert ts.strftime("%H:%M") == "09:50" and fill == 100.1 and low == 98.6
     assert g.s52_day_signal(bars, atr=4.0) is None             # dip 1.4 < 0.5 x 4.0
+
+
+def test_store_is_zstd_parquet_and_legacy_csv_converts_without_loss(tmp_path):
+    import pyarrow.parquet as pq
+    store = str(tmp_path)
+    df = _bars("2026-10-22 13:30", 300)
+    df.to_csv(os.path.join(store, "m5_OLD.csv"))
+    assert bars_store.read("OLD", store) is not None          # legacy csv still readable
+    r = bars_store.convert_csv(store, log=lambda *_: None)
+    assert r["converted"] == 1 and not os.path.exists(os.path.join(store, "m5_OLD.csv"))
+    back = bars_store.read("OLD", store)
+    assert len(back) == 300 and back.index[-1] == df.index[-1]
+    assert bars_store.path_for("OLD", store).endswith(".parquet")
+    meta = pq.ParquetFile(bars_store.path_for("OLD", store)).metadata
+    assert meta.row_group(0).column(0).compression == "ZSTD"
+    # appending keeps the old rows and adds only the new ones
+    assert bars_store.merge_write("OLD", _bars("2026-10-24 13:30", 10), store) == 10
+    assert len(bars_store.read("OLD", store)) == 310
+
+
+def test_rotate_keeps_the_open_file_and_gzips_its_content(tmp_path):
+    import gzip as _gz
+    p = tmp_path / "floor.log"
+    p.write_text("x" * 100)
+    ino = os.stat(p).st_ino
+    dst = disk_cleanup.rotate(str(p), stamp="20261025")
+    assert os.stat(p).st_ino == ino and p.read_text() == ""
+    assert _gz.open(dst).read() == b"x" * 100
+
+
+def test_ollama_cleanup_only_removes_unreferenced_blobs(tmp_path):
+    import json as _json
+    (tmp_path / "blobs").mkdir()
+    man = tmp_path / "manifests" / "registry.ollama.ai" / "library" / "qwen3.5"
+    man.mkdir(parents=True)
+    (man / "9b").write_text(_json.dumps({"config": {"digest": "sha256:aa"},
+                                         "layers": [{"digest": "sha256:bb"}]}))
+    for b in ("sha256-aa", "sha256-bb", "sha256-cc", "sha256-dd-partial"):
+        (tmp_path / "blobs" / b).write_text("1")
+    assert [os.path.basename(p) for p in disk_cleanup.ollama_orphans(str(tmp_path))] == ["sha256-cc"]
+    (man / "9b").write_text("{broken")
+    assert disk_cleanup.ollama_orphans(str(tmp_path)) == []      # unreadable: delete nothing
+
+
+def test_shadow_unload_sends_keep_alive_zero_and_checks_ps():
+    import local_analyst
+    sent = {}
+
+    class R:
+        def __init__(self, d): self.d = d
+        def json(self): return self.d
+    ok = local_analyst.unload({"models": {"shadow": "qwen3.5:9b"}},
+                              post=lambda url, json, timeout: sent.update(json) or R({}),
+                              get=lambda url, timeout: R({"models": []}))
+    assert sent == {"model": "qwen3.5:9b", "keep_alive": 0} and ok["ok"]
+    still = local_analyst.unload({"models": {"shadow": "qwen3.5:9b"}},
+                                 post=lambda url, json, timeout: R({}),
+                                 get=lambda url, timeout: R({"models": [{"name": "qwen3.5:9b"}]}))
+    assert not still["ok"]

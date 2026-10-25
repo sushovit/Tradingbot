@@ -172,8 +172,7 @@ def fetch_m5_year(symbols, start=S33_START, end=S33_END, cache=S33_CACHE):
     t1 = datetime.fromisoformat(end) + timedelta(days=1)
     done = 0
     for sym in symbols:
-        path = os.path.join(cache, f"m5_{sym}.csv")
-        if os.path.exists(path):
+        if bars_store.read(sym, cache) is not None:
             continue
         req = StockBarsRequest(symbol_or_symbols=sym,
                                timeframe=TimeFrame(5, TimeFrameUnit.Minute),
@@ -187,18 +186,16 @@ def fetch_m5_year(symbols, start=S33_START, end=S33_END, cache=S33_CACHE):
             continue
         if isinstance(df.index, pd.MultiIndex):
             df = df.xs(sym, level="symbol")
-        df[["open", "high", "low", "close", "volume"]].to_csv(path)
+        bars_store.merge_write(sym, df[["open", "high", "low", "close", "volume"]], cache)
         done += 1
     return done
 
 
 def load_m5(sym, cache=S33_CACHE):
-    import pandas as pd
-    path = os.path.join(cache, f"m5_{sym}.csv")
-    if not os.path.exists(path):
+    df = bars_store.read(sym, cache)
+    if df is None:
         return None
-    df = pd.read_csv(path, index_col=0)
-    df.index = pd.to_datetime(df.index, utc=True).tz_convert("America/New_York")
+    df.index = df.index.tz_convert("America/New_York")
     t = df.index.time
     return df[(t >= RTH[0]) & (t < RTH[1])]
 
