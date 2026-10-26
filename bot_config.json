@@ -251,7 +251,7 @@
     },
     "anthropic_credit": {
         "_note": "CEO sets balance_usd + as_of (ET 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS') from the owner's console figure; remaining = balance - spend since as_of.",
-        "balance_usd": null,
-        "as_of": null
+        "balance_usd": 10.0,
+        "as_of": "2026-10-26"
     }
 }
