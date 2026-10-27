@@ -34,8 +34,9 @@ def regn():
 
 def test_config_ships_the_cap():
     cfg = json.load(open(os.path.join(ROOT, "bot_config.json"), encoding="utf-8"))
-    assert cfg["exits"]["target_cap_atr"] == 3.0
-    assert pm.target_cap_atr(cfg) == 3.0 and pm.target_cap_atr({}) is None
+    # CEO 2026-10-27 (agenda 37, S56): 3.0 -> 1.5 x ATR14 for new entries
+    assert cfg["exits"]["target_cap_atr"] == 1.5
+    assert pm.target_cap_atr(cfg) == 1.5 and pm.target_cap_atr({}) is None
 
 
 def test_wide_r_is_capped_regn():

@@ -2104,3 +2104,24 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - **Regime-adaptive 2.0 / 3.0:** +0.084R (-0.009R), same MaxDD as live. It used 2.0 on 722 of 1,452 trades (low-volatility days) - and 2.0 is the weakest cap, so the regime switch does not help.
 - Capture = sum of R achieved / sum of best R reached (MFE), over trades that went green.
 
+### Decision (CEO 2026-10-27): ADOPT 1.5 x ATR14 - risk improvement
+
+Re-run 2026-10-27 with both halves (split at 2026-04-19) under the new risk path of the standing rule (expectancy >= live, MaxDD <= 75% of live, >= 200 trades, beats live in BOTH halves):
+
+*Both halves (entries before / from 2026-04-19): trades / expectancy (R of $50) / MaxDD*
+
+| Target cap | First half (< 2026-04-19) | Second half (>= 2026-04-19) |
+|---|---|---|
+| 3.0 x ATR (live) | 687 / +0.104 / $1,617 | 765 / +0.083 / $1,036 |
+| 1.5 x ATR | 687 / +0.113 / $1,083 | 765 / +0.093 / $699 |
+| 2.0 x ATR | 687 / +0.097 / $1,360 | 765 / +0.061 / $1,040 |
+| 2.5 x ATR | 687 / +0.087 / $1,720 | 765 / +0.085 / $794 |
+| regime-adaptive 2.0 / 3.0 | 687 / +0.096 / $1,617 | 765 / +0.073 / $887 |
+
+- **Expectancy:** +0.103R vs +0.093R over the year; first half +0.113R vs +0.104R (+0.009R), second half +0.093R vs +0.083R (+0.010R) - **beats live in both halves.**
+- **MaxDD:** $1,083 vs $1,617 (**67%** of live, <= 75%); lower in each half ($1,083 vs $1,617; $699 vs $1,036).
+- 1,452 trades. **ADOPT (risk).**
+
+**Live from 2026-10-28:** `exits.target_cap_atr` 3.0 -> **1.5** (target = fill + min(3R, 1.5 x ATR14)). It applies to NEW entries only: a position already capped (target_capped set) keeps its target. No positions were open at the change (IBM stopped 2026-10-27 10:19).
+
+The S56b paper twin (1.5 x ATR vs live) now matches live for new entries; retire it or flip it to show the old 3.0 cap - CEO to decide.
