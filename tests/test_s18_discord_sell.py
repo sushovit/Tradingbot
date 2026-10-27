@@ -311,3 +311,75 @@ def test_selltest_shows_the_buttons_any_hour_and_never_sells():
     assert out[-1].startswith("🧪 TEST only")
     assert run(make(FakeDesk()), "!selltest AAPL") == ["⛔ No open position in AAPL."]
     assert run(make(FakeDesk()), "!selltest IBM", author=OTHER) == []
+
+
+# ----------------------------------------------------------------- slash commands
+
+class FakeInteraction:
+    def __init__(self, user=OWNER, channel=CHANNEL):
+        self.user, self.channel_id = SimpleNamespace(id=user), channel
+        self.log = []
+        log = self.log
+
+        class Resp:
+            async def send_message(self, text, ephemeral=False):
+                log.append(("response", text, ephemeral))
+
+            async def defer(self, thinking=False):
+                log.append(("defer", thinking))
+
+        class Follow:
+            async def send(self, text, wait=False, view=None, ephemeral=False):
+                log.append(("followup", text, view))
+                return SimpleNamespace(id=1)
+
+        class Chan:
+            async def send(self, text, view=None):
+                log.append(("channel", text, view))
+                return SimpleNamespace(id=2)
+        self.response, self.followup, self.channel = Resp(), Follow(), Chan()
+
+
+class FakeView:
+    def __init__(self, buttons, owner_id):
+        self.buttons, self.owner_id, self.message = buttons, owner_id, None
+
+
+def test_slash_commands_refuse_others_privately():
+    cmds = make(FakeDesk())
+    for it in (FakeInteraction(user=OTHER), FakeInteraction(channel=OTHER)):
+        asyncio.run(db.run_slash(cmds, it, "!sell IBM", FakeView))
+        assert it.log == [("response", "Only the owner can use this, in the trading channel.", True)]
+
+
+def test_slash_positions_defers_then_answers():
+    it = FakeInteraction()
+    asyncio.run(db.run_slash(make(FakeDesk()), it, "!positions", FakeView))
+    assert it.log[0] == ("defer", True)
+    assert it.log[1][0] == "followup" and it.log[1][1].startswith("📊 Open positions")
+
+
+def test_slash_sell_shows_buttons_and_yes_sells_through_the_same_path():
+    desk = FakeDesk()
+    cmds = make(desk, confirm_s=60)
+    it = FakeInteraction()
+
+    async def go():
+        await db.run_slash(cmds, it, "!sell IBM", FakeView)
+        kind, text, view = it.log[1]
+        assert kind == "followup" and text.startswith("⚠️ Sell ALL 4 IBM") and view.message is not None
+        assert await view.buttons["yes"](OWNER) == "selling"
+        _done, rest = await asyncio.wait(cmds.tasks, timeout=1)
+        for t in rest:
+            t.cancel()
+    asyncio.run(go())
+    assert desk.queued == ["IBM"]
+    assert [e[0] for e in it.log[2:]] == ["channel", "channel"]        # sent + SOLD in the channel
+    assert it.log[-1][1].startswith("💰 SOLD IBM")
+
+
+def test_sell_autocomplete_offers_the_open_positions():
+    rows = [{"ticker": t} for t in ("IBM", "INTC", "AAPL")]
+    assert db.ticker_choices(rows, "") == ["IBM", "INTC", "AAPL"]
+    assert db.ticker_choices(rows, "i") == ["IBM", "INTC"]
+    assert db.ticker_choices(rows, "x") == []

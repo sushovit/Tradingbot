@@ -10,6 +10,9 @@ channel - every other author or channel is ignored without a reply:
                   buttons; Yes (or typing YES) within 60 s sells
   !selltest TICKER  the same prompt and buttons at any hour; Yes only says what
                   WOULD be sold - nothing is ever sent (owner's dry run)
+Slash commands /positions, /sell <ticker> and /selltest <ticker> (the ticker
+offered from the open positions) run exactly the same commands; anyone but
+the owner, or outside the trading channel, gets a private refusal.
 
 The bot holds NO order code. On YES it writes the SAME command file the
 dashboard's Sell button writes when the worker is running
@@ -291,6 +294,50 @@ class OwnerCommands:
                     f"dashboard (Open Positions).")
 
 
+# ===================================================================== slash commands
+
+def ticker_choices(rows, current: str, limit: int = 25) -> list:
+    """Open-position tickers for the /sell autocomplete, prefix-matched."""
+    cur = (current or "").strip().upper()
+    return [r["ticker"] for r in rows if r["ticker"].startswith(cur)][:limit]
+
+
+def as_message(interaction, text: str):
+    """A slash command as the text command it stands for."""
+    from types import SimpleNamespace
+    return SimpleNamespace(content=text, author=SimpleNamespace(id=interaction.user.id),
+                           channel=SimpleNamespace(id=interaction.channel_id))
+
+
+async def run_slash(cmds, interaction, text: str, view_class=None):
+    """Answer a slash command with the same OwnerCommands logic. The first
+    reply goes to the interaction (deferred at once - Discord fails a
+    command not answered in 3 s); later ones (fill confirmation) to the
+    channel."""
+    message = as_message(interaction, text)
+    if not cmds.accepts(message):
+        await interaction.response.send_message(
+            "Only the owner can use this, in the trading channel.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    first = [True]
+
+    async def reply(t, buttons=None):
+        view = view_class(buttons, cmds.owner_id) if (buttons and view_class) else None
+        kw = {"view": view} if view is not None else {}
+        if first[0]:
+            first[0] = False
+            sent = await interaction.followup.send(t, wait=True, **kw)
+        else:
+            sent = await interaction.channel.send(t, **kw)
+        if view is not None:
+            view.message = sent
+        return sent
+    await cmds.on_message(message, reply)
+    if first[0]:                                     # nothing to say (should not happen)
+        await interaction.followup.send("Done.", ephemeral=True)
+
+
 # ===================================================================== runner
 
 def channel_from_webhook(url, get=None):
@@ -382,9 +429,44 @@ def main() -> int:
     cmds = OwnerCommands(SellDesk(), owner, channel)
     ConfirmView = confirm_view_class()
 
+    from discord import app_commands
+    tree = app_commands.CommandTree(client)
+
+    async def _choices(interaction, current):
+        try:
+            rows = await asyncio.to_thread(cmds.desk.positions)
+        except Exception:
+            rows = []
+        return [app_commands.Choice(name=t, value=t) for t in ticker_choices(rows, current)]
+
+    @tree.command(name="positions", description="Open positions: qty, entry, now, P&L, stop, target")
+    async def slash_positions(interaction):
+        await run_slash(cmds, interaction, "!positions", ConfirmView)
+
+    @tree.command(name="sell", description="Sell a whole position at market (owner only, market hours)")
+    @app_commands.describe(ticker="The open position to sell")
+    @app_commands.autocomplete(ticker=_choices)
+    async def slash_sell(interaction, ticker: str):
+        await run_slash(cmds, interaction, f"!sell {ticker}", ConfirmView)
+
+    @tree.command(name="selltest", description="Dry run of /sell: the same prompt and buttons, nothing is sold")
+    @app_commands.describe(ticker="The open position")
+    @app_commands.autocomplete(ticker=_choices)
+    async def slash_selltest(interaction, ticker: str):
+        await run_slash(cmds, interaction, f"!selltest {ticker}", ConfirmView)
+
     @client.event
     async def on_ready():
         logger.info(f"connected as {client.user}; owner {owner}, channel {channel}")
+        try:
+            ch = client.get_channel(channel) or await client.fetch_channel(channel)
+            tree.copy_global_to(guild=ch.guild)
+            synced = await tree.sync(guild=ch.guild)        # guild sync: available at once
+            logger.info(f"slash commands ready in {ch.guild.name}: "
+                        + ", ".join("/" + c.name for c in synced))
+        except Exception as e:
+            logger.error(f"slash commands NOT registered ({type(e).__name__}: {e}) - "
+                         f"the !commands still work")
 
     @client.event
     async def on_message(message):
