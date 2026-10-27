@@ -8,6 +8,8 @@ channel - every other author or channel is ignored without a reply:
   !positions      open positions: qty, entry, now, P&L, stop, target
   !sell TICKER    confirm prompt (qty, price, P&L) with [Yes, sell] [Cancel]
                   buttons; Yes (or typing YES) within 60 s sells
+  !selltest TICKER  the same prompt and buttons at any hour; Yes only says what
+                  WOULD be sold - nothing is ever sent (owner's dry run)
 
 The bot holds NO order code. On YES it writes the SAME command file the
 dashboard's Sell button writes when the worker is running
@@ -183,12 +185,18 @@ class OwnerCommands:
                 if self.clock() > p["deadline"]:
                     await reply(f"⌛ Too late - the sell of {p['ticker']} expired. Send !sell again.")
                     return
-                await self._execute(p["ticker"], reply)
+                await self._execute(p["ticker"], reply, p.get("test", False))
                 return
             await reply(f"Sell of {p['ticker']} cancelled.")
         low = text.lower()
         if low == "!positions":
             await reply(positions_text(await self._call(self.desk.positions)))
+        elif low.startswith("!selltest"):
+            parts = text.split()
+            if len(parts) != 2:
+                await reply("Usage: !selltest TICKER")
+                return
+            await self._prompt(parts[1].upper(), reply, test=True)
         elif low.startswith("!sell"):
             parts = text.split()
             if len(parts) != 2:
@@ -196,7 +204,10 @@ class OwnerCommands:
                 return
             await self._prompt(parts[1].upper(), reply)
 
-    async def _blocker(self, ticker):
+    async def _blocker(self, ticker, test=False):
+        if test:                                     # dry run: only needs the position
+            rows = {r["ticker"]: r for r in await self._call(self.desk.positions)}
+            return rows.get(ticker) or f"No open position in {ticker}."
         if not await self._call(self.desk.market_open):
             return "The market is closed - Discord sells work in market hours only."
         rows = {r["ticker"]: r for r in await self._call(self.desk.positions)}
@@ -207,20 +218,22 @@ class OwnerCommands:
                     f"Use the dashboard Sell button.")
         return rows[ticker]
 
-    async def _prompt(self, ticker, reply):
-        r = await self._blocker(ticker)
+    async def _prompt(self, ticker, reply, test=False):
+        r = await self._blocker(ticker, test)
         if isinstance(r, str):
             await reply(f"⛔ {r}")
             return
         token = object()
-        self.pending = {"ticker": ticker, "deadline": self.clock() + self.confirm_s, "token": token}
+        self.pending = {"ticker": ticker, "deadline": self.clock() + self.confirm_s,
+                        "token": token, "test": test}
 
         async def yes(user_id):
             return await self.press("yes", token, user_id, reply)
 
         async def no(user_id):
             return await self.press("no", token, user_id, reply)
-        await reply(f"⚠️ Sell ALL {r['qty']:g} {ticker} at market? Now {_money(r['last'])} · "
+        await reply(("🧪 TEST (nothing will be sold) - " if test else "")
+                    + f"⚠️ Sell ALL {r['qty']:g} {ticker} at market? Now {_money(r['last'])} · "
                     f"entry {_money(r['entry'])} · P&L {r['pnl']:+,.2f}. Its stop and target are "
                     f"cancelled first. Press **Yes, sell** within {self.confirm_s} s "
                     f"(or type YES).", buttons={"yes": yes, "no": no})
@@ -236,7 +249,7 @@ class OwnerCommands:
             return "expired"
         self.pending = None
         if choice == "yes":
-            await self._execute(p["ticker"], reply)
+            await self._execute(p["ticker"], reply, p.get("test", False))
             return "selling"
         await reply(f"Sell of {p['ticker']} cancelled.")
         return "cancelled"
@@ -247,10 +260,15 @@ class OwnerCommands:
             self.pending = None
             await reply(f"⌛ No YES within {self.confirm_s} s - sell of {ticker} cancelled.")
 
-    async def _execute(self, ticker, reply):
-        r = await self._blocker(ticker)              # re-check at YES time
+    async def _execute(self, ticker, reply, test=False):
+        r = await self._blocker(ticker, test)        # re-check at YES time
         if isinstance(r, str):
             await reply(f"⛔ Not sold: {r}")
+            return
+        if test:
+            await reply(f"🧪 TEST only - this WOULD have sold {r['qty']:g} {ticker} at market "
+                        f"(now {_money(r['last'])}). Nothing was sent. In market hours, "
+                        f"!sell {ticker} does it for real.")
             return
         await self._call(self.desk.queue_sell, ticker)
         await reply(f"✅ Sell of {r['qty']:g} {ticker} sent to the worker (same path as the dashboard "
