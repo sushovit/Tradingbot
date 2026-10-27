@@ -21,7 +21,8 @@
         "catalysts": true,
         "scoreboard": true,
         "watching": true,
-        "credit_report": true
+        "credit_report": true,
+        "dip_shadow": true
     },
     "watch_movers": {
         "enabled": true,

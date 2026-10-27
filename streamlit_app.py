@@ -1849,8 +1849,9 @@ def _credit_lines(minute_key):
 if not desk_config.in_worker():
     for _line in _credit_lines(datetime.now(EASTERN_TZ).strftime("%Y%m%d%H%M")):
         st.markdown(_line.replace("$", "\\$"))   # "$" would start LaTeX
-tab1, tab2, tab3, tab4 = st.tabs(["🤖 Live Trading Bot", "Backtesting Suite",
-                                  "🔬 AI Analysis Tools", "🎓 Intern Desk"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🤖 Live Trading Bot", "Backtesting Suite",
+                                        "🔬 AI Analysis Tools", "🎓 Intern Desk",
+                                        "🧪 Dip Test"])
 
 # --- Dashboard helpers: observe + start/stop only. bot_config.json is the
 # single source of truth and is NEVER written from this UI. ---
@@ -2644,6 +2645,49 @@ try:
     intern_run_active = bool(_st and _st.get("active"))
 except Exception:
     pass
+# CEO 2026-10-27 - S55 dip forward test: PAPER ONLY, display + journal.
+# The rows come from dip_shadow.py (its own launchd job); this tab only reads.
+with tab5:
+    if not desk_config.in_worker():
+        import sqlite3
+        import dip_shadow as _ds
+        st.header("🧪 Dip Test (S55)")
+        st.caption(f"Paper only - never traded. Entries {_ds.START} .. {_ds.LAST_ENTRY}: "
+                   f"prior close >= ${_ds.MIN_PRICE:.0f}, open within +-1% of it, first "
+                   f"touch of prior close -2% before 11:00 ET -> paper buy at that level; "
+                   f"exit back at the prior close (same day / within 3 sessions) or the "
+                   f"day-3 close. Control: the same stock bought at 09:45, same exit. "
+                   f"Updated every 5 minutes.")
+        try:
+            _conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
+            _conn.row_factory = sqlite3.Row
+            _rows = _ds.rows(_conn)
+            _conn.close()
+        except sqlite3.Error:
+            _rows = []
+        if not _rows:
+            st.info(f"No dips yet - the test starts {_ds.START} 09:30 ET.")
+        else:
+            _t = _ds.totals(_rows)
+            _edge = (None if _t["avg_dip_paired_pct"] is None or _t["avg_control_pct"] is None
+                     else _t["avg_dip_paired_pct"] - _t["avg_control_pct"])
+            _c = st.columns(5)
+            _c[0].metric("Dips (closed / open)", f"{_t['closed']} / {_t['open']}")
+            _c[1].metric("Back same day", _ds._p(_t["hit_same_day_pct"], False))
+            _c[2].metric("Back within 3 sessions", _ds._p(_t["hit_3d_pct"], False))
+            _c[3].metric("Avg return (closed)", _ds._p(_t["avg_ret_pct"]))
+            _c[4].metric("vs 09:45 control", "-" if _edge is None else f"{_edge:+.2f} pp",
+                         help=f"dip {_ds._p(_t['avg_dip_paired_pct'])} vs control "
+                              f"{_ds._p(_t['avg_control_pct'])} over {_t['paired']} pairs")
+            st.dataframe(pd.DataFrame([{
+                "Day": r["day"], "Ticker": r["ticker"], "Prior close": r["prior_close"],
+                "Dip buy": r["level"], "Touched": str(r["entry_ts"])[11:16],
+                "Status": r["status"], "Sessions": r["sessions"],
+                "Exit / mark": r["exit_px"] if r["exit_px"] is not None else r["mark_px"],
+                "Return %": r["ret_pct"], "Worst DD %": r["worst_dd_pct"],
+                "Control 09:45": r["control_px"], "Control %": r["control_ret_pct"],
+            } for r in _rows]), hide_index=True, width='stretch')
+
 if is_running or intern_run_active:
     a_time.sleep(10 if intern_run_active else 15)
     st.rerun()

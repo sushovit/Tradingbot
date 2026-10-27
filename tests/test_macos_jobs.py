@@ -35,6 +35,8 @@ EXPECTED = {
     "bars_5m": ["bars_store.py", "--append"],          # CEO 10-25: 17:00 ET
     "shadow_unload": ["local_analyst.py", "--unload"],  # CEO 10-25: 16:30 ET
     "cleanup": ["disk_cleanup.py", "--apply"],          # CEO 10-25: Sat 12:00 ET
+    "dip_shadow": ["dip_shadow.py", "--update"],        # CEO 10-27: every 5 min (S55 paper)
+    "dip_shadow_post": ["dip_shadow.py", "--post"],     # CEO 10-27: 16:20 ET summary
 }
 
 
