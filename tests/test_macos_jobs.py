@@ -37,6 +37,7 @@ EXPECTED = {
     "cleanup": ["disk_cleanup.py", "--apply"],          # CEO 10-25: Sat 12:00 ET
     "dip_shadow": ["dip_shadow.py", "--update"],        # CEO 10-27: every 5 min (S55 paper)
     "dip_shadow_post": ["dip_shadow.py", "--post"],     # CEO 10-27: 16:20 ET summary
+    "discord_bot": ["discord_bot.py"],                  # S18: always on, restarted on a crash
 }
 
 
@@ -68,7 +69,7 @@ def test_every_job_has_the_shared_environment(name):
     assert p["StandardErrorPath"] == f"__REPO__/logs/{name}.log"
     # installing never runs a job - except the always-awake hold, which must
     # restart itself after a reboot (CEO 2026-10-21) and only runs caffeinate
-    assert p["RunAtLoad"] is (name == "awake_week")
+    assert p["RunAtLoad"] is (name in ("awake_week", "discord_bot"))   # S18: always-on bot
     joined = " ".join(p["ProgramArguments"])
     for part in EXPECTED[name]:
         assert part in joined
