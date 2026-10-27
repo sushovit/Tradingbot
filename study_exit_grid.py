@@ -3448,6 +3448,145 @@ def s52_main(universe_file="universe_today.json", start="2025-10-14"):
     return lines, stats
 
 
+# ===================================================================== S56
+# CEO 2026-10-27 - target cap: fill + min(3R, k x ATR14) for k = 3.0 (live),
+# 1.5, 2.0, 2.5, and a regime-adaptive cap: 2.0 x ATR when SPY's 20-day ATR%
+# (as of the prior close) is below its trailing 1-year median, else 3.0.
+# Year replay of the live daily setups (momentum + reclaim, live SPY gate) on
+# the permanent store; the live stop (re-anchored to the fill, S50), the live
+# ladder on 5-minute closes and the live time stops. Fill at the open; $5,000,
+# 1% ($50) risk, 25% notional. Paired: one position per symbol, busy until
+# the latest exit of the five variants. Standing adoption rule vs 3.0.
+
+S56_CAPS = (("3.0 x ATR (live)", 3.0), ("1.5 x ATR", 1.5), ("2.0 x ATR", 2.0),
+            ("2.5 x ATR", 2.5), ("regime-adaptive 2.0 / 3.0", "regime"))
+S56_BASE = S56_CAPS[0][0]
+
+
+def s56_low_vol_days(spy_daily, n=20, window=252):
+    """{date: True if SPY's 20-day ATR% at the PRIOR close was below its
+    trailing `window`-day median} - known before the day opens."""
+    import pandas_ta as ta
+    d = spy_daily.sort_index()
+    pct = ta.atr(d["high"], d["low"], d["close"], length=n) / d["close"]
+    med = pct.rolling(window, min_periods=window).median()
+    low = (pct < med).where(med.notna())
+    out, prev = {}, None
+    for i, v in zip(d.index, low):
+        out[pd.Timestamp(i).date()] = prev
+        prev = None if pd.isna(v) else bool(v)
+    return out
+
+
+def s56_fetch_spy_daily(start="2024-06-01", end="2026-10-24"):
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from broker import Broker
+    req = StockBarsRequest(symbol_or_symbols="SPY", timeframe=TimeFrame.Day,
+                           start=pd.Timestamp(start).to_pydatetime(),
+                           end=pd.Timestamp(end).to_pydatetime(), feed=DataFeed.IEX)
+    df = Broker().data.get_stock_bars(req).df.xs("SPY", level="symbol")
+    df.index = pd.DatetimeIndex(df.index).tz_convert(ET)
+    return df[["open", "high", "low", "close", "volume"]]
+
+
+def s56_run(signals, frames, low_vol):
+    import risk as _risk
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in params["steps"]]
+    out = {label: [] for label, _ in S56_CAPS}
+    busy, regime_used = {}, {"2.0": 0, "3.0": 0, "unknown": 0}
+    for setup, sym, day, fill, structural in sorted(signals, key=lambda x: x[2]):
+        if sym in busy and day.date() <= busy[sym]:
+            continue
+        m5, daily = frames[sym]
+        atrs = atr_by_day(daily)
+        atr = atrs.get(day.date())
+        if not atr:
+            continue
+        stop = pm.initial_stop(fill, structural, atr, params)        # live: from the fill
+        if stop is None or stop >= fill:
+            continue
+        shares = _risk.position_size(S50_EQUITY, S50_RISK_PCT, fill, stop, position_cap_pct=S50_CAP)
+        if shares < 1:
+            continue
+        closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+        lv = low_vol.get(day.date())
+        rows, last_exit = [], None
+        for label, k in S56_CAPS:
+            cap = (2.0 if lv else 3.0) if k == "regime" else k
+            target = pm.capped_target(fill, stop, atr, cap, 3.0)
+            res = simulate_hold(m5, closes, atrs, day, fill, stop, target, steps, None)
+            if res is None:
+                rows = None
+                break
+            r, why, mfe, xts = res
+            risk_usd = shares * (fill - stop)
+            rows.append((label, {"setup": setup, "sym": sym, "when": day, "r": r, "mfe_r": mfe,
+                                 "pnl": r * risk_usd, "risk_usd": risk_usd, "why": why}))
+            last_exit = xts if last_exit is None else max(last_exit, xts)
+        if rows is None:
+            continue
+        regime_used["unknown" if lv is None else ("2.0" if lv else "3.0")] += 1
+        for label, t in rows:
+            out[label].append(t)
+        busy[sym] = last_exit.date()
+    return out, regime_used
+
+
+def s56_stats(trades):
+    st = s50_stats(trades)
+    if st is None:
+        return None
+    green = [t for t in trades if t["mfe_r"] > 0]
+    st["target_pct"] = round(100 * sum(t["why"].startswith("target") for t in trades) / len(trades), 1)
+    st["capture"] = (sum(t["r"] for t in green) / sum(t["mfe_r"] for t in green)
+                     if green and sum(t["mfe_r"] for t in green) > 0 else None)
+    st["maxdd_r"] = st["maxdd_usd"] / (S50_EQUITY * S50_RISK_PCT / 100)
+    return st
+
+
+def s56_main(universe_file="universe_today.json", start="2025-10-14"):
+    import json
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    low_vol = s56_low_vol_days(s56_fetch_spy_daily())
+    signals, frames = s34_signals(symbols, start=start, setups=S50_SETUPS)
+    res, used = s56_run(signals, frames, low_vol)
+    stats = {k: s56_stats(v) for k, v in res.items()}
+    base = stats[S56_BASE]
+    rows = []
+    for label, _k in S56_CAPS:
+        st = stats[label]
+        rows.append([label, st["trades"], f"{st['win']}%", f"{st['target_pct']}%",
+                     f"{st['exp_r']:+.3f}", f"{100 * st['capture']:.0f}%" if st["capture"] is not None else "-",
+                     f"${st['total_usd']:+,.0f}", f"{st['maxdd_r']:.1f}R (${st['maxdd_usd']:,.0f})",
+                     f"{100 * st['maxdd_usd'] / base['maxdd_usd']:.0f}%",
+                     "BASE (live)" if label == S56_BASE else s53_verdict(st, base)])
+    n_regime = sum(used.values())
+    lines = [f"**S56 (CEO 2026-10-27) - target cap k x ATR14.** 5-minute replay of the live "
+             f"daily signals (momentum + reclaim), {start}..{S53_END}, {len(frames)} symbols, "
+             f"permanent store; live stop (from the fill), live ladder, live time stops; target "
+             f"fill + min(3R, k x ATR14); $5,000, 1% ($50) risk, 25% notional; paired signals. "
+             f"Regime-adaptive: 2.0 x ATR on {used['2.0']} of {n_regime} trades (SPY 20-day ATR% "
+             f"below its 1-year median), 3.0 on {used['3.0']}"
+             + (f", {used['unknown']} without a 1-year history (3.0)" if used["unknown"] else "")
+             + ".", ""]
+    lines += sc.table(["Target cap", "Trades", "Win %", "Target hit %", "Expectancy (R of $50)",
+                       "Capture", "Total $", "MaxDD", "MaxDD vs live", "Standing rule"], rows)
+    winners = [r for r in rows if r[-1] == "ADOPT"]
+    lines += ["", ("**Standing rule met by:** " + "; ".join(f"{r[0]} ({r[4]})" for r in winners))
+              if winners else "**Standing rule not met by any variant - tie, no change.**",
+              "", "**Limits.** Fill at the day's open, as in S50; "
+              "today's universe (survivorship); IEX bars; signals, not "
+              "gatekeeper-approved trades; max positions / sector cap / daily breaker not "
+              "modelled; the SPY ATR% median uses IEX daily bars from 2024-06.", "", sc.UPPER_BOUND]
+    print("\n".join(lines))
+    return lines, stats
+
+
 # ===================================================================== S54
 # CEO 2026-10-25 "patience test": the 10-22 KMI and SLB reclaim entries,
 # replayed on IEX 1-minute bars from the minute AFTER the broker fill, under
@@ -3584,6 +3723,7 @@ def main():
     ap.add_argument("--s54", action="store_true")
     ap.add_argument("--s53", action="store_true")
     ap.add_argument("--s52", action="store_true")
+    ap.add_argument("--s56", action="store_true")
     ap.add_argument("--start", default="2025-10-14")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
@@ -3599,6 +3739,9 @@ def main():
         return 0
     if a.s53:
         s53_main(a.universe_file, a.start)
+        return 0
+    if a.s56:
+        s56_main(a.universe_file, a.start)
         return 0
     if a.s52:
         s52_main(a.universe_file, a.start)

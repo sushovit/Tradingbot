@@ -167,3 +167,24 @@ def test_shadow_unload_sends_keep_alive_zero_and_checks_ps():
                                  post=lambda url, json, timeout: R({}),
                                  get=lambda url, timeout: R({"models": [{"name": "qwen3.5:9b"}]}))
     assert not still["ok"]
+
+
+def test_s56_low_vol_flag_uses_only_the_prior_close():
+    import pandas_ta as ta
+    import study_exit_grid as g
+    idx = pd.date_range("2025-01-01", periods=320, freq="B", tz="America/New_York")
+    close = [100 + (i % 7) * 0.3 for i in range(320)]
+    rng = [0.5 + (i % 11) * 0.1 for i in range(320)]
+    df = pd.DataFrame({"open": close, "high": [c + r for c, r in zip(close, rng)],
+                       "low": [c - r for c, r in zip(close, rng)], "close": close}, index=idx)
+    flags = g.s56_low_vol_days(df, n=20, window=252)
+    pct = ta.atr(df["high"], df["low"], df["close"], length=20) / df["close"]
+    med = pct.rolling(252, min_periods=252).median()
+    days = [pd.Timestamp(i).date() for i in idx]
+    assert all(flags[days[k]] is None for k in range(0, 271))      # no 1-year history yet
+    checked = 0
+    for k in range(272, 320):
+        expect = bool(pct.iloc[k - 1] < med.iloc[k - 1])           # the PRIOR close only
+        assert flags[days[k]] is expect
+        checked += 1
+    assert checked == 48 and {flags[d] for d in days[272:]} == {True, False}
