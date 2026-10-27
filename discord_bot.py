@@ -6,7 +6,8 @@ that answers TWO commands, and only from OWNER_DISCORD_ID in the trading
 channel - every other author or channel is ignored without a reply:
 
   !positions      open positions: qty, entry, now, P&L, stop, target
-  !sell TICKER    confirm prompt (qty, price, P&L); "YES" within 60 s sells
+  !sell TICKER    confirm prompt (qty, price, P&L) with [Yes, sell] [Cancel]
+                  buttons; Yes (or typing YES) within 60 s sells
 
 The bot holds NO order code. On YES it writes the SAME command file the
 dashboard's Sell button writes when the worker is running
@@ -149,8 +150,10 @@ def positions_text(rows) -> str:
 
 
 class OwnerCommands:
-    """!positions and !sell TICKER -> YES, from the owner in the trading
-    channel only. `reply` is an async callable(text)."""
+    """!positions and !sell TICKER -> Yes button (or typed YES), from the
+    owner in the trading channel only. `reply` is an async callable
+    (text, buttons=None); `buttons` = {"yes": coro_fn(user_id), "no": ...}
+    for the confirm prompt - the runner turns them into Discord buttons."""
 
     def __init__(self, desk, owner_id: int, channel_id: int, confirm_s=CONFIRM_S,
                  fill_wait_s=FILL_WAIT_S, fill_poll_s=FILL_POLL_S, clock=time.monotonic):
@@ -208,10 +211,32 @@ class OwnerCommands:
             return
         token = object()
         self.pending = {"ticker": ticker, "deadline": self.clock() + self.confirm_s, "token": token}
+
+        async def yes(user_id):
+            return await self.press("yes", token, user_id, reply)
+
+        async def no(user_id):
+            return await self.press("no", token, user_id, reply)
         await reply(f"⚠️ Sell ALL {r['qty']:g} {ticker} at market? Now {_money(r['last'])} · "
                     f"entry {_money(r['entry'])} · P&L {r['pnl']:+,.2f}. Its stop and target are "
-                    f"cancelled first. Reply YES within {self.confirm_s} s.")
+                    f"cancelled first. Press **Yes, sell** within {self.confirm_s} s "
+                    f"(or type YES).", buttons={"yes": yes, "no": no})
         self.tasks.append(asyncio.ensure_future(self._expire(ticker, token, reply)))
+
+    async def press(self, choice, token, user_id, reply) -> str:
+        """A button click. Only the owner's click counts; a click on an old
+        prompt does nothing. Returns not_owner | expired | selling | cancelled."""
+        if user_id != self.owner_id:
+            return "not_owner"
+        p = self.pending
+        if p is None or p["token"] is not token or self.clock() > p["deadline"]:
+            return "expired"
+        self.pending = None
+        if choice == "yes":
+            await self._execute(p["ticker"], reply)
+            return "selling"
+        await reply(f"Sell of {p['ticker']} cancelled.")
+        return "cancelled"
 
     async def _expire(self, ticker, token, reply):
         await asyncio.sleep(self.confirm_s)
@@ -270,6 +295,56 @@ def config(env=os.environ, get=None):
     return token, int(owner), channel
 
 
+def confirm_view_class():
+    """The [Yes, sell] [Cancel] buttons under a sell prompt (discord.py View)."""
+    import discord
+
+    class ConfirmView(discord.ui.View):
+        """[Yes, sell] [Cancel] under the prompt; disabled after a click or
+        after the confirm window."""
+
+        def __init__(self, buttons, owner_id):
+            super().__init__(timeout=CONFIRM_S)
+            self.buttons, self.owner_id, self.message = buttons, int(owner_id), None
+
+        async def _click(self, interaction, choice):
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message("Only the owner can do this.", ephemeral=True)
+                return
+            for item in self.children:
+                item.disabled = True
+            # Answer Discord at once (it fails a click not answered in 3 s);
+            # the broker re-check and the sell request follow.
+            await interaction.response.edit_message(view=self)
+            self.stop()
+            result = await self.buttons[choice](interaction.user.id)
+            label = {"selling": "✅ Sell sent", "cancelled": "Cancelled",
+                     "expired": "⌛ Expired", "not_owner": "-"}[result]
+            try:
+                await interaction.message.edit(content=f"{interaction.message.content}\n**{label}**",
+                                               view=self)
+            except Exception:
+                pass
+
+        @discord.ui.button(label="Yes, sell", style=discord.ButtonStyle.danger)
+        async def yes(self, interaction, _button):
+            await self._click(interaction, "yes")
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def no(self, interaction, _button):
+            await self._click(interaction, "no")
+
+        async def on_timeout(self):
+            for item in self.children:
+                item.disabled = True
+            if self.message is not None:
+                try:
+                    await self.message.edit(view=self)
+                except Exception:
+                    pass
+    return ConfirmView
+
+
 def main() -> int:
     from dotenv import load_dotenv
     load_dotenv(".env")
@@ -284,6 +359,7 @@ def main() -> int:
     intents.message_content = True
     client = discord.Client(intents=intents)
     cmds = OwnerCommands(SellDesk(), owner, channel)
+    ConfirmView = confirm_view_class()
 
     @client.event
     async def on_ready():
@@ -293,7 +369,13 @@ def main() -> int:
     async def on_message(message):
         if message.author == client.user:
             return
-        await cmds.on_message(message, message.channel.send)
+        async def reply(text, buttons=None):
+            if not buttons:
+                return await message.channel.send(text)
+            view = ConfirmView(buttons, owner)
+            view.message = await message.channel.send(text, view=view)
+            return view.message
+        await cmds.on_message(message, reply)
 
     client.run(token, log_handler=None)
     return 1                                      # a disconnect that ends run(): restart
