@@ -60,10 +60,10 @@ def run(cmds, *texts, **kw):
     async def go():
         for t in texts:
             await cmds.on_message(msg(t, **kw), reply)
-        await asyncio.sleep(0)
-        for task in cmds.tasks:
-            if not task.done():
-                await task
+        if cmds.tasks:                       # confirm/expiry tasks; a 60 s window is not waited out
+            _done, rest = await asyncio.wait(cmds.tasks, timeout=1)
+            for task in rest:
+                task.cancel()
     asyncio.run(go())
     return out
 
