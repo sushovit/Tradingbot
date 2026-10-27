@@ -2072,3 +2072,31 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 ### Decision (CEO 2026-10-25): S53 - NO CHANGE
 
 The live stop and the live daily ladder stay as they are.
+---
+
+## 37. Study: S56 target cap - 1.5 / 2.0 / 2.5 / regime-adaptive vs 3.0 x ATR14 (CEO 2026-10-27)
+
+**S56 (CEO 2026-10-27) - target cap k x ATR14.** 5-minute replay of the live daily signals (momentum + reclaim), 2025-10-14..2026-10-23, 161 symbols, permanent store; live stop (from the fill), live ladder, live time stops; target fill + min(3R, k x ATR14); $5,000, 1% ($50) risk, 25% notional; paired signals. Regime-adaptive: 2.0 x ATR on 722 of 1452 trades (SPY 20-day ATR% below its 1-year median), 3.0 on 730.
+
+| Target cap | Trades | Win % | Target hit % | Expectancy (R of $50) | Capture | Total $ | MaxDD | MaxDD vs live | Standing rule |
+|---|---|---|---|---|---|---|---|---|---|
+| 3.0 x ATR (live) | 1452 | 43.1% | 19.8% | +0.093 | 12% | $+6,774 | 32.3R ($1,617) | 100% | BASE (live) |
+| 1.5 x ATR | 1452 | 54.7% | 45.8% | +0.103 | 19% | $+7,457 | 21.7R ($1,083) | 67% | tie |
+| 2.0 x ATR | 1452 | 47.4% | 33.5% | +0.078 | 13% | $+5,663 | 27.2R ($1,360) | 84% | tie |
+| 2.5 x ATR | 1452 | 44.5% | 26.2% | +0.085 | 12% | $+6,206 | 34.4R ($1,720) | 106% | tie |
+| regime-adaptive 2.0 / 3.0 | 1452 | 45.3% | 26.2% | +0.084 | 12% | $+6,078 | 32.3R ($1,617) | 100% | tie |
+
+**Standing rule not met by any variant - tie, no change.**
+
+**Limits.** Fill at the day's open, as in S50; today's universe (survivorship); IEX bars; signals, not gatekeeper-approved trades; max positions / sector cap / daily breaker not modelled; the SPY ATR% median uses IEX daily bars from 2024-06.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- **No change: no cap meets the standing rule** (expectancy >= live + 0.02R, MaxDD <= 110%, >= 200 trades).
+- **1.5 x ATR is the near miss:** +0.103R vs +0.093R (**+0.010R**, half the bar), win rate 55% vs 43%, target hit 46% vs 20%, capture 19% vs 12%, and MaxDD 21.7R vs 32.3R (**67% of live**). It trades the ladder's occasional big winner for many more banked +1.5 ATR exits.
+- **The effect is not monotonic:** 2.0 x ATR is the worst (+0.078R) and 2.5 x ATR (+0.085R) is also below live - so the 1.5 result is not a smooth trend, which argues against reading too much into its +0.010R.
+- **Regime-adaptive 2.0 / 3.0:** +0.084R (-0.009R), same MaxDD as live. It used 2.0 on 722 of 1,452 trades (low-volatility days) - and 2.0 is the weakest cap, so the regime switch does not help.
+- Capture = sum of R achieved / sum of best R reached (MFE), over trades that went green.
+
