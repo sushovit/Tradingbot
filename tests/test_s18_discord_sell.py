@@ -54,7 +54,7 @@ class Clock:
 def run(cmds, *texts, **kw):
     out = []
 
-    async def reply(text):
+    async def reply(text, buttons=None):
         out.append(text)
 
     async def go():
@@ -95,7 +95,7 @@ def test_sell_prompts_then_yes_queues_the_dashboard_path_and_confirms():
     desk = FakeDesk()
     clock = Clock()
     out = run(make(desk, clock=clock, confirm_s=60), "!sell ibm", "YES")
-    assert out[0].startswith("⚠️ Sell ALL 4 IBM at market? Now $252.95") and "Reply YES within 60 s" in out[0]
+    assert out[0].startswith("⚠️ Sell ALL 4 IBM at market? Now $252.95") and "Press **Yes, sell** within 60 s (or type YES)" in out[0]
     assert "P&L +10.12" in out[0]
     assert desk.queued == ["IBM"]
     assert out[1].startswith("✅ Sell of 4 IBM sent to the worker")
@@ -113,7 +113,7 @@ def test_late_yes_is_refused():
     cmds = make(desk, clock=clock, confirm_s=60)
     out = []
 
-    async def reply(t):
+    async def reply(t, buttons=None):
         out.append(t)
 
     async def go():
@@ -144,7 +144,7 @@ def test_yes_rechecks_the_market_before_selling():
     cmds = make(desk, confirm_s=60)
     out = []
 
-    async def reply(t):
+    async def reply(t, buttons=None):
         out.append(t)
 
     async def go():
@@ -188,3 +188,105 @@ def test_config_requires_token_owner_and_a_channel():
     assert db.config(hook, get=fake_get) == ("t", 111, 333)
     bad_get = lambda url, timeout: (_ for _ in ()).throw(OSError("down"))
     assert "no trading channel" in db.config(hook, get=bad_get)
+
+
+# ----------------------------------------------------------------- [Yes, sell] [Cancel] buttons
+
+def _prompted(desk, confirm_s=60):
+    cmds = make(desk, confirm_s=confirm_s)
+    out, btns = [], {}
+
+    async def reply(text, buttons=None):
+        out.append(text)
+        if buttons:
+            btns.update(buttons)
+    return cmds, out, btns, reply
+
+
+def test_prompt_carries_yes_and_cancel_buttons_and_owner_yes_sells():
+    desk = FakeDesk()
+    cmds, out, btns, reply = _prompted(desk)
+
+    async def go():
+        await cmds.on_message(msg("!sell IBM"), reply)
+        assert set(btns) == {"yes", "no"} and "Press **Yes, sell**" in out[0]
+        assert await btns["yes"](OWNER) == "selling"
+        _done, rest = await asyncio.wait(cmds.tasks, timeout=1)
+        for t in rest:
+            t.cancel()
+    asyncio.run(go())
+    assert desk.queued == ["IBM"] and out[-1].startswith("💰 SOLD IBM")
+
+
+def test_someone_elses_click_does_nothing_and_cancel_cancels():
+    desk = FakeDesk()
+    cmds, out, btns, reply = _prompted(desk)
+
+    async def go():
+        await cmds.on_message(msg("!sell IBM"), reply)
+        assert await btns["yes"](OTHER) == "not_owner"
+        assert await btns["no"](OWNER) == "cancelled"
+        assert await btns["yes"](OWNER) == "expired"          # an old prompt
+        for t in cmds.tasks:
+            t.cancel()
+    asyncio.run(go())
+    assert desk.queued == [] and out[-1] == "Sell of IBM cancelled."
+
+
+def test_button_after_the_window_is_expired():
+    desk, clock = FakeDesk(), Clock()
+    cmds = make(desk, confirm_s=60, clock=clock)
+    btns = {}
+
+    async def reply(text, buttons=None):
+        if buttons:
+            btns.update(buttons)
+
+    async def go():
+        await cmds.on_message(msg("!sell IBM"), reply)
+        clock.t = 61
+        assert await btns["yes"](OWNER) == "expired"
+        for t in cmds.tasks:
+            t.cancel()
+    asyncio.run(go())
+    assert desk.queued == []
+
+
+class FakeResponse:
+    def __init__(self):
+        self.calls = []
+
+    async def send_message(self, text, ephemeral=False):
+        self.calls.append(("send", text, ephemeral))
+
+    async def edit_message(self, **kw):
+        self.calls.append(("edit", kw))
+
+
+def test_discord_view_answers_at_once_and_blocks_other_users():
+    View = db.confirm_view_class()
+    pressed = []
+
+    async def yes(uid):
+        pressed.append(uid)
+        return "selling"
+
+    async def go():
+        view = View({"yes": yes, "no": yes}, OWNER)
+        assert [c.label for c in view.children] == ["Yes, sell", "Cancel"]
+        edits = []
+
+        async def edit(**kw):
+            edits.append(kw)
+        stranger = SimpleNamespace(user=SimpleNamespace(id=OTHER), response=FakeResponse(),
+                                   message=SimpleNamespace(content="prompt", edit=edit))
+        await view._click(stranger, "yes")
+        assert stranger.response.calls == [("send", "Only the owner can do this.", True)]
+        assert pressed == [] and not any(c.disabled for c in view.children)
+        owner = SimpleNamespace(user=SimpleNamespace(id=OWNER), response=FakeResponse(),
+                                message=SimpleNamespace(content="prompt", edit=edit))
+        await view._click(owner, "yes")
+        assert owner.response.calls[0][0] == "edit"          # answered before the sell
+        assert pressed == [OWNER] and all(c.disabled for c in view.children)
+        assert edits[-1]["content"] == "prompt\n**✅ Sell sent**"
+    asyncio.run(go())
