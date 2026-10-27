@@ -188,3 +188,25 @@ def test_s56_low_vol_flag_uses_only_the_prior_close():
         assert flags[days[k]] is expect
         checked += 1
     assert checked == 48 and {flags[d] for d in days[272:]} == {True, False}
+
+
+def test_rule_verdict_edge_and_risk_paths():
+    import study_exit_grid as g
+    base = {"trades": 1452, "exp_r": 0.093, "maxdd_usd": 1617.0}
+    edge = {"trades": 1452, "exp_r": 0.114, "maxdd_usd": 1700.0}
+    risk = {"trades": 1452, "exp_r": 0.103, "maxdd_usd": 1083.0}      # S56 1.5 x ATR
+    assert g.rule_verdict(edge, base) == "ADOPT (edge)"
+    assert g.rule_verdict(risk, base) == "tie"                         # halves not given
+    assert g.rule_verdict(risk, base, [(0.12, 0.10), (0.09, 0.08)]) == "ADOPT (risk)"
+    assert g.rule_verdict(risk, base, [(0.12, 0.10), (0.07, 0.08)]) == "tie"   # loses a half
+    assert g.rule_verdict(dict(risk, maxdd_usd=1300.0), base, [(0.12, 0.1), (0.09, 0.08)]) == "tie"
+    assert g.rule_verdict(dict(risk, exp_r=0.090), base, [(0.12, 0.1), (0.09, 0.08)]) == "tie"
+    assert g.rule_verdict(dict(risk, trades=150), base, [(0.12, 0.1), (0.09, 0.08)]) == "tie"
+
+
+def test_split_halves_at_the_calendar_midpoint():
+    import study_exit_grid as g
+    ts = [{"when": pd.Timestamp(d, tz="America/New_York")} for d in
+          ("2025-10-14", "2026-04-18", "2026-04-19", "2026-10-23")]
+    a, b, mid = g.split_halves(ts, "2025-10-14", "2026-10-23")
+    assert str(mid) == "2026-04-19" and len(a) == 2 and len(b) == 2
