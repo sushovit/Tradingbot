@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PYTHONUTF8</key>
+		<string>1</string>
+		<key>TZ</key>
+		<string>America/New_York</string>
+	</dict>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>Label</key>
+	<string>com.tradingbot.discord_bot</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__REPO__/venv/bin/python</string>
+		<string>__REPO__/discord_bot.py</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>__REPO__/logs/discord_bot.log</string>
+	<key>StandardOutPath</key>
+	<string>__REPO__/logs/discord_bot.log</string>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>WorkingDirectory</key>
+	<string>__REPO__</string>
+</dict>
+</plist>

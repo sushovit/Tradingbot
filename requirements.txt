@@ -10,6 +10,7 @@ pytz
 python-dotenv
 finnhub-python
 discord-webhook
+discord.py>=2.7,<3          # S18 owner Discord commands (discord_bot.py)
 requests
 pytest
 tzdata

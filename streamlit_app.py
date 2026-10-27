@@ -544,10 +544,12 @@ def reconcile_entry_with_broker(state: dict, broker_avg: float,
 
 
 OWNER_CLOSE = "Owner close"
+OWNER_CLOSE_DISCORD = "Owner close (Discord)"    # S18: !sell from Discord
 SELL_COMMAND = "sell_{}.command"
 
 
-def owner_close(broker, positions, ticker, now_et, current_price=None):
+def owner_close(broker, positions, ticker, now_et, current_price=None,
+                reason=OWNER_CLOSE):
     """The owner's SELL (CEO 2026-10-21: the owner's only control). Cancels
     the stop and target legs, sells the whole position at market, journals
     the exit as "Owner close" from the actual fill, clears the state and
@@ -563,18 +565,26 @@ def owner_close(broker, positions, ticker, now_et, current_price=None):
             fallback = state.get("entry_price")
     exit_px, confirmed = confirm_fill(broker, close_order, fallback)
     handle_position_exit(broker, positions, ticker, state, exit_px,
-                         OWNER_CLOSE, now_et,
+                         reason, now_et,
                          broker_order_id=str(getattr(close_order, "id", "")) or None)
     logger.info(f"{ticker}: owner close - sold at ${exit_px:.2f}"
                 + ("" if confirmed else " (fill not confirmed yet)"))
     return exit_px, confirmed
 
 
-def queue_owner_sell(ticker: str) -> str:
-    """Ask the running worker to sell `ticker` at its next cycle."""
+def queue_owner_sell(ticker: str, source: str = "dashboard") -> str:
+    """Ask the running worker to sell `ticker` at its next cycle. The file
+    holds "<source> <time>"; source 'discord' (S18) journals the exit as
+    OWNER_CLOSE_DISCORD."""
     path = SELL_COMMAND.format(ticker)
-    safe_io.atomic_write_text(path, datetime.now(EASTERN_TZ).isoformat())
+    safe_io.atomic_write_text(path, f"{source} {datetime.now(EASTERN_TZ).isoformat()}")
     return path
+
+
+def owner_sell_reason(command_text: str) -> str:
+    """Journal reason for a queued owner sell, from its command file."""
+    return (OWNER_CLOSE_DISCORD if str(command_text or "").strip().lower().startswith("discord")
+            else OWNER_CLOSE)
 
 
 def sell_route(worker_alive: bool, market_open: bool) -> str:
@@ -1197,9 +1207,14 @@ def _worker_loop():
                     # 3) Owner SELL (dashboard button -> sell_<T>.command)
                     manual_sell_command_file = SELL_COMMAND.format(ticker)
                     if os.path.exists(manual_sell_command_file):
+                        try:
+                            with open(manual_sell_command_file, encoding="utf-8") as _f:
+                                _cmd = _f.read()
+                        except OSError:
+                            _cmd = ""
                         os.remove(manual_sell_command_file)
                         owner_close(broker, positions, ticker, now_et,
-                                    current_price)
+                                    current_price, reason=owner_sell_reason(_cmd))
                         status_updates.append(f"{ticker}: SOLD (owner)")
                         continue
 
