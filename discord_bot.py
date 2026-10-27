@@ -139,14 +139,17 @@ class SellDesk:
 # ===================================================================== commands (pure, testable)
 
 def positions_text(rows) -> str:
+    """Two short lines per position - a phone screen is ~35 characters wide,
+    and a 7-column table wrapped into noise there."""
     if not rows:
-        return "No open positions."
-    head = f"{'Ticker':6} {'Qty':>5} {'Entry':>9} {'Now':>9} {'P&L':>9} {'Stop':>9} {'Target':>9}"
-    lines = [head] + [
-        f"{r['ticker']:6} {r['qty']:>5g} {r['entry']:>9.2f} "
-        f"{(r['last'] or 0):>9.2f} {r['pnl']:>+9.2f} "
-        f"{(r['stop'] or 0):>9.2f} {(r['target'] or 0):>9.2f}" for r in rows]
-    return "📊 Open positions\n```\n" + "\n".join(lines) + "\n```"
+        return "📊 No open positions."
+    blocks = []
+    for r in rows:
+        pnl = r["pnl"]
+        blocks.append(f"**{r['ticker']}** {r['qty']:g} sh @ {_money(r['entry'])} → {_money(r['last'])}"
+                      f" · P&L **{'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}**\n"
+                      f"stop {_money(r['stop'])} · target {_money(r['target'])}")
+    return "📊 Open positions\n" + "\n\n".join(blocks)
 
 
 class OwnerCommands:

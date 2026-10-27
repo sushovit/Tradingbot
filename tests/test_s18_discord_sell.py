@@ -3,7 +3,6 @@ sell path. A fake Discord client and a fake desk - no network, no orders."""
 
 import asyncio
 import os
-import re
 from types import SimpleNamespace
 
 import discord_bot as db
@@ -85,10 +84,11 @@ def test_everyone_else_and_other_channels_are_ignored_silently():
 
 def test_positions_table_has_qty_entry_now_pnl_stop_target():
     (out,) = run(make(), "!positions")
-    assert out.startswith("📊 Open positions")
-    for col in ("Qty", "Entry", "Now", "P&L", "Stop", "Target"):
-        assert col in out
-    assert re.search(r"IBM\s+4\s+250\.42\s+252\.95\s+\+10\.12\s+250\.42\s+271\.28", out)
+    assert out == ("📊 Open positions\n"
+                   "**IBM** 4 sh @ $250.42 → $252.95 · P&L **+$10.12**\n"
+                   "stop $250.42 · target $271.28")
+    assert max(len(line) for line in out.splitlines()) <= 60       # readable on a phone
+    assert db.positions_text([]) == "📊 No open positions."
 
 
 def test_sell_prompts_then_yes_queues_the_dashboard_path_and_confirms():
