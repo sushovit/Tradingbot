@@ -364,16 +364,30 @@ def main(argv=None) -> int:
             busy = (now.weekday() < 5 and 9 * 60 + 35 <= m <= 16 * 60 + 25)
             has_open = conn.execute("SELECT count(*) FROM dip_shadow WHERE status=?",
                                     (OPEN,)).fetchone()[0]
-            if busy and (START <= now.date().isoformat() <= LAST_ENTRY or has_open):
+            if busy:
                 data = AlpacaData()
                 from broker import Broker
                 if Broker().is_open_today():
-                    print(update(now, data, conn))
+                    if START <= now.date().isoformat() <= LAST_ENTRY or has_open:
+                        print(update(now, data, conn))
+                    try:                     # S56b: the 1.5 x ATR target twin rides along
+                        import cap_shadow
+                        conn.execute(cap_shadow.SCHEMA)
+                        print(cap_shadow.update(conn, data, now))
+                    except Exception as e:
+                        print(f"cap twin skipped this run: {type(e).__name__}: {e}")
         rs = rows(conn)
+        lines = summary_lines(rs, now.date().isoformat())
+        try:
+            import cap_shadow
+            conn.execute(cap_shadow.SCHEMA)
+            lines.append(cap_shadow.summary_line(cap_shadow.rows(conn)))
+        except Exception:
+            pass
         if a.post:
-            post(summary_lines(rs, now.date().isoformat()))
+            post(lines)
         if a.show or a.post:
-            print("\n".join(summary_lines(rs, now.date().isoformat())))
+            print("\n".join(lines))
     finally:
         conn.close()
     return 0
