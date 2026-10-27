@@ -146,3 +146,16 @@ def test_dip_shadow_has_no_order_path():
     # only the dashboard tab imports it, behind the in-worker guard
     assert len(re.findall(r"import dip_shadow", worker)) == 1
     assert "with tab5:\n    if not desk_config.in_worker():\n        import sqlite3\n        import dip_shadow as _ds" in worker
+
+
+def test_window_starts_2026_10_27_and_ends_2026_11_06(tmp_path):
+    assert (ds.START, ds.LAST_ENTRY) == ("2026-10-27", "2026-11-06")
+    daily = {"AAA": pd.DataFrame({"close": [100.0]}, index=pd.DatetimeIndex(
+        ["2026-10-26"], tz="America/New_York"))}
+    rows = [(100.2, 100.3, 99.8, 99.9)] * 3 + [(99.0, 99.1, 97.6, 98.1)]
+    data = FakeData(daily, {"AAA": _day("2026-10-27", rows)})
+    conn = ds.connect(str(tmp_path / "j.db"))
+    now = ET.localize(pd.Timestamp("2026-10-27 09:50").to_pydatetime())
+    assert ds.update(now, data, conn, symbols=["AAA"])["new"] == 1
+    before = ET.localize(pd.Timestamp("2026-10-26 09:50").to_pydatetime())
+    assert ds.update(before, data, ds.connect(str(tmp_path / "k.db")), symbols=["AAA"])["new"] == 0

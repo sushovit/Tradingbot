@@ -6,7 +6,7 @@ code, the worker never imports it, and it writes only its own journal table
 (dip_shadow, source='dip_shadow') - never `decisions`/`trades`, so no trade
 statistic, goal, review or the gatekeeper ever sees these rows.
 
-The rule (entries 2026-10-28 .. 2026-11-06, regular session, IEX 5-minute bars):
+The rule (entries 2026-10-27 .. 2026-11-06, regular session, IEX 5-minute bars):
   * universe: the scanner universe, prior close >= $50;
   * the day's open within +-1% of the prior close;
   * the FIRST touch of prior close - 2% in a bar starting before 11:00 ET
@@ -32,7 +32,7 @@ import sys
 from datetime import datetime, timedelta
 
 ET_NAME = "America/New_York"
-START, LAST_ENTRY = "2026-10-28", "2026-11-06"
+START, LAST_ENTRY = "2026-10-27", "2026-11-06"   # CEO 2026-10-27: start today
 MIN_PRICE, OPEN_BAND, DIP = 50.0, 0.01, 0.02
 CUTOFF_MIN = 11 * 60                 # touch bar must START before 11:00 ET
 CONTROL_MIN = 9 * 60 + 45            # control: the 09:45 bar's open
