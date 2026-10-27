@@ -30,7 +30,7 @@ def test_thresholds_current_minus_5_minus_10_and_regime():
 def test_settings_follow_the_live_config():
     st = s.s33_settings()
     assert st["adx"] == 30 and st["atr_mult"] == 2.0 and st["rr"] == 3.0
-    assert st["trail_atr"] == 2.5 and st["rsi"] == 55 and st["cap_atr"] == 3.0
+    assert st["trail_atr"] == 2.5 and st["rsi"] == 55 and st["cap_atr"] == 1.5   # agenda 37
 
 
 def test_initial_stop_stands_until_plus_1r():
