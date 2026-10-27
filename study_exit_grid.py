@@ -3547,6 +3547,31 @@ def s56_stats(trades):
     return st
 
 
+def rule_verdict(st, base, halves=None):
+    """The standing rule (CEO 2026-10-23, + risk path 2026-10-27).
+    edge: exp >= base + 0.02R AND MaxDD <= 110% AND >= 200 trades.
+    risk: exp >= base AND MaxDD <= 75% AND >= 200 trades AND the variant's
+    expectancy beats base in BOTH halves (`halves` = [(variant, base) exp_r]).
+    Returns 'ADOPT (edge)', 'ADOPT (risk)' or 'tie'."""
+    if st is None or base is None or st["trades"] < 200:
+        return "tie"
+    if st["exp_r"] >= base["exp_r"] + 0.02 and st["maxdd_usd"] <= 1.10 * base["maxdd_usd"]:
+        return "ADOPT (edge)"
+    if (st["exp_r"] >= base["exp_r"] and st["maxdd_usd"] <= 0.75 * base["maxdd_usd"]
+            and halves and len(halves) == 2
+            and all(v is not None and b is not None and v > b for v, b in halves)):
+        return "ADOPT (risk)"
+    return "tie"
+
+
+def split_halves(trades, start, end):
+    """(first, second) by entry date around the calendar midpoint of start..end."""
+    mid = (pd.Timestamp(start) + (pd.Timestamp(end) - pd.Timestamp(start)) / 2).date()
+    first = [t for t in trades if pd.Timestamp(t["when"]).date() < mid]
+    second = [t for t in trades if pd.Timestamp(t["when"]).date() >= mid]
+    return first, second, mid
+
+
 def s56_main(universe_file="universe_today.json", start="2025-10-14"):
     import json
     with open(universe_file, encoding="utf-8") as f:
@@ -3557,6 +3582,10 @@ def s56_main(universe_file="universe_today.json", start="2025-10-14"):
     res, used = s56_run(signals, frames, low_vol)
     stats = {k: s56_stats(v) for k, v in res.items()}
     base = stats[S56_BASE]
+    halves = {}
+    for label, _k in S56_CAPS:
+        a, b, mid = split_halves(res[label], start, S53_END)
+        halves[label] = (s56_stats(a), s56_stats(b))
     rows = []
     for label, _k in S56_CAPS:
         st = stats[label]
@@ -3564,7 +3593,10 @@ def s56_main(universe_file="universe_today.json", start="2025-10-14"):
                      f"{st['exp_r']:+.3f}", f"{100 * st['capture']:.0f}%" if st["capture"] is not None else "-",
                      f"${st['total_usd']:+,.0f}", f"{st['maxdd_r']:.1f}R (${st['maxdd_usd']:,.0f})",
                      f"{100 * st['maxdd_usd'] / base['maxdd_usd']:.0f}%",
-                     "BASE (live)" if label == S56_BASE else s53_verdict(st, base)])
+                     "BASE (live)" if label == S56_BASE else rule_verdict(
+                         st, base, [(halves[label][h]["exp_r"] if halves[label][h] else None,
+                                     halves[S56_BASE][h]["exp_r"] if halves[S56_BASE][h] else None)
+                                    for h in (0, 1)])])
     n_regime = sum(used.values())
     lines = [f"**S56 (CEO 2026-10-27) - target cap k x ATR14.** 5-minute replay of the live "
              f"daily signals (momentum + reclaim), {start}..{S53_END}, {len(frames)} symbols, "
@@ -3576,15 +3608,22 @@ def s56_main(universe_file="universe_today.json", start="2025-10-14"):
              + ".", ""]
     lines += sc.table(["Target cap", "Trades", "Win %", "Target hit %", "Expectancy (R of $50)",
                        "Capture", "Total $", "MaxDD", "MaxDD vs live", "Standing rule"], rows)
-    winners = [r for r in rows if r[-1] == "ADOPT"]
-    lines += ["", ("**Standing rule met by:** " + "; ".join(f"{r[0]} ({r[4]})" for r in winners))
+    hrows = []
+    for label, _k in S56_CAPS:
+        h1, h2 = halves[label]
+        hrows.append([label] + [f"{h['trades']} / {h['exp_r']:+.3f} / ${h['maxdd_usd']:,.0f}"
+                                if h else "-" for h in (h1, h2)])
+    lines += ["", f"*Both halves (entries before / from {mid}): trades / expectancy (R of $50) / MaxDD*", ""]
+    lines += sc.table(["Target cap", f"First half (< {mid})", f"Second half (>= {mid})"], hrows)
+    winners = [r for r in rows if str(r[-1]).startswith("ADOPT")]
+    lines += ["", ("**Standing rule met by:** " + "; ".join(f"{r[0]} ({r[-1]})" for r in winners))
               if winners else "**Standing rule not met by any variant - tie, no change.**",
               "", "**Limits.** Fill at the day's open, as in S50; "
               "today's universe (survivorship); IEX bars; signals, not "
               "gatekeeper-approved trades; max positions / sector cap / daily breaker not "
               "modelled; the SPY ATR% median uses IEX daily bars from 2024-06.", "", sc.UPPER_BOUND]
     print("\n".join(lines))
-    return lines, stats
+    return lines, stats, halves
 
 
 # ===================================================================== S54

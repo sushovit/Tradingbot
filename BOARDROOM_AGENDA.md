@@ -8,6 +8,10 @@ decision; the evidence is recorded so the decision can be made on numbers.
 > **expectancy >= current + 0.02R**, **AND MaxDD <= 110% of current**, **AND
 > it is measured over >= 200 trades.** Anything less is a **tie -> no change.**
 > This replaces the per-study rules from now on.
+>
+> **Or a risk improvement (CEO 2026-10-27):** **expectancy >= current**, **AND
+> MaxDD <= 75% of current**, **AND >= 200 trades**, **AND the variant beats
+> current on expectancy in BOTH halves of the replay period.**
 
 ---
 
