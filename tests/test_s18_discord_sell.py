@@ -290,3 +290,24 @@ def test_discord_view_answers_at_once_and_blocks_other_users():
         assert pressed == [OWNER] and all(c.disabled for c in view.children)
         assert edits[-1]["content"] == "prompt\n**✅ Sell sent**"
     asyncio.run(go())
+
+
+def test_selltest_shows_the_buttons_any_hour_and_never_sells():
+    desk = FakeDesk(open_=False, alive=False, tracked=False)        # night, no worker
+    cmds, out, btns, reply = _prompted(desk)
+
+    async def go():
+        await cmds.on_message(msg("!selltest ibm"), reply)
+        assert out[0].startswith("🧪 TEST (nothing will be sold) - ⚠️ Sell ALL 4 IBM")
+        assert set(btns) == {"yes", "no"}
+        assert await btns["yes"](OWNER) == "selling"
+        await cmds.on_message(msg("!selltest IBM"), reply)
+        await cmds.on_message(msg("YES"), reply)                    # typed YES too
+        for t in cmds.tasks:
+            t.cancel()
+    asyncio.run(go())
+    assert desk.queued == []
+    assert out[1].startswith("🧪 TEST only - this WOULD have sold 4 IBM")
+    assert out[-1].startswith("🧪 TEST only")
+    assert run(make(FakeDesk()), "!selltest AAPL") == ["⛔ No open position in AAPL."]
+    assert run(make(FakeDesk()), "!selltest IBM", author=OTHER) == []
