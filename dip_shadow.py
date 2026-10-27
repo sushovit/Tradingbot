@@ -370,7 +370,7 @@ def main(argv=None) -> int:
                 if Broker().is_open_today():
                     if START <= now.date().isoformat() <= LAST_ENTRY or has_open:
                         print(update(now, data, conn))
-                    try:                     # S56b: the 1.5 x ATR target twin rides along
+                    try:                     # S56b: the old 3.0 x ATR cap twin rides along
                         import cap_shadow
                         conn.execute(cap_shadow.SCHEMA)
                         print(cap_shadow.update(conn, data, now))

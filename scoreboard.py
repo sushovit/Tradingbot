@@ -210,25 +210,68 @@ def shadow_lines(split):
     return lines
 
 
+def attach_cap3(rows, conn):
+    """CEO 2026-10-27: the 3.0CAP column - each trade's result with the OLD
+    3.0 x ATR target (the S56b paper twin, cap_shadow). Trades entered while
+    3.0 was the live cap (before cap_shadow.START) are the same trade: '='."""
+    import cap_shadow
+    twins = cap_shadow.by_entry(conn)
+    for r in rows:
+        t = twins.get((r["ticker"], r["buy_ts"]))
+        if t is not None:
+            r["cap3"], r["cap3_mark"] = t["twin_pnl"], ("*" if t["status"] in
+                                                       (cap_shadow.OPEN, cap_shadow.RUNNING) else "")
+        elif r["buy_ts"][:10] < cap_shadow.START:
+            r["cap3"], r["cap3_mark"] = r["live"], "="
+        else:
+            r["cap3"], r["cap3_mark"] = None, ""
+    return rows
+
+
+def cap3_lines(rows):
+    import cap_shadow
+    new = [r for r in rows if r.get("cap3") is not None and r.get("cap3_mark") != "="]
+    if not any("cap3" in r for r in rows):
+        return []
+    done = sum(1 for r in new if r["status"] == "closed" and r.get("cap3_mark") != "*")
+    diff = sum((r["cap3"] or 0) - (r["live"] or 0) for r in new)
+    return ["3.0CAP = same trade, OLD 3.0 x ATR target",
+            "(S56b paper twin; = : 3.0 was live then)",
+            f"3.0 cap - live since {cap_shadow.START[5:]}: {_m(diff)} "
+            f"({len(new)} tr)",
+            (f"3.0 cap review: DUE ({done} closed)" if done >= cap_shadow.REVIEW_AFTER
+             else f"3.0 cap review at {done}/{cap_shadow.REVIEW_AFTER} closed")]
+
+
 def table_lines(rows, totals, day, shadow=None):
-    w = trade_table.WIDTH
-    head = (f"{'TICK':<5} {'IN':<5} {'S':<1} {'LIVE $':>8} {'RULE $':>8} "
-            f"{'OWNER $':>8} {'DIFF':>8}")
+    cap3 = any("cap3" in r for r in rows)
+    w = max(trade_table.WIDTH, 54) if cap3 else trade_table.WIDTH
+    mw = 7 if cap3 else 8
+    head = (f"{'TICK':<5} {'IN':<5} {'S':<1} {'LIVE $':>{mw}} {'RULE $':>{mw}} "
+            f"{'OWNER $':>{mw}} {'DIFF':>{mw}}" + (f" {'3.0CAP':>{mw}}" if cap3 else ""))
     lines = [head, "-" * w]
     for r in rows:
         tk = r["ticker"][:4] + ("†" if r["bug"] else "")
+        c3 = ""
+        if cap3:
+            c3 = " " + (("=" if r.get("cap3_mark") == "=" else
+                         _m(r.get("cap3")) + r.get("cap3_mark", ""))).rjust(mw)
         lines.append(f"{tk:<5} {r['buy_ts'][5:10]:<5} {r['status'][0].upper():<1} "
-                     f"{_m(r['live']):>8} "
-                     f"{(_m(r['rule']) + ('*' if r['rule_open'] else '')):>8} "
-                     f"{(_m(r['owner']) + ('*' if r['owner_open'] else '')):>8} "
-                     f"{_m(r['diff']):>8}"[:w])
+                     f"{_m(r['live']):>{mw}} "
+                     f"{(_m(r['rule']) + ('*' if r['rule_open'] else '')):>{mw}} "
+                     f"{(_m(r['owner']) + ('*' if r['owner_open'] else '')):>{mw}} "
+                     f"{_m(r['diff']):>{mw}}{c3}"[:w])
     if not rows:
         lines.append("(no daily trades on the account yet)")
     lines.append("-" * w)
-    lines.append(f"{'TOTAL':<13} {_m(totals['live']):>8} {_m(totals['rule']):>8} "
-                 f"{_m(totals['owner']):>8} {_m(totals['owner'] - totals['rule']):>8}"[:w])
+    c3t = ""
+    if cap3:
+        c3t = f" {_m(sum((r.get('cap3') or 0) for r in rows)):>{mw}}"
+    lines.append(f"{'TOTAL':<13} {_m(totals['live']):>{mw}} {_m(totals['rule']):>{mw}} "
+                 f"{_m(totals['owner']):>{mw}} {_m(totals['owner'] - totals['rule']):>{mw}}{c3t}"[:w])
     lines.append("DIFF = OWNER - RULE (rules vs rules);")
     lines.append("LIVE = what the account made (reference).")
+    lines += cap3_lines(rows)
     lines.append(f"Closed: {totals['closed_n']}  owner - rule "
                  f"{_m(totals['closed_diff'])}")
     if any(r["rule_open"] or r["owner_open"] for r in rows):
@@ -291,6 +334,10 @@ def main(argv=None) -> int:
     try:
         broker = Broker()
         rows, totals = build(day, conn, broker, config, positions)
+        try:
+            attach_cap3(rows, conn)                  # CEO 2026-10-27: 3.0CAP column
+        except Exception as e:
+            print(f"3.0CAP column skipped: {e}")
         try:
             split = shadow_split(conn, trade_table.live_open_positions(broker))
         except Exception:

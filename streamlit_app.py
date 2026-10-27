@@ -2703,13 +2703,15 @@ with tab5:
                 "Control 09:45": r["control_px"], "Control %": r["control_ret_pct"],
             } for r in _rows]), hide_index=True, width='stretch')
 
-        # S56b: the 1.5 x ATR target twin of every live daily position (paper)
+        # S56b: the OLD 3.0 x ATR cap twin of every live daily position (paper)
         import cap_shadow as _cs
-        st.subheader("🎯 1.5×ATR target twin (S56b)")
-        st.caption("Paper only. Each live daily position since 2026-10-27 has a twin that "
-                   "differs only in its target: fill + min(3R, 1.5×ATR14) instead of the live "
-                   "3×ATR cap. It sells at that target if touched first, otherwise exits with "
-                   "the live trade. Same shares, so the $ difference is the cap's effect.")
+        st.subheader("🎯 Old 3.0×ATR cap twin (S56b)")
+        st.caption(f"Paper only. The live target cap is 1.5×ATR14 for entries from {_cs.START} "
+                   f"(agenda 37). Each such position has a twin with the OLD target, fill + "
+                   f"min(3R, 3.0×ATR14): when the live trade sells at its 1.5×ATR target the twin "
+                   f"keeps running under the live stop, ladder and time stops; otherwise both "
+                   f"exit together. Same shares, so the $ difference is the cap's effect. "
+                   f"CEO review after {_cs.REVIEW_AFTER} closed trades.")
         try:
             _conn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
             _conn.row_factory = sqlite3.Row
@@ -2723,9 +2725,10 @@ with tab5:
             st.write(_cs.summary_line(_crows))
             st.dataframe(pd.DataFrame([{
                 "Ticker": r["ticker"], "Entry": str(r["entry_ts"])[:16], "Fill": r["fill"],
-                "Qty": r["qty"], "Live target": r["live_target"], "Twin target": r["twin_target"],
-                "Status": r["status"], "Live P&L": r["live_pnl"], "Twin P&L": r["twin_pnl"],
-                "Twin exit": r["twin_exit_px"],
+                "Qty": r["qty"], "Live target (1.5)": r["live_target"],
+                "3.0 target": r["twin_target"], "Status": r["status"],
+                "Live P&L": r["live_pnl"], "3.0 cap P&L": r["twin_pnl"],
+                "3.0 exit": r["twin_exit_px"],
             } for r in _crows]), hide_index=True, width='stretch')
 
 if is_running or intern_run_active:
