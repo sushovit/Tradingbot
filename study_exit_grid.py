@@ -3133,16 +3133,25 @@ S53_BASE = (S53_STOPS[1], S53_HOLDS[2][0])
 
 
 def simulate_hold(m5, daily_close, atr_day, entry_day, entry, stop, target, steps,
-                  max_days=None):
+                  max_days=None, start_stop=None, hc0=None, mfe0=0.0, sessions_before=0,
+                  entry_date=None, continuing=False):
     """simulate_with_exit plus a forced exit at the 15:55 bar's open of
-    session `max_days` (None = the live day-5/day-10 time stops only)."""
+    session `max_days` (None = the live day-5/day-10 time stops only).
+
+    S56b continuation (CEO 2026-10-27): `continuing=True` resumes a trade
+    already in progress at the first bar of `m5` - its stop `start_stop`,
+    highest qualifying close `hc0`, MFE `mfe0`, `sessions_before` sessions
+    since `entry_date`; `stop` stays the INITIAL stop (it defines R)."""
     risk = entry - stop
     bars = m5[m5.index.normalize() >= pd.Timestamp(entry_day).tz_convert(ET).normalize()]
     if bars.empty:
         return None
     days = sorted({t.date() for t in bars.index})
-    day_no = {d: i + 1 for i, d in enumerate(days)}
-    live, hc, mfe, first, entry_date = stop, entry, 0.0, True, days[0]
+    day_no = {d: i + 1 + sessions_before for i, d in enumerate(days)}
+    live = stop if start_stop is None else max(stop, start_stop)
+    hc = entry if hc0 is None else max(entry, hc0)
+    mfe, first = mfe0, not continuing
+    entry_date = entry_date or days[0]
     for ts, b in bars.iterrows():
         o, h, l, c = (float(b["open"]), float(b["high"]), float(b["low"]), float(b["close"]))
         d = ts.date()

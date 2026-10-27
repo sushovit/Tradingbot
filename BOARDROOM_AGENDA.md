@@ -2125,3 +2125,9 @@ Re-run 2026-10-27 with both halves (split at 2026-04-19) under the new risk path
 **Live from 2026-10-28:** `exits.target_cap_atr` 3.0 -> **1.5** (target = fill + min(3R, 1.5 x ATR14)). It applies to NEW entries only: a position already capped (target_capped set) keeps its target. No positions were open at the change (IBM stopped 2026-10-27 10:19).
 
 The S56b paper twin (1.5 x ATR vs live) now matches live for new entries; retire it or flip it to show the old 3.0 cap - CEO to decide.
+
+### Follow-up (CEO 2026-10-27): the S56b twin keeps the OLD 3.0 x ATR cap
+
+The paper twin now shows what keeping 3.0 x ATR would have made on every new entry from 2026-10-28: when the live trade sells at its 1.5 x ATR target, the twin keeps running under the live stop, ladder and time stops (the S56 replay simulator, resumed from the live exit); otherwise both exit together. Shown in the dashboard's 🧪 tab, the 16:20 Discord line and a **3.0CAP** column in the weekly scoreboard. **CEO review after 20 closed trades** (the 16:20 line and the scoreboard flag REVIEW DUE).
+
+Re-run 2026-10-27 evening with the 10-26 / 10-27 bars added to the store (1,464 trades): 1.5 x ATR +0.105R vs +0.095R, MaxDD 67%, halves +0.113 vs +0.104 and +0.098 vs +0.087 - the decision stands.
