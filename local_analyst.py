@@ -222,7 +222,8 @@ def build_user_prompt(ticker, df20, ema_spread_pct, volume_trend,
                       crossover_count, dist_to_resistance_pct, entry_price,
                       stop_price, target_price, rr_ratio, interval_mins,
                       fast_ema, slow_ema, news_headlines,
-                      setup_name="trend_continuation", setup_description=None):
+                      setup_name="trend_continuation", setup_description=None,
+                      event_context=None):
     """The exact gatekeeper user prompt the shadow model sees - one place,
     shared by the live call and the S28 fine-tune export."""
     required_cols = ['open', 'high', 'low', 'close', 'volume',
@@ -253,6 +254,7 @@ def build_user_prompt(ticker, df20, ema_spread_pct, volume_trend,
         news_str=news_str,
         setup_name=setup_name,
         setup_description=setup_description,
+        event_context=event_context,
     )
     return user_prompt
 
@@ -276,6 +278,7 @@ def get_gatekeeper_decision(
     setup_description: str = None,
     model: str = None,
     max_retries: int = 3,
+    event_context: str = None,
 ) -> dict:
     """Same contract as claude_integration.get_gatekeeper_decision.
     `model` overrides the shadow model (the S28 replay compares two)."""
@@ -290,7 +293,7 @@ def get_gatekeeper_decision(
         stop_price=stop_price, target_price=target_price, rr_ratio=rr_ratio,
         interval_mins=interval_mins, fast_ema=fast_ema, slow_ema=slow_ema,
         news_headlines=news_headlines, setup_name=setup_name,
-        setup_description=setup_description)
+        setup_description=setup_description, event_context=event_context)
 
     last_err = None
     for attempt in range(max_retries):

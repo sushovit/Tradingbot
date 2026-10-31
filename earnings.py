@@ -139,6 +139,8 @@ def reset_cache():
         _failed.clear()
         _upcoming_cache.clear()
         _upcoming_failed.clear()
+        _range_cache.clear()
+        _range_failed.clear()
 
 
 # --- Upcoming earnings, for the daily-position exit (S25) -------------------
@@ -203,3 +205,49 @@ def reports_within_one_session(ticker: str, asof: datetime.date = None,
         if day == nxt:
             return True
     return False
+
+
+# --- Date-range calendar (CEO 2026-10-31, agenda 39) -------------------------
+# The earnings-gap cooldown needs reports up to ~6 weeks back and the
+# gatekeeper's "earnings-ahead" group the next two weeks. One market-wide call
+# per (start, end) window, cached; a failed window is not retried that day.
+_range_cache = {}        # {(start_iso, end_iso): {SYMBOL: [date_iso, ...]}}
+_range_failed = set()
+
+
+def calendar_range(start: datetime.date, end: datetime.date, client=None):
+    """{SYMBOL: [date iso, ...]} for start..end inclusive, or None if the
+    calendar could not be read (callers decide their fail policy)."""
+    key = (start.isoformat(), end.isoformat())
+    with _lock:
+        if key in _range_cache:
+            return _range_cache[key]
+        if key in _range_failed:
+            return None
+    try:
+        client = client or _client()
+        if client is None:
+            raise RuntimeError("no Finnhub client (missing package or API key)")
+        payload = client.earnings_calendar(_from=key[0], to=key[1], symbol="")
+        out = {}
+        for row in (payload or {}).get("earningsCalendar") or []:
+            sym = str(row.get("symbol") or "").upper()
+            day = str(row.get("date") or "")[:10]
+            if sym and day and day not in out.setdefault(sym, []):
+                out[sym].append(day)
+    except Exception as e:
+        logger.warning(f"Earnings calendar range {key} unavailable: {e}")
+        with _lock:
+            _range_failed.add(key)
+        return None
+    with _lock:
+        _range_cache[key] = out
+    return out
+
+
+def dates_for(ticker: str, start: datetime.date, end: datetime.date, client=None):
+    """Sorted earnings dates of `ticker` in start..end, or None (unknown)."""
+    data = calendar_range(start, end, client=client)
+    if data is None:
+        return None
+    return sorted(data.get(str(ticker or "").upper(), []))

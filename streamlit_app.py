@@ -29,6 +29,7 @@ from claude_integration import (
 import journal
 import prompts
 import trade_alerts
+import event_risk
 import risk
 import sectors
 import analyst
@@ -543,6 +544,44 @@ def reconcile_entry_with_broker(state: dict, broker_avg: float,
     return None
 
 
+def spy_gate_line(regime: dict, now_et) -> str:
+    """CEO 2026-10-31: the SPY 20-day EMA gate state, posted once a session."""
+    state = ("OPEN - SPY above its 20-day EMA: all setups may enter" if regime["trending"]
+             else "CLOSED - SPY below its 20-day EMA: momentum entries blocked; "
+                  "reclaims still allowed (Rule #5)")
+    return (f"🧭 SPY 20-day EMA gate {now_et:%a %m-%d %H:%M} ET: {state} · close "
+            f"{regime['spy_close']:.2f} vs EMA {regime['ema20d']:.2f} (as of {regime['as_of']})")
+
+
+def earnings_gap_state_for(ticker, daily, today, config):
+    """(event_risk.earnings_gap_state(...), the stock's earnings dates over the
+    last 45 days or None if the calendar is unknown). One calendar call a day."""
+    import earnings
+    past = earnings.dates_for(ticker, today - timedelta(days=45), today)
+    return event_risk.earnings_gap_state(daily, past, today, config), past
+
+
+def gatekeeper_event_context(ticker, setup_name, daily, past_dates, today, config,
+                             risk_profile):
+    """(EVENT CONTEXT text for the gatekeeper prompt, group labels). The hold
+    is max_hold_days sessions for a daily setup, today for an intraday one."""
+    import earnings
+    import trade_table
+    hold = (int(position_mgmt.daily_exit_params(risk_profile)["max_hold_days"])
+            if trade_table.is_daily_setup(setup_name, config) else 0)
+    end = event_risk.add_sessions(today, hold)
+    upcoming = earnings.dates_for(ticker, today, end)
+    groups = event_risk.stock_groups(daily, today, past_dates, upcoming, hold)
+    own = next((d for d in (upcoming or []) if today.isoformat() <= d <= end.isoformat()), None)
+    if upcoming is None:
+        own = "unknown (earnings calendar unavailable)"
+    w = event_risk.event_window(config, today)
+    note = (f"Event-window sizing active: risk {w['risk_per_trade_pct']}% per trade "
+            f"({w.get('why', '')})" if w else None)
+    return (event_risk.context_text(groups, event_risk.events_in_hold(config, today, hold),
+                                    own, note), groups)
+
+
 OWNER_CLOSE = "Owner close"
 OWNER_CLOSE_DISCORD = "Owner close (Discord)"    # S18: !sell from Discord
 SELL_COMMAND = "sell_{}.command"
@@ -847,6 +886,7 @@ def _worker_loop():
     spy_regime_cache = {}          # {'fetched_on': ET date, 'regime': dict}
     gatekeeper_errors = {}         # (ticker, setup, bar) -> [count, next_retry_ts]
     gatekeeper_alerted = set()     # keys we've already Discord-alerted about
+    spy_gate_posted = set()        # CEO 2026-10-31: session dates the SPY gate was posted
     gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
                                    # never re-ask about the same signal bar (launch sessions
                                    # burned 60+ Claude calls re-asking about one XOM bar)
@@ -985,6 +1025,16 @@ def _worker_loop():
                 # setups are blocked rather than waved through.
                 is_market_bullish = False
         spy_evidence = daily_eval.regime_details(spy_regime)
+        # CEO 2026-10-31 (agenda 39): the SPY 20-day EMA gate state on Discord
+        # once per session, at the first cycle at/after 09:30 ET.
+        if (use_spy_filter and spy_regime is not None and now_et.date() not in spy_gate_posted
+                and (now_et.hour, now_et.minute) >= (9, 30)):
+            spy_gate_posted.add(now_et.date())
+            try:
+                if trade_alerts.enabled("spy_gate", config):
+                    __import__("alerts").post_async(spy_gate_line(spy_regime, now_et))
+            except Exception as e:
+                logger.warning(f"SPY gate post skipped: {e}")
 
         # --- Market data from Alpaca (replaces yfinance) ---
         try:
@@ -1494,6 +1544,17 @@ def _worker_loop():
                                   _sector_block)
                 status_updates.append(f"{ticker}: Pass (sector_cap)")
                 continue
+            # CEO 2026-10-31 (agenda 39): earnings-gap cooldown - a post-earnings
+            # gap <= -8% blocks new entries for 3 sessions, then reclaim only.
+            _eg_state, _eg_past = earnings_gap_state_for(ticker, daily_bars.get(ticker),
+                                                         now_et.date(), config)
+            _eg_block = event_risk.earnings_gap_block(signal.setup_name, _eg_state)
+            if _eg_block:
+                journal_pass_once(ticker, signal.setup_name, _eg_block,
+                                  f"earnings gap {_eg_state[2]:+.1f}% on {_eg_state[1]} "
+                                  f"(session {_eg_state[3]})")
+                status_updates.append(f"{ticker}: Pass ({_eg_block})")
+                continue
 
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,
@@ -1536,6 +1597,11 @@ def _worker_loop():
                     gk_df = signal.extras.get("df", df)
                     gk_kwargs = build_gatekeeper_kwargs(signal, gk_df, risk_profile,
                                                         interval_mins, news_headlines)
+                    # CEO 2026-10-31 (agenda 39): group + events inside the hold
+                    _ev_ctx, _ev_groups = gatekeeper_event_context(
+                        ticker, signal.setup_name, daily_bars.get(ticker), _eg_past,
+                        now_et.date(), config, risk_profile)
+                    gk_kwargs["event_context"] = _ev_ctx
                     decision_context = {
                         "setup": signal.setup_name, "entry": signal.entry,
                         "stop": signal.stop, "target": signal.target,
@@ -1544,6 +1610,7 @@ def _worker_loop():
                         # volume, and what the shortfall was. Without this the
                         # band's effect on approval rate is unmeasurable.
                         "soft_volume": bool(signal.extras.get("soft_volume")),
+                        "groups": _ev_groups, "event_context": _ev_ctx,
                         "volume_ratio": signal.extras.get("volume_ratio"),
                     }
                     verdict, decision_id = analyst.get_verdict(
@@ -1607,7 +1674,9 @@ def _worker_loop():
             # bounded by concurrency, not by size — half-size probation
             # sized wide-stop setups to zero on a $2,000 cap and would have
             # biased the 20-trade sample toward tight stops.
-            base_risk_pct = risk_profile['risk_per_trade_pct']
+            # CEO 2026-10-31 (agenda 39): event-window sizing (never raises risk)
+            base_risk_pct = event_risk.event_window_risk_pct(
+                risk_profile['risk_per_trade_pct'], config, now_et.date())
             try:
                 live_n = journal.live_entry_count(
                     signal.setup_name,

@@ -3635,6 +3635,123 @@ def s56_main(universe_file="universe_today.json", start="2025-10-14"):
     return lines, stats, halves
 
 
+# ===================================================================== S58
+# CEO 2026-10-31 (agenda 39): the earnings-gap cooldown (event_risk) replayed
+# on the permanent store vs the CURRENT live rule (stop from the fill, target
+# fill + min(3R, live cap x ATR14) - 1.5 since 2026-10-28 - live ladder and
+# time stops). Historical report dates from yfinance (data/earnings_dates_yf.json;
+# the Finnhub free calendar only reaches back ~1 month) - study only, never live.
+# Each variant is its own pass (blocked signals leave the book; one position
+# per symbol at a time). Standing rule incl. the both-halves risk path.
+
+S58_VARIANTS = (("current (no cooldown)", None), ("cooldown 3 + reclaim-only 7 (live)", 7),
+                ("cooldown 3, no reclaim-only", 0), ("cooldown 3 + reclaim-only 17", 17))
+
+
+def s58_run(signals, frames, earn, reclaim_only):
+    import event_risk as er
+    import risk as _risk
+    params = dict(pm.r_atr_params(_live_profile()))
+    steps = [tuple(x) for x in params["steps"]]
+    cap = pm.target_cap_atr(_live_config())
+    cfg = {"earnings_gap_cooldown": {"enabled": reclaim_only is not None, "gap_pct": -8.0,
+                                     "block_sessions": 3,
+                                     "reclaim_only_sessions": reclaim_only or 0}}
+    trades, blocked, busy = [], [], {}
+    for setup, sym, day, fill, structural in sorted(signals, key=lambda x: x[2]):
+        if sym in busy and day.date() <= busy[sym]:
+            continue
+        m5, daily = frames[sym]
+        if reclaim_only is not None:
+            st = er.earnings_gap_state(daily, earn.get(sym, []), day.date(), cfg)
+            why = er.earnings_gap_block(setup, st)
+            if why:
+                blocked.append({"sym": sym, "day": day.date(), "setup": setup, "why": why,
+                                "gap": st[2]})
+                continue
+        atrs = atr_by_day(daily)
+        atr = atrs.get(day.date())
+        if not atr:
+            continue
+        stop = pm.initial_stop(fill, structural, atr, params)
+        if stop is None or stop >= fill:
+            continue
+        shares = _risk.position_size(S50_EQUITY, S50_RISK_PCT, fill, stop, position_cap_pct=S50_CAP)
+        if shares < 1:
+            continue
+        target = pm.capped_target(fill, stop, atr, cap, 3.0)
+        closes = {pd.Timestamp(i).date(): float(v) for i, v in daily["close"].items()}
+        res = simulate_hold(m5, closes, atrs, day, fill, stop, target, steps, None)
+        if res is None:
+            continue
+        r, why, mfe, xts = res
+        risk_usd = shares * (fill - stop)
+        trades.append({"setup": setup, "sym": sym, "when": day, "r": r, "mfe_r": mfe,
+                       "pnl": r * risk_usd, "risk_usd": risk_usd, "why": why})
+        busy[sym] = xts.date()
+    return trades, blocked
+
+
+def s58_main(universe_file="universe_today.json", start="2025-10-14"):
+    import json
+    import bars_store
+    with open(universe_file, encoding="utf-8") as f:
+        symbols = [c["symbol"] for c in json.load(f).get("candidates", [])
+                   if c.get("symbol") != "SPY"]
+    with open(os.path.join(bars_store.repo_root(), "data", "earnings_dates_yf.json"),
+              encoding="utf-8") as f:
+        earn = json.load(f)
+    signals, frames = s34_signals(symbols, start=start, setups=S50_SETUPS)
+    end = max(m5.index[-1] for m5, _ in frames.values()).date().isoformat()
+    runs = {label: s58_run(signals, frames, earn, ro) for label, ro in S58_VARIANTS}
+    base_label = S58_VARIANTS[0][0]
+    base_trades = runs[base_label][0]
+    stats = {k: s56_stats(v[0]) for k, v in runs.items()}
+    halves = {k: tuple(s56_stats(h) for h in split_halves(v[0], start, end)[:2]) for k, v in runs.items()}
+    mid = split_halves([], start, end)[2]
+    base = stats[base_label]
+    by_key = {(t["sym"], t["when"].date()): t for t in base_trades}
+    rows, hrows = [], []
+    for label, _ro in S58_VARIANTS:
+        st, bl = stats[label], runs[label][1]
+        avoided = [by_key[(b["sym"], b["day"])] for b in bl if (b["sym"], b["day"]) in by_key]
+        verdict = "BASE (live)" if label == base_label else rule_verdict(
+            st, base, [(halves[label][h]["exp_r"] if halves[label][h] else None,
+                        halves[base_label][h]["exp_r"] if halves[base_label][h] else None)
+                       for h in (0, 1)])
+        rows.append([label, st["trades"], f"{st['win']}%", f"{st['exp_r']:+.3f}",
+                     f"${st['total_usd']:+,.0f}", f"{st['maxdd_r']:.1f}R (${st['maxdd_usd']:,.0f})",
+                     f"{100 * st['maxdd_usd'] / base['maxdd_usd']:.0f}%",
+                     len(bl) if label != base_label else "-",
+                     (f"{len(avoided)} / ${sum(t['pnl'] for t in avoided):+,.0f}"
+                      if label != base_label else "-"), verdict])
+        h1, h2 = halves[label]
+        hrows.append([label] + [f"{h['trades']} / {h['exp_r']:+.3f} / ${h['maxdd_usd']:,.0f}"
+                                if h else "-" for h in (h1, h2)])
+    n_gaps = sum(1 for b in runs[S58_VARIANTS[1][0]][1] if b["why"] == "earnings_gap_cooldown")
+    lines = [f"**S58 (CEO 2026-10-31, agenda 39) - earnings-gap cooldown.** A session opening <= -8% "
+             f"below the prior close within one session of the stock's own report blocks new "
+             f"entries for 3 sessions, then reclaim only for N sessions. 5-minute replay of the "
+             f"live daily signals (momentum + reclaim), {start}..{end}, {len(frames)} symbols, "
+             f"permanent store; the CURRENT live exits (stop from the fill, target fill + min(3R, "
+             f"{pm.target_cap_atr(_live_config()):g} x ATR14), ladder, time stops); $5,000, 1% "
+             f"($50) risk, 25% notional. Report dates: yfinance (study only).", ""]
+    lines += sc.table(["Variant", "Trades", "Win %", "Expectancy (R of $50)", "Total $", "MaxDD",
+                       "MaxDD vs live", "Signals blocked", "Avoided live trades / their $",
+                       "Standing rule"], rows)
+    lines += ["", f"*Both halves (entries before / from {mid}): trades / expectancy / MaxDD*", ""]
+    lines += sc.table(["Variant", f"First half (< {mid})", f"Second half (>= {mid})"], hrows)
+    winners = [r for r in rows if str(r[-1]).startswith("ADOPT")]
+    lines += ["", ("**Standing rule met by:** " + "; ".join(f"{r[0]} ({r[-1]})" for r in winners))
+              if winners else "**Standing rule not met by any variant - tie, no change to the replay verdict.**",
+              "", f"**Limits.** Earnings dates from yfinance; the cooldown blocked {n_gaps} signal(s) "
+              "in the window - a small sample; fills at the open; today's universe (survivorship); IEX "
+              "bars; signals, not gatekeeper-approved trades; max positions / sector cap / daily "
+              "breaker and the live earnings EXIT not modelled.", "", sc.UPPER_BOUND]
+    print("\n".join(lines))
+    return lines, stats, runs
+
+
 # ===================================================================== S54
 # CEO 2026-10-25 "patience test": the 10-22 KMI and SLB reclaim entries,
 # replayed on IEX 1-minute bars from the minute AFTER the broker fill, under
@@ -3772,6 +3889,7 @@ def main():
     ap.add_argument("--s53", action="store_true")
     ap.add_argument("--s52", action="store_true")
     ap.add_argument("--s56", action="store_true")
+    ap.add_argument("--s58", action="store_true")
     ap.add_argument("--start", default="2025-10-14")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--append", action="store_true")
@@ -3787,6 +3905,9 @@ def main():
         return 0
     if a.s53:
         s53_main(a.universe_file, a.start)
+        return 0
+    if a.s58:
+        s58_main(a.universe_file, a.start)
         return 0
     if a.s56:
         s56_main(a.universe_file, a.start)
