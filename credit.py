@@ -42,6 +42,7 @@ def _db() -> str:
     return journal.DB_FILE
 AVG_DAYS = 7
 LOW_DAYS = 7
+TOPUP_REMIND_DAYS = 30           # CEO 2026-10-31: no balance increase in 30 days -> remind
 
 SCHEMA = """
     CREATE TABLE IF NOT EXISTS api_usage (
@@ -170,7 +171,12 @@ def status(config: dict = None, db: str = None, now: datetime = None) -> dict:
     today = now.strftime("%Y-%m-%d")
     start7 = (now - timedelta(days=AVG_DAYS - 1)).strftime("%Y-%m-%d")
     out = {"balance": balance, "as_of": as_of, "spent_since": 0.0,
-           "remaining": None, "today": 0.0, "avg7": 0.0, "days_left": None}
+           "remaining": None, "today": 0.0, "avg7": 0.0, "days_left": None,
+           "topup_age_days": None}
+    try:
+        out["topup_age_days"] = (now.date() - datetime.fromisoformat(as_of[:10]).date()).days
+    except (TypeError, ValueError):
+        pass
     try:
         conn = sqlite3.connect(db or _db(), timeout=15)
         try:
@@ -231,6 +237,10 @@ def alerts(s: dict, preflight: dict = None) -> list:
                    + (f" ≈ {days:,.1f} days at ${s['avg7']:,.2f}/day" if days is not None else "")
                    + " — top up the Anthropic API balance, or the gatekeeper "
                      "blocks every signal when it runs out.")
+    age = s.get("topup_age_days")
+    if age is not None and age >= TOPUP_REMIND_DAYS:
+        out.append(f"⚠️ No Anthropic top-up recorded in {age} days (balance set {s['as_of'][:10]}) - "
+                   f"check the console; send the new balance when you top up.")
     if preflight is not None and not preflight.get("ok"):
         out.append(f"⚠️ Claude credit pre-flight FAILED ({preflight.get('reason')}): "
                    f"{str(preflight.get('detail') or '')[:160]} — the gatekeeper "

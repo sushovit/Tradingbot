@@ -23,7 +23,8 @@
         "watching": true,
         "credit_report": true,
         "dip_shadow": true,
-        "spy_gate": true
+        "spy_gate": true,
+        "saturday_report": true
     },
     "watch_movers": {
         "enabled": true,

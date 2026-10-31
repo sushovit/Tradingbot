@@ -12,6 +12,16 @@ decision; the evidence is recorded so the decision can be made on numbers.
 > **Or a risk improvement (CEO 2026-10-27):** **expectancy >= current**, **AND
 > MaxDD <= 75% of current**, **AND >= 200 trades**, **AND the variant beats
 > current on expectancy in BOTH halves of the replay period.**
+>
+> **Operating cadence (CEO 2026-10-28, received 2026-10-31; until the
+> 2027-01-15 go-live review).** **Rule freeze: no strategy or config changes
+> Monday-Friday except bugs and safety. Strategy decisions are made only in
+> the Saturday CEO review.** The Saturday report (saturday_report.py, Sat
+> 08:00 ET) carries the go-live checklist (>= 30 closed trades, average > 0R,
+> max drawdown < 5%, 4 weeks of on-time starts, protection checks green),
+> CEO orders vs main, the graded conviction 60-69 approvals and sector_cap
+> blocks, and shadow NO vs YES toward 20. Claude credit: a Discord reminder
+> when no Anthropic top-up has been recorded for 30 days.
 
 ---
 
@@ -2198,4 +2208,16 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - **The rule almost never binds on the live setups:** 75 post-earnings gaps <= -8% in the window, but only 2 signals fell inside a cooldown (1 avoided trade, a +$49 winner); reclaim-only 17 blocks 4. Momentum needs an uptrend and a reclaim a completed washout-and-recovery, which rarely line up within 10 sessions of an earnings gap.
 - **Verdict: tie** (identical MaxDD, expectancy +0.097R either way, both halves equal). It stays live as a RISK rule per the CEO order: it costs ~nothing in the replay and guards the case the replay cannot model - a gatekeeper approving a dead-cat bounce days after a print (this week's tech gaps).
 - Historical report dates come from yfinance (data/earnings_dates_yf.json, 167 of 170 symbols with >= 4 reports): the Finnhub free calendar returns only ~1 month back. Live uses Finnhub (current dates).
+---
+
+## 40. Audit (re-sent): replay stop triggers - done as agenda 38 (CEO 2026-10-31)
+
+**CEO 2026-10-31 (re-sent order B):** check how every replay (scoreboard, study_exit_grid, S50-S58) triggers stops - bar LOW vs CLOSE; if closes, fix to lows (fill at min(stop, open)) and re-run S53, S56, S58; add the time stop and earnings exit to the scoreboard RULE column.
+
+**Already done on 2026-10-30 as agenda 38 (main 038bea4)** - the original order arrived with the 10-31 weekly review:
+
+- **Every replay fires stops on the bar LOW**, a bar opening at/below the stop fills at its open (= min(stop, open)). **No replay uses closes**, so **S53, S56 and S58 need no re-run: their verdicts are unchanged** (S53 no change; S56 1.5 x ATR adopted under the risk path; S58 tie). S58 (added 2026-10-30, after the audit) uses the same simulate_hold, and tests/test_s57_replay_audit.py fails any replay that compares a close with a stop.
+- **TXN 10-28 root cause:** the scoreboard replayed from the signal stop (293.77) instead of the live stop re-anchored to the fill (294.92); the IEX low 294.825 sat between them. Fixed: replays start from the journaled re-anchored stop.
+- **The RULE column has the live time stop and earnings exit** (position_mgmt.daily_exit_due).
+- Effect: RULE total -13.64 -> -108.14 over the account's trades; owner - rule over 7 closed -79.28 -> +13.42. The corrected scoreboard was reposted to Discord on 2026-10-31.
 

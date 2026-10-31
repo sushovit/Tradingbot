@@ -38,6 +38,7 @@ EXPECTED = {
     "dip_shadow": ["dip_shadow.py", "--update"],        # CEO 10-27: every 5 min (S55 paper)
     "dip_shadow_post": ["dip_shadow.py", "--post"],     # CEO 10-27: 16:20 ET summary
     "discord_bot": ["discord_bot.py"],                  # S18: always on, restarted on a crash
+    "saturday_report": ["saturday_report.py"],          # CEO 10-31: Sat 08:00 ET
 }
 
 

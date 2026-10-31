@@ -163,7 +163,8 @@ def test_shipped_config_has_every_switch_on():
                               "watching": True,           # CEO 10-23
                               "credit_report": True,      # CEO 10-24
                               "dip_shadow": True,         # CEO 10-27 (S55 paper)
-                              "spy_gate": True}           # CEO 10-31 (agenda 39)
+                              "spy_gate": True,           # CEO 10-31 (agenda 39)
+                              "saturday_report": True}    # CEO 10-31 (cadence)
 
 
 def test_the_worker_fires_alerts_in_the_background():
