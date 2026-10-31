@@ -2156,4 +2156,46 @@ Re-run 2026-10-27 evening with the 10-26 / 10-27 bars added to the store (1,464 
 The old RULE column flattered the live rule by ~$94; the owner-vs-rule switch test (owner > rule over >= 10 closed) now reads owner +13.42 with 3 more closed trades needed.
 
 **Remaining limit.** Replays run on IEX bars; the broker's stop triggers on the consolidated tape, whose lows can be below IEX's (TXN: IEX low 294.825, live fill 294.71). A stop the tape touched but IEX did not would still show as held.
+---
+
+## 39. Decision: event-window sizing, earnings-gap cooldown, gatekeeper event context, SPY gate post (CEO 2026-10-31)
+
+**CEO weekly decision 2026-10-31**, from the report "Buying the October 2026 tech dip". All four items are live from the 2026-11-02 session; nothing else changed.
+
+1. **Event-window sizing.** `event_risk_windows`: entries dated 2026-11-02..2026-11-13 (midterms Nov 3, jobs Nov 6, CPI Nov 10, PPI Nov 13) risk **0.5%** per trade instead of 1.0% (min of the two - a window never raises risk); 1.0% again from 2026-11-16. The gatekeeper prompt says the window is active.
+2. **Earnings-gap cooldown (live as a risk rule).** A session that opens <= -8% below the prior close within one session of the stock's own report (dated that session or the one before: bmo / amc) blocks new entries for **3 sessions** (the gap session is session 1); then **reclaim only for 7 sessions** - the "afterwards" window was not specified; 7 makes the whole rule one max hold (10 sessions) and is a config value (`earnings_gap_cooldown.reclaim_only_sessions`). Calendar unknown -> a qualifying price gap is treated as an earnings gap (the safe side). Journaled as passes `earnings_gap_cooldown` / `earnings_gap_reclaim_only`. **First live effect:** NOW, GOOGL, CAT, FTNT (gap 10-29), INTC, COIN, SYK (10-30) - all -8% to -27% after earnings - are blocked through their 3rd session, then reclaim only.
+3. **Gatekeeper context** (informational; decision rules and the prompt version unchanged): the stock's group - **gap** (own earnings within 3 sessions and a >= 3% gap), **sympathy** (a >= 3% gap within 3 sessions without own earnings), **earnings-ahead** (own report inside the hold) - its own report date if inside the hold, and the `scheduled_events` inside the hold (10 sessions for a daily setup, the day for an intraday one). Same text to Claude and the shadow; journaled in the decision context (`groups`, `event_context`).
+4. **SPY 20-day EMA gate on Discord** at the first cycle at/after 09:30 ET - every session, Monday included (one line; switch `discord.spy_gate`).
+
+**Replay of the cooldown (S58)** vs the current live rule, standing rule incl. the both-halves path:
+
+**S58 (CEO 2026-10-31, agenda 39) - earnings-gap cooldown.** A session opening <= -8% below the prior close within one session of the stock's own report blocks new entries for 3 sessions, then reclaim only for N sessions. 5-minute replay of the live daily signals (momentum + reclaim), 2025-10-14..2026-10-30, 158 symbols, permanent store; the CURRENT live exits (stop from the fill, target fill + min(3R, 1.5 x ATR14), ladder, time stops); $5,000, 1% ($50) risk, 25% notional. Report dates: yfinance (study only).
+
+| Variant | Trades | Win % | Expectancy (R of $50) | Total $ | MaxDD | MaxDD vs live | Signals blocked | Avoided live trades / their $ | Standing rule |
+|---|---|---|---|---|---|---|---|---|---|
+| current (no cooldown) | 1728 | 55.2% | +0.097 | $+8,424 | 24.5R ($1,226) | 100% | - | - | BASE (live) |
+| cooldown 3 + reclaim-only 7 (live) | 1727 | 55.2% | +0.097 | $+8,375 | 24.5R ($1,226) | 100% | 2 | 1 / $+49 | tie |
+| cooldown 3, no reclaim-only | 1727 | 55.2% | +0.097 | $+8,375 | 24.5R ($1,226) | 100% | 2 | 1 / $+49 | tie |
+| cooldown 3 + reclaim-only 17 | 1726 | 55.2% | +0.097 | $+8,385 | 24.5R ($1,226) | 100% | 4 | 3 / $+21 | tie |
+
+*Both halves (entries before / from 2026-04-22): trades / expectancy / MaxDD*
+
+| Variant | First half (< 2026-04-22) | Second half (>= 2026-04-22) |
+|---|---|---|
+| current (no cooldown) | 816 / +0.123 / $1,226 | 912 / +0.074 / $978 |
+| cooldown 3 + reclaim-only 7 (live) | 816 / +0.123 / $1,226 | 911 / +0.073 / $978 |
+| cooldown 3, no reclaim-only | 816 / +0.123 / $1,226 | 911 / +0.073 / $978 |
+| cooldown 3 + reclaim-only 17 | 816 / +0.123 / $1,226 | 910 / +0.074 / $978 |
+
+**Standing rule not met by any variant - tie, no change to the replay verdict.**
+
+**Limits.** Earnings dates from yfinance; the cooldown blocked 2 signal(s) in the window - a small sample; fills at the open; today's universe (survivorship); IEX bars; signals, not gatekeeper-approved trades; max positions / sector cap / daily breaker and the live earnings EXIT not modelled.
+
+_Measured on SIGNALS, not on trades the desk took. Every signal counted here would still have had to clear the AI gatekeeper, whole-share sizing on the live capital cap, the max-positions cap and the daily-loss breaker, so these counts are an UPPER BOUND on what would have been realised._
+
+### Reading
+
+- **The rule almost never binds on the live setups:** 75 post-earnings gaps <= -8% in the window, but only 2 signals fell inside a cooldown (1 avoided trade, a +$49 winner); reclaim-only 17 blocks 4. Momentum needs an uptrend and a reclaim a completed washout-and-recovery, which rarely line up within 10 sessions of an earnings gap.
+- **Verdict: tie** (identical MaxDD, expectancy +0.097R either way, both halves equal). It stays live as a RISK rule per the CEO order: it costs ~nothing in the replay and guards the case the replay cannot model - a gatekeeper approving a dead-cat bounce days after a print (this week's tech gaps).
+- Historical report dates come from yfinance (data/earnings_dates_yf.json, 167 of 170 symbols with >= 4 reports): the Finnhub free calendar returns only ~1 month back. Live uses Finnhub (current dates).
 

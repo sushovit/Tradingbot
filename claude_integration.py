@@ -255,6 +255,7 @@ def get_gatekeeper_decision(
     news_headlines: list,
     setup_name: str = "trend_continuation",
     setup_description: str = None,
+    event_context: str = None,
 ) -> dict:
     """
     Single comprehensive Claude call used by the live bot as the final gatekeeper.
@@ -296,6 +297,7 @@ def get_gatekeeper_decision(
         news_str=news_str,
         setup_name=setup_name,
         setup_description=setup_description,
+        event_context=event_context,
     )
 
     # Sonnet 5 spends part of max_tokens on thinking, so the old 512 budget

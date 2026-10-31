@@ -246,7 +246,12 @@ def build_gatekeeper_user_prompt(
     news_str: str,
     setup_name: str = "trend_continuation",
     setup_description: str = None,
+    event_context: str = None,
 ) -> str:
+    # CEO 2026-10-31 (agenda 39): the stock's group and the scheduled events
+    # inside the hold, as INFORMATION - the decision rules are unchanged.
+    event_block = ("\n=== EVENT CONTEXT (informational - not a rule change) ===\n"
+                   + event_context + "\n") if event_context else ""
     setup_description = setup_description or (
         f"EMA{fast_ema} crossed above EMA{slow_ema} on {interval_mins}-minute chart"
     )
@@ -281,7 +286,7 @@ Setup: {setup_description}
 
 === RECENT NEWS HEADLINES (last 5 days) ===
 {news_str}
-
+{event_block}
 === SETUP-SPECIFIC GUIDANCE ===
 If the setup type is momentum_continuation: the entry IS a break of the
 20-bar high, so "distance to resistance" of 0-1% is DEFINITIONAL, not a

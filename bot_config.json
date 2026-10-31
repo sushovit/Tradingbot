@@ -22,7 +22,8 @@
         "scoreboard": true,
         "watching": true,
         "credit_report": true,
-        "dip_shadow": true
+        "dip_shadow": true,
+        "spy_gate": true
     },
     "watch_movers": {
         "enabled": true,
@@ -254,5 +255,19 @@
         "_note": "CEO sets balance_usd + as_of (ET 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS') from the owner's console figure; remaining = balance - spend since as_of.",
         "balance_usd": 10.0,
         "as_of": "2026-10-26"
+    },
+    "event_risk_windows": [
+        {"start": "2026-11-02", "end": "2026-11-13", "risk_per_trade_pct": 0.5,
+         "why": "CEO 2026-10-31 agenda 39: midterms Nov 3, jobs Nov 6, CPI Nov 10, PPI Nov 13"}
+    ],
+    "scheduled_events": [
+        {"date": "2026-11-03", "event": "US midterm elections"},
+        {"date": "2026-11-06", "event": "Jobs report (October nonfarm payrolls)"},
+        {"date": "2026-11-10", "event": "CPI (October)"},
+        {"date": "2026-11-13", "event": "PPI (October)"}
+    ],
+    "earnings_gap_cooldown": {
+        "_note": "CEO 2026-10-31 agenda 39: a post-earnings gap <= gap_pct blocks new entries for block_sessions sessions (gap day = 1), then reclaim only for reclaim_only_sessions",
+        "enabled": true, "gap_pct": -8.0, "block_sessions": 3, "reclaim_only_sessions": 7
     }
 }
