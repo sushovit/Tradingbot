@@ -13,6 +13,7 @@ rest still open) / exit (any other close, e.g. a CEO CLOSE) / open.
 import net  # S13: timeouts + redaction
 import json
 import os
+import re
 from datetime import date, datetime, timedelta
 
 WIDTH = 50
@@ -48,6 +49,39 @@ def _sold_level(sell, key, fallback):
     return fallback
 
 
+# CEO 2026-10-31 (agenda 38): a replay must start from the stop the LIVE
+# position had. Since S50 (2026-10-23) the worker re-anchors the initial stop
+# to the broker fill and journals it (ops 'stop_reanchored'); the proposal's
+# stop is the signal stop. TXN 10-28: signal 293.77, live 294.92 - the
+# scoreboard replayed 293.77 and kept TXN "holding" after the live stop hit.
+_REANCHOR = re.compile(r"re-anchored to the fill [0-9.]+: ([0-9.]+) -> ([0-9.]+)")
+
+
+def reanchored_stops(conn) -> dict:
+    """{(ticker, 'YYYY-MM-DD'): [(timestamp, new_stop), ...]} from the ops
+    journal's stop_reanchored events."""
+    out = {}
+    try:
+        rows = conn.execute("SELECT timestamp, ticker, verdict FROM decisions WHERE "
+                            "source='ops' AND setup_name='stop_reanchored'").fetchall()
+    except Exception:
+        return out
+    for ts, ticker, verdict in rows:
+        m = _REANCHOR.search(str(verdict or ""))
+        if m and ticker:
+            out.setdefault((ticker, str(ts)[:10]), []).append((str(ts), float(m.group(2))))
+    return out
+
+
+def _live_initial_stop(reanchored, buy, signal_stop):
+    """The first re-anchor of this BUY (same ticker, buy day, at/after the
+    buy), else the signal stop."""
+    for ts, stop in sorted(reanchored.get((buy["ticker"], str(buy["timestamp"])[:10]), [])):
+        if ts >= str(buy["timestamp"]):
+            return stop
+    return signal_stop
+
+
 def load_trades(conn):
     """[{ticker, qty, buy, buy_ts, sell, sell_ts, pnl, reason, target, stop}]
     - one per BUY, sell fields None while nothing has been sold.
@@ -63,6 +97,7 @@ def load_trades(conn):
     sells = conn.execute("SELECT * FROM trades WHERE action='SELL' "
                          "ORDER BY id").fetchall()
     used, out = set(), []
+    reanchored = reanchored_stops(conn)
     for b in buys:
         matched, sold = [], 0.0
         for s in sells:
@@ -102,8 +137,10 @@ def load_trades(conn):
             # to the proposal here and are replaced by live levels below.
             "target": _sold_level(last, "exit_target", ctx.get("target")),
             "stop": _sold_level(last, "exit_stop", ctx.get("stop")),
-            # the levels the trade STARTED with (replays need these)
-            "orig_stop": ctx.get("stop"), "orig_target": ctx.get("target"),
+            # the levels the trade STARTED with (replays need these): the
+            # live initial stop - re-anchored to the fill when journaled
+            "orig_stop": _live_initial_stop(reanchored, b, ctx.get("stop")),
+            "signal_stop": ctx.get("stop"), "orig_target": ctx.get("target"),
             "setup": b["reason"],
         })
     return out

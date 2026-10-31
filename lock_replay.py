@@ -158,15 +158,23 @@ def shadow_vs_live(trades, bars_for, params=None):
 
 # ============================================================ live R/ATR rule (scoreboard)
 
-def replay_r_atr(bars, entry_ts, entry, stop, target, params, atr=None):
+def replay_r_atr(bars, entry_ts, entry, stop, target, params, atr=None,
+                 exit_params=None, earnings_soon=None):
     """The CURRENT live daily rule's stop ladder (S25 R/ATR, S29 +1R -> BE),
     replayed on 5-minute bars with the same fill rules as `replay`, so the
     scoreboard compares rules with rules. Steps move on COMPLETED closes of
     bars starting at or after `not_before_et` (10:00 ET); beyond the last step
     the stop trails the highest completed DAILY close - trail_atr x ATR14
     (`atr`, as of the entry day). Never lowered; at least market_gap_pct
-    below the close. Time stops and earnings exits are not modelled - nor
-    are they in the owner-ladder replay. (exit_price, exit_ts, reason)."""
+    below the close. (exit_price, exit_ts, reason).
+
+    CEO 2026-10-31: with `exit_params` (position_mgmt.daily_exit_params) the
+    live daily exits are replayed too, exactly as the worker decides them
+    (position_mgmt.daily_exit_due): the time stop (day 5 with MFE < +0.5R,
+    day 10 regardless) at the first bar at/after exit_at_et, and the
+    earnings exit at/after earnings_exit_at_et on a day `earnings_soon(date)`
+    returns True (None = calendar unknown: no exit, as live). The exit fills
+    at that bar's open."""
     idx = pd.DatetimeIndex(bars.index)
     if idx.tz is None:
         idx = idx.tz_localize("UTC")
@@ -181,6 +189,9 @@ def replay_r_atr(bars, entry_ts, entry, stop, target, params, atr=None):
     hh, mm = (int(x) for x in str(params.get("not_before_et", "10:00")).split(":"))
     live_stop, hc, first = stop, None, True
     day_close, highest_daily = {}, None
+    entry_date, max_high, soon_cache = start.tz_convert("America/New_York").date(), None, {}
+    if exit_params:
+        eh, em = (int(x) for x in str(exit_params["earnings_exit_at_et"]).split(":"))
     for (ts, bar), t_et in zip(after.iterrows(), et_after):
         o, h, l, c = (float(bar["open"]), float(bar["high"]),
                       float(bar["low"]), float(bar["close"]))
@@ -191,7 +202,20 @@ def replay_r_atr(bars, entry_ts, entry, stop, target, params, atr=None):
             return o, ts, "stop (gap)"
         if not first and target is not None and o >= target:
             return o, ts, "target (gap)"
+        if exit_params and not first:
+            soon = None
+            if earnings_soon is not None and (t_et.hour, t_et.minute) >= (eh, em):
+                if d not in soon_cache:
+                    soon_cache[d] = earnings_soon(d)
+                soon = soon_cache[d]
+            mfe_r = (None if max_high is None or entry <= stop
+                     else (max_high - entry) / (entry - stop))
+            why = pm.daily_exit_due(pm.session_day(entry_date, d), mfe_r,
+                                    t_et.to_pydatetime(), soon, exit_params)
+            if why:
+                return o, ts, why
         first = False
+        max_high = h if max_high is None else max(max_high, h)
         if l <= live_stop:
             return live_stop, ts, "stop"
         if target is not None and h >= target:

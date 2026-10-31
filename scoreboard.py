@@ -87,7 +87,7 @@ def bug_flags(conn, trades) -> set:
 
 
 def score(trades, open_positions, bars_for, params, positions=None,
-          rule_params=None, atr_for=None, flags=()):
+          rule_params=None, atr_for=None, flags=(), exit_params=None, earnings_for=None):
     """Rows {ticker, buy_ts, status, live, rule, owner, diff, *_open, bug}
     and totals. diff = OWNER $ - RULE $ (rules vs rules)."""
     import lock_replay
@@ -119,9 +119,14 @@ def score(trades, open_positions, bars_for, params, positions=None,
                     atr = atr_for(t["ticker"], t["buy_ts"]) if atr_for else None
                 except Exception:
                     atr = None
+                # CEO 2026-10-31: RULE replays the live time stop and
+                # earnings exit too (exit_params / earnings_for(ticker)(date))
+                soon = earnings_for(t["ticker"]) if earnings_for else None
                 px, ts, _ = lock_replay.replay_r_atr(bars, t["buy_ts"], t["buy"],
                                                      float(stop), target,
-                                                     rule_params, atr)
+                                                     rule_params, atr,
+                                                     exit_params=exit_params,
+                                                     earnings_soon=soon)
                 if px is not None:
                     rule, rule_open = (px - t["buy"]) * t["qty"], ts is None
         rows.append({"ticker": t["ticker"], "buy_ts": t["buy_ts"],
@@ -198,6 +203,9 @@ def shadow_split(conn, open_positions):
     return out
 
 
+SHADOW_REVIEW_AFTER = 20       # CEO 2026-10-31: shadow-NO trades counted toward 20
+
+
 def shadow_lines(split):
     if not split:
         return []
@@ -207,6 +215,9 @@ def shadow_lines(split):
         v = split[k]
         if v["n"] or k != "none":
             lines.append(f"  {lab[k]}: {v['n']} tr {_m(v['pnl'])}")
+    n_no = split["no"]["n"]
+    lines.append(f"  Shadow NO review: DUE ({n_no} trades)" if n_no >= SHADOW_REVIEW_AFTER
+                 else f"  Shadow NO: {n_no}/{SHADOW_REVIEW_AFTER} toward review")
     return lines
 
 
@@ -308,9 +319,14 @@ def build(day, conn, broker, config, positions):
                                       (day - date.fromisoformat(since[:10])).days + 60)
         return pm.daily_atr(daily.get(ticker), 14, since[:10])
     profile = ((config.get("risk_profiles") or {}).get("Moderate") or {})
+
+    def earnings_for(ticker):
+        import earnings
+        return lambda d: earnings.reports_within_one_session(ticker, d)
     return score(trades, open_positions, bars_for, owner_params(config), positions,
                  rule_params=pm.r_atr_params(profile), atr_for=atr_for,
-                 flags=bug_flags(conn, trades))
+                 flags=bug_flags(conn, trades),
+                 exit_params=pm.daily_exit_params(profile), earnings_for=earnings_for)
 
 
 def main(argv=None) -> int:
