@@ -2131,3 +2131,29 @@ The S56b paper twin (1.5 x ATR vs live) now matches live for new entries; retire
 The paper twin now shows what keeping 3.0 x ATR would have made on every new entry from 2026-10-28: when the live trade sells at its 1.5 x ATR target, the twin keeps running under the live stop, ladder and time stops (the S56 replay simulator, resumed from the live exit); otherwise both exit together. Shown in the dashboard's 🧪 tab, the 16:20 Discord line and a **3.0CAP** column in the weekly scoreboard. **CEO review after 20 closed trades** (the 16:20 line and the scoreboard flag REVIEW DUE).
 
 Re-run 2026-10-27 evening with the 10-26 / 10-27 bars added to the store (1,464 trades): 1.5 x ATR +0.105R vs +0.095R, MaxDD 67%, halves +0.113 vs +0.104 and +0.098 vs +0.087 - the decision stands.
+---
+
+## 38. Audit: replay stop triggers and the scoreboard RULE column (CEO 2026-10-31)
+
+**Trigger.** The weekly scoreboard's RULE replay showed TXN (bought 2026-10-28 at 308.80) "still holding" after the live position was stopped 2026-10-30 14:35:53 at 294.71 (stop 294.92).
+
+**Audit - how every replay fires a stop.** Every replay fires on the bar **LOW** (`low <= stop`); a bar that **opens** at/below the stop fills at its open - i.e. min(stop, open), as a broker stop-market order would. **No replay uses closes.** Checked: lock_replay (scoreboard RULE + OWNER), study_exit_grid (S29-S56, incl. simulate_with_exit, simulate_m1, simulate_hold), study_common, backtest, outcomes (rejection grader), study_adx_band, study_trade_funnel, study_atr_early_step. A test now fails any replay that compares a close with a stop. **S53 and S56 need no re-run for this: verdicts unchanged** (S56 was re-run 2026-10-27 evening on two more days of bars: decision stands).
+
+**Root cause - the stop the replay STARTED from.** The scoreboard replayed TXN from the **signal** stop (293.77, the gatekeeper proposal) instead of the **live** stop after the S50 re-anchor to the fill (294.92). The IEX low on 10-30 14:35 was 294.825 - below the live stop, above the signal stop - so the replay never stopped out. Fixed: trade_table.load_trades now starts every replay from the live initial stop, read from the ops journal's `stop_reanchored` event (the signal stop is kept as `signal_stop`). Also corrected: IBM 10-23 (238.46 -> 239.99), TSLA 10-28 (388.56 -> 387.66).
+
+**RULE column now includes the live time stop and earnings exit** (CEO item 2), exactly as the worker decides them (position_mgmt.daily_exit_due: day 5 with MFE < +0.5R, day 10 regardless, at 15:55 ET; earnings within one session at 15:50 ET; unknown calendar = no exit).
+
+**Effect on the scoreboard (2026-10-30, 7 closed + DE open):**
+
+| Trade | RULE before | RULE after | Live | Why |
+|---|---|---|---|---|
+| TXN 10-28 | -23.07 (still holding) | **-41.88** (stop, 14:35 bar opened 294.84) | -42.26 | live stop 294.92 |
+| REGN 10-15 | +77.41 | **+3.52** | +3.36 | day-5 time stop now replayed |
+| TSLA 10-28 | -39.40 | -41.20 | -39.81 | re-anchored stop |
+| RULE total | -13.64 | **-108.14** | -145.13 | |
+| Owner - rule (7 closed) | -79.28 | **+13.42** | | owner ladder now ahead |
+
+The old RULE column flattered the live rule by ~$94; the owner-vs-rule switch test (owner > rule over >= 10 closed) now reads owner +13.42 with 3 more closed trades needed.
+
+**Remaining limit.** Replays run on IEX bars; the broker's stop triggers on the consolidated tape, whose lows can be below IEX's (TXN: IEX low 294.825, live fill 294.71). A stop the tape touched but IEX did not would still show as held.
+
