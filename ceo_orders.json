@@ -1,26 +1,131 @@
 {
   "_note": "CEO orders and what reached main (CEO 2026-10-31: the Saturday report lists every order of the week with its commit or NOT DONE). One entry per order; status = a merge commit, NOT DONE, ON HOLD or SUPERSEDED. Updated with every order.",
   "orders": [
-    {"date": "2026-10-23", "id": "agenda-31", "order": "S51 tie; standing adoption rule in the agenda header; sell-button PIN; phone URL; disk >= 25 GB", "status": "17e3b54"},
-    {"date": "2026-10-23", "id": "ibm-stop", "order": "Raise IBM stop (owner order) - done at breakeven 250.42 via worker restart", "status": "ops (no commit)"},
-    {"date": "2026-10-24", "id": "credit-report", "order": "Claude credit report: api_usage, $ cost, credit left, Discord + dashboard lines", "status": "07bc7f5"},
-    {"date": "2026-10-25", "id": "bars-store", "order": "Permanent 5-min bar store + nightly append; S50 check, S53, S52 runs", "status": "d6efcf0"},
-    {"date": "2026-10-25", "id": "phase-1", "order": "S52 morning dip + S53 stops/holds, phase 1 (3 months) and phase 2 (1 year)", "status": "401f4dd"},
-    {"date": "2026-10-25", "id": "decisions-1025", "order": "Keep fill-anchored stop; sector cap 1 (review 11-06); 16:30 model unload; parquet store; disk >= 20 GB; S52 rejected, S53 no change", "status": "bdb6519"},
-    {"date": "2026-10-26", "id": "credit-balance", "order": "Anthropic balance $10 as of 2026-10-26", "status": "b3070a7"},
-    {"date": "2026-10-26", "id": "disk-quicklook", "order": "Disk report + delete leftovers + quick-look file reports/quicklook_bars.parquet (25 large caps)", "status": "ON HOLD (owner: let the system sit; awaiting go)"},
-    {"date": "2026-10-27", "id": "s55-dip", "order": "S55 dip forward shadow test (paper): Dip Test tab, journal, 16:20 Discord", "status": "e6271f0"},
-    {"date": "2026-10-27", "id": "s18-discord-sell", "order": "S18 Discord sell: !positions, !sell -> YES (+ buttons, !selltest, /slash commands, phone layout)", "status": "f0aa85d, ebd4e7c, c0fa290, 103da67, 0aeecd5"},
-    {"date": "2026-10-27", "id": "s55-start", "order": "Dip test starts 2026-10-27", "status": "63d1ead"},
-    {"date": "2026-10-27", "id": "s56", "order": "S56 target cap 1.5/2.0/2.5/regime vs 3.0 x ATR (agenda 37)", "status": "bdb84e8"},
-    {"date": "2026-10-27", "id": "s56b-twin", "order": "Paper side-by-side of the 1.5 x ATR cap", "status": "84b2217"},
-    {"date": "2026-10-27", "id": "agenda-37", "order": "Risk-path rule; 1.5 x ATR cap if it beats live in both halves -> adopted", "status": "133686f"},
-    {"date": "2026-10-27", "id": "twin-flip", "order": "Twin to the OLD 3.0 cap; scoreboard 3.0CAP column; review after 20 closed", "status": "b2afbb8"},
-    {"date": "2026-10-28", "id": "cadence", "order": "Operating cadence: rule freeze; Saturday report (go-live checklist, orders vs main, graded 60-69 approvals + sector_cap, shadow NO/YES); 30-day credit reminder", "status": "NOT DONE until 2026-10-31 (the order never reached Claude Code) - see 2026-10-31 cadence"},
-    {"date": "2026-10-31", "id": "weekly-review", "order": "Replay stop audit (low vs close), scoreboard RULE with time stop + earnings exit, shadow NO toward 20 (agenda 38)", "status": "038bea4"},
-    {"date": "2026-10-31", "id": "agenda-39", "order": "Event-window sizing 0.5% (11-02..11-13); earnings-gap cooldown + replay; gatekeeper event context; SPY gate post", "status": "195a75c"},
-    {"date": "2026-10-31", "id": "cadence", "order": "Operating cadence (re-sent): rule freeze in the agenda header; Saturday report; 30-day credit reminder", "status": "PENDING"},
-    {"date": "2026-10-31", "id": "agenda-40", "order": "Replay audit (re-sent; done as agenda 38) - agenda 40 entry", "status": "PENDING"},
-    {"date": "2026-10-31", "id": "scoreboard-repost", "order": "Repost Friday's corrected scoreboard to Discord", "status": "PENDING"}
+    {
+      "date": "2026-10-23",
+      "id": "agenda-31",
+      "order": "S51 tie; standing adoption rule in the agenda header; sell-button PIN; phone URL; disk >= 25 GB",
+      "status": "17e3b54"
+    },
+    {
+      "date": "2026-10-23",
+      "id": "ibm-stop",
+      "order": "Raise IBM stop (owner order) - done at breakeven 250.42 via worker restart",
+      "status": "ops (no commit)"
+    },
+    {
+      "date": "2026-10-24",
+      "id": "credit-report",
+      "order": "Claude credit report: api_usage, $ cost, credit left, Discord + dashboard lines",
+      "status": "07bc7f5"
+    },
+    {
+      "date": "2026-10-25",
+      "id": "bars-store",
+      "order": "Permanent 5-min bar store + nightly append; S50 check, S53, S52 runs",
+      "status": "d6efcf0"
+    },
+    {
+      "date": "2026-10-25",
+      "id": "phase-1",
+      "order": "S52 morning dip + S53 stops/holds, phase 1 (3 months) and phase 2 (1 year)",
+      "status": "401f4dd"
+    },
+    {
+      "date": "2026-10-25",
+      "id": "decisions-1025",
+      "order": "Keep fill-anchored stop; sector cap 1 (review 11-06); 16:30 model unload; parquet store; disk >= 20 GB; S52 rejected, S53 no change",
+      "status": "bdb6519"
+    },
+    {
+      "date": "2026-10-26",
+      "id": "credit-balance",
+      "order": "Anthropic balance $10 as of 2026-10-26",
+      "status": "b3070a7"
+    },
+    {
+      "date": "2026-10-26",
+      "id": "disk-quicklook",
+      "order": "Disk report + delete leftovers + quick-look file reports/quicklook_bars.parquet (25 large caps)",
+      "status": "ON HOLD (owner: let the system sit; awaiting go)"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "s55-dip",
+      "order": "S55 dip forward shadow test (paper): Dip Test tab, journal, 16:20 Discord",
+      "status": "e6271f0"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "s18-discord-sell",
+      "order": "S18 Discord sell: !positions, !sell -> YES (+ buttons, !selltest, /slash commands, phone layout)",
+      "status": "f0aa85d, ebd4e7c, c0fa290, 103da67, 0aeecd5"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "s55-start",
+      "order": "Dip test starts 2026-10-27",
+      "status": "63d1ead"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "s56",
+      "order": "S56 target cap 1.5/2.0/2.5/regime vs 3.0 x ATR (agenda 37)",
+      "status": "bdb84e8"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "s56b-twin",
+      "order": "Paper side-by-side of the 1.5 x ATR cap",
+      "status": "84b2217"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "agenda-37",
+      "order": "Risk-path rule; 1.5 x ATR cap if it beats live in both halves -> adopted",
+      "status": "133686f"
+    },
+    {
+      "date": "2026-10-27",
+      "id": "twin-flip",
+      "order": "Twin to the OLD 3.0 cap; scoreboard 3.0CAP column; review after 20 closed",
+      "status": "b2afbb8"
+    },
+    {
+      "date": "2026-10-28",
+      "id": "cadence",
+      "order": "Operating cadence: rule freeze; Saturday report (go-live checklist, orders vs main, graded 60-69 approvals + sector_cap, shadow NO/YES); 30-day credit reminder",
+      "status": "NOT DONE that week (never reached Claude Code); done 2026-10-31 in a032f84"
+    },
+    {
+      "date": "2026-10-31",
+      "id": "weekly-review",
+      "order": "Replay stop audit (low vs close), scoreboard RULE with time stop + earnings exit, shadow NO toward 20 (agenda 38)",
+      "status": "038bea4"
+    },
+    {
+      "date": "2026-10-31",
+      "id": "agenda-39",
+      "order": "Event-window sizing 0.5% (11-02..11-13); earnings-gap cooldown + replay; gatekeeper event context; SPY gate post",
+      "status": "195a75c"
+    },
+    {
+      "date": "2026-10-31",
+      "id": "cadence",
+      "order": "Operating cadence (re-sent): rule freeze in the agenda header; Saturday report; 30-day credit reminder",
+      "status": "a032f84"
+    },
+    {
+      "date": "2026-10-31",
+      "id": "agenda-40",
+      "order": "Replay audit (re-sent; done as agenda 38) - agenda 40 entry",
+      "status": "a032f84"
+    },
+    {
+      "date": "2026-10-31",
+      "id": "scoreboard-repost",
+      "order": "Repost Friday's corrected scoreboard to Discord",
+      "status": "ops (posted 2026-10-31 00:30 ET, with a correction note)"
+    }
   ]
 }
