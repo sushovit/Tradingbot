@@ -259,7 +259,7 @@ def test_the_entry_record_stores_the_prompt_version():
     assert "prompt_version = None    # rules-only entry" in src
     after_verdict = src[src.index("verdict, decision_id = analyst.get_verdict("):]
     assert ("prompt_version = prompts.GATEKEEPER_PROMPT_VERSION"
-            in after_verdict[:500])
+            in after_verdict[:900])     # 2026-11-01: dip advisory bookkeeping sits between
 
 
 class _Pos:
