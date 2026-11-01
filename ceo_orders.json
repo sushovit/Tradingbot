@@ -47,7 +47,7 @@
       "date": "2026-10-26",
       "id": "disk-quicklook",
       "order": "Disk report + delete leftovers + quick-look file reports/quicklook_bars.parquet (25 large caps)",
-      "status": "ON HOLD (owner: let the system sit; awaiting go)"
+      "status": "CANCELLED (CEO 2026-11-01: the CEO analyses bar data in his own workspace)"
     },
     {
       "date": "2026-10-27",
@@ -126,6 +126,24 @@
       "id": "scoreboard-repost",
       "order": "Repost Friday's corrected scoreboard to Discord",
       "status": "ops (posted 2026-10-31 00:30 ET, with a correction note)"
+    },
+    {
+      "date": "2026-11-01",
+      "id": "cancel-quicklook",
+      "order": "Close the 10-26 disk/quick-look order as CANCELLED",
+      "status": "PENDING"
+    },
+    {
+      "date": "2026-11-01",
+      "id": "sector-cap-keep",
+      "order": "Sector cap review: KEEP at 1 (10/10 resolved blocks lost, -1.83R); record in agenda",
+      "status": "PENDING"
+    },
+    {
+      "date": "2026-11-01",
+      "id": "conv-60-69-item",
+      "order": "Saturday 11-07 agenda item: conviction 60-69 approvals - proposal criteria (n >= 10, avg R > 0)",
+      "status": "PENDING"
     }
   ]
 }

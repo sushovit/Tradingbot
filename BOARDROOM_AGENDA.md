@@ -1756,6 +1756,10 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 
 sector_cap.max_per_sector stays 1. **Review 2026-11-06** with the graded sector_cap rejections: the nightly outcomes job (16:45 ET) grades every `sector_cap` pass (journaled with entry/stop/target) under reason_key `sector_cap`; on 11-06 report `outcomes.class_summary('sector_cap', '2026-10-22')` - n, resolved, win %, avg R of the trades the cap blocked.
 
+### Decision (CEO 2026-11-01): sector cap KEPT at 1 - reviewed early
+
+The 2026-11-06 review was brought forward with the graded blocks: **16 sector_cap blocks since 2026-10-22, 10 resolved - all 10 would have lost, average -1.83R** (several gapped through the stop in the late-October tech selloff: NOW -4.07R and -4.09R, HPQ -2.11R, ZS -1.58R, CRM -1.41R). `sector_cap.max_per_sector` stays **1**. The Saturday report keeps grading the blocks.
+
 ## 29. Study: S48 gap-free intraday rallies (CEO P4, 2026-10-22)
 
 **S48 (CEO P4, 2026-10-22) - gap-free intraday rallies, study only, no live change.** The movers our setups never see (DDOG, ZS, NET, CRWD on 2026-10-21 gapped only 0.4-2.8% and ran later). Definition:
@@ -2220,4 +2224,20 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - **TXN 10-28 root cause:** the scoreboard replayed from the signal stop (293.77) instead of the live stop re-anchored to the fill (294.92); the IEX low 294.825 sat between them. Fixed: replays start from the journaled re-anchored stop.
 - **The RULE column has the live time stop and earnings exit** (position_mgmt.daily_exit_due).
 - Effect: RULE total -13.64 -> -108.14 over the account's trades; owner - rule over 7 closed -79.28 -> +13.42. The corrected scoreboard was reposted to Discord on 2026-10-31.
+---
+
+## 41. Saturday 2026-11-07 review: conviction 60-69 approvals - probation proposal criteria (CEO 2026-11-01)
+
+**For the Saturday CEO review 2026-11-07** (no live change before then - rule freeze).
+
+**Question:** should gatekeeper approvals with conviction **60-69** (approved but not traded - the live floor is 70, `claude_conviction_threshold`) be allowed to trade?
+
+**Evidence so far** (outcomes job, graded as if traded, 2026-10-31): **n 9 (8 resolved), win 62%, average +0.78R.**
+
+**Proposal criteria (CEO 2026-11-01):** if, at the review, **n >= 10 AND average R > 0**, propose:
+- minimum conviction **60** for a **probation** class (60-69),
+- risk **0.5%** per trade, **max 1 open** position at a time,
+- **kill switch:** after 10 probation trades, if their average R < 0, the class closes (floor back to 70).
+
+Otherwise: no proposal; keep grading. The Saturday report's section (c) states whether the criteria are met.
 
