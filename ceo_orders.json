@@ -131,19 +131,19 @@
       "date": "2026-11-01",
       "id": "cancel-quicklook",
       "order": "Close the 10-26 disk/quick-look order as CANCELLED",
-      "status": "PENDING"
+      "status": "19396ab"
     },
     {
       "date": "2026-11-01",
       "id": "sector-cap-keep",
       "order": "Sector cap review: KEEP at 1 (10/10 resolved blocks lost, -1.83R); record in agenda",
-      "status": "PENDING"
+      "status": "19396ab"
     },
     {
       "date": "2026-11-01",
       "id": "conv-60-69-item",
       "order": "Saturday 11-07 agenda item: conviction 60-69 approvals - proposal criteria (n >= 10, avg R > 0)",
-      "status": "PENDING"
+      "status": "19396ab"
     }
   ]
 }
