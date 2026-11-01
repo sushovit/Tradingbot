@@ -81,3 +81,9 @@ def test_rule_freeze_is_in_the_agenda_header():
     head = open("BOARDROOM_AGENDA.md", encoding="utf-8").read().split("\n---\n", 1)[0]
     assert "Rule freeze: no strategy or config changes" in head
     assert "Monday-Friday except bugs and safety" in head and "2027-01-15" in head
+
+
+def test_conviction_60_69_proposal_criteria():
+    assert sr.proposal_60_69({"n": 9, "avg_r": 0.78}).startswith("→ Criteria not met yet (n 9/10")
+    assert sr.proposal_60_69({"n": 12, "avg_r": -0.1}).startswith("→ Criteria not met yet")
+    assert sr.proposal_60_69({"n": 10, "avg_r": 0.05}).startswith("→ Criteria MET")

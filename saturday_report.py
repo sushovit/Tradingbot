@@ -140,11 +140,26 @@ def graded_line(label, g):
             + " · avg " + ("-" if g["avg_r"] is None else f"{g['avg_r']:+.2f}R"))
 
 
+PROPOSE_60_69 = {"n": 10, "avg_r": 0.0}      # CEO 2026-11-01 (agenda 41)
+
+
+def proposal_60_69(g) -> str:
+    """Whether the conviction 60-69 probation proposal criteria are met."""
+    met = g["n"] >= PROPOSE_60_69["n"] and g["avg_r"] is not None and g["avg_r"] > PROPOSE_60_69["avg_r"]
+    if met:
+        return ("→ Criteria MET (n >= 10, avg R > 0): propose min conviction 60 on probation - "
+                "0.5% risk, max 1 open, kill switch after 10 trades if avg R < 0 (agenda 41)")
+    return (f"→ Criteria not met yet (n {g['n']}/10, avg "
+            + ("-" if g["avg_r"] is None else f"{g['avg_r']:+.2f}R") + " > 0R needed) - keep grading")
+
+
 def graded_lines(conn):
+    g = graded(conn, "gatekeeper_low_conviction", 60, 69)
     return ["**(c) Graded blocks** (what the trade would have done; outcomes job)",
-            graded_line("Conviction 60-69 approvals (not traded, < 70)",
-                        graded(conn, "gatekeeper_low_conviction", 60, 69)),
-            graded_line("sector_cap blocks (max 1 per sector)", graded(conn, "sector_cap"))]
+            graded_line("Conviction 60-69 approvals (not traded, < 70)", g),
+            proposal_60_69(g),
+            graded_line("sector_cap blocks (max 1 per sector; KEPT 2026-11-01)",
+                        graded(conn, "sector_cap"))]
 
 
 # ===================================================================== (d) shadow
