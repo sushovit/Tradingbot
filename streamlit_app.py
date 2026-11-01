@@ -30,6 +30,7 @@ import journal
 import prompts
 import trade_alerts
 import event_risk
+import dip_live
 import risk
 import sectors
 import analyst
@@ -544,6 +545,76 @@ def reconcile_entry_with_broker(state: dict, broker_avg: float,
     return None
 
 
+def dip_reanchor_once(broker, positions, ticker, state, last_price, journal_event=None):
+    """dip_probation: once the broker fill is confirmed, move the stop to
+    fill - 2 x ATR14 (dip_live.reanchor_stop) if it differs by > 1 cent.
+    Journaled in the S50 format so replays start from the live stop."""
+    if state.get("dip_reanchored") or not state.get("entry_fill_confirmed"):
+        return False
+    atr, fill = state.get("atr14"), state.get("entry_price")
+    cur = state.get("trailing_stop_price")
+    if not atr or not fill or cur is None or not state.get("stop_order_id"):
+        return False
+    new = dip_live.reanchor_stop(fill, atr)
+    moved = False
+    if abs(new - float(cur)) > 0.005 and new < float(fill) and (last_price is None
+                                                                or new < float(last_price)):
+        order = broker.replace_stop(state["stop_order_id"], new)
+        state["stop_order_id"] = str(getattr(order, "id", state["stop_order_id"]))
+        msg = (f"{ticker}: initial stop re-anchored to the fill {float(fill):g}: "
+               f"{float(cur):.2f} -> {new:.2f} (dip_probation: fill - 2 x ATR14)")
+        logger.info(msg)
+        if journal_event:
+            journal_event("stop_reanchored", msg)
+        state["initial_stop"] = state["original_stop"] = state["trailing_stop_price"] = new
+        moved = True
+    state["dip_reanchored"] = True
+    positions[ticker] = state
+    write_positions(positions)
+    return moved
+
+
+def dip_cycle_gate(positions, now_et, config):
+    """CEO-approved owner override 2026-11-01: the dip probation's per-cycle
+    gate (dip_live.cycle_gate) and kill state, from the journal."""
+    import sqlite3
+    import trade_table
+    conn = sqlite3.connect(journal.DB_FILE, timeout=15)
+    try:
+        trades = [t for t in trade_table.load_trades(conn) if t.get("setup") == dip_live.DIP]
+    finally:
+        conn.close()
+    closed = sorted((t for t in trades if t["sell"] is not None and t["reason"] != "partial"),
+                    key=lambda t: t["sell_ts"] or "")
+    pnls = [float(t["pnl"] or 0) for t in closed]
+    today = now_et.date()
+    buys_today = sum(1 for t in trades if str(t["buy_ts"])[:10] == today.isoformat())
+    return (dip_live.cycle_gate(today, positions, buys_today, pnls, config),
+            dip_live.kill_state(pnls, config))
+
+
+def dip_kill_alert_once(kill):
+    """Kill switch tripped: one ops event + one Discord post, ever."""
+    killed, cum, streak, why = kill
+    if not killed:
+        return False
+    import sqlite3
+    conn = sqlite3.connect(journal.DB_FILE, timeout=15)
+    try:
+        seen = conn.execute("SELECT count(*) FROM decisions WHERE source='ops' AND "
+                            "setup_name='dip_probation_killed'").fetchone()[0]
+    finally:
+        conn.close()
+    if seen:
+        return False
+    journal.log_integrity_event("dip_probation_killed",
+                                f"dip_probation: kill switch - {why}; no new dip entries")
+    __import__("alerts").post_async(
+        f"🧪 DIP probation KILLED - {why} (cumulative ${cum:+,.2f}, losing streak {streak}). "
+        f"No new dip entries; an open dip position keeps its stop, target and time exit.")
+    return True
+
+
 def spy_gate_line(regime: dict, now_et) -> str:
     """CEO 2026-10-31: the SPY 20-day EMA gate state, posted once a session."""
     state = ("OPEN - SPY above its 20-day EMA: all setups may enter" if regime["trending"]
@@ -887,6 +958,7 @@ def _worker_loop():
     gatekeeper_errors = {}         # (ticker, setup, bar) -> [count, next_retry_ts]
     gatekeeper_alerted = set()     # keys we've already Discord-alerted about
     spy_gate_posted = set()        # CEO 2026-10-31: session dates the SPY gate was posted
+    dip_advised = {}               # dip_probation: (ticker, date) -> advisory (verdict, decision_id)
     gatekeeper_rejected = set()    # (ticker, setup, bar) the gatekeeper already declined —
                                    # never re-ask about the same signal bar (launch sessions
                                    # burned 60+ Claude calls re-asking about one XOM bar)
@@ -1025,6 +1097,13 @@ def _worker_loop():
                 # setups are blocked rather than waved through.
                 is_market_bullish = False
         spy_evidence = daily_eval.regime_details(spy_regime)
+        # Dip probation (CEO-approved 2026-11-01): one gate per cycle.
+        try:
+            dip_gate, _dip_kill = dip_cycle_gate(positions, now_et, config)
+            dip_kill_alert_once(_dip_kill)
+        except Exception as e:
+            dip_gate = f"gate_error: {e}"
+            logger.warning(f"dip_probation gate unavailable - no dip entries this cycle: {e}")
         # CEO 2026-10-31 (agenda 39): the SPY 20-day EMA gate state on Discord
         # once per session, at the first cycle at/after 09:30 ET.
         if (use_spy_filter and spy_regime is not None and now_et.date() not in spy_gate_posted
@@ -1152,7 +1231,8 @@ def _worker_loop():
         # when fill + min(3R, cap x ATR14) is below the current target.
         _cap = position_mgmt.target_cap_atr(config)
         for _t, _st in positions.items():
-            if not _st.get("in_position") or _st.get("target_capped") is not None:
+            if (not _st.get("in_position") or _st.get("target_capped") is not None
+                    or _st.get("setup") == dip_live.DIP):      # dip target = prior close
                 continue
             _atr = _st.get("atr14")
             if not _atr and daily_bars.get(_t) is not None:
@@ -1249,7 +1329,8 @@ def _worker_loop():
                             exit_px, _ = confirm_fill(broker, close_order,
                                                       current_price)
                             handle_position_exit(broker, positions, ticker, state,
-                                                 exit_px, "Hard Exit Date", now_et,
+                                                 exit_px, state.get("hard_exit_reason")
+                                                 or "Hard Exit Date", now_et,
                                                  broker_order_id=str(getattr(close_order, "id", "")) or None)
                             status_updates.append(f"{ticker}: CLOSED (hard exit date)")
                             continue
@@ -1266,6 +1347,17 @@ def _worker_loop():
                         owner_close(broker, positions, ticker, now_et,
                                     current_price, reason=owner_sell_reason(_cmd))
                         status_updates.append(f"{ticker}: SOLD (owner)")
+                        continue
+
+                    # 3b) dip_probation (CEO-approved 2026-11-01): a fixed
+                    # bracket - stop re-anchored once to fill - 2 x ATR14,
+                    # target = prior close - plus the session-3 time exit
+                    # above. No ladder, no trail, no breakeven floor.
+                    if state.get("setup") == dip_live.DIP:
+                        dip_reanchor_once(broker, positions, ticker, state,
+                                          current_price, journal_ops_once)
+                        status_updates.append(f"{ticker}: In Pos [🧪 dip] (fixed bracket, "
+                                              f"time exit {state.get('hard_exit_date')})")
                         continue
 
                     # 4) Trailing stop: BOT positions only, and only past
@@ -1384,7 +1476,10 @@ def _worker_loop():
                         daily_evaluated, ticker, strat.name, strat_df):
                     continue
                 context = {"ticker": ticker, "risk_profile": risk_profile,
-                           "config": config}
+                           "config": config,
+                           # dip_probation: daily frame, clock, price, cycle gate
+                           "daily": daily_bars.get(ticker), "now_et": now_et,
+                           "current_price": current_price, "dip_gate": dip_gate}
                 try:
                     result = strat.detect(strat_df, context)
                 except Exception as e:
@@ -1504,7 +1599,9 @@ def _worker_loop():
             # stay regime-blocked; mean_reversion_reclaim is EXEMPT because
             # chop is its best cell (backtest +0.38R vs +0.25R trending).
             # Exempt fires taken in chop are tagged for later analysis.
-            if not is_market_bullish:
+            _dip_spy_free = (signal.setup_name == dip_live.DIP
+                             and not dip_live.params(config)["spy_gate"])
+            if not is_market_bullish and not _dip_spy_free:
                 if signal.setup_name in config.get("spy_filter_exempt", []):
                     tag_key = (ticker, signal.setup_name, "chop_reclaim",
                                signal_bar_key)
@@ -1561,7 +1658,9 @@ def _worker_loop():
                 open_positions=open_positions_count, max_positions=max_positions,
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
                 open_notional_usd=open_notional,
-                position_cap_pct=position_cap_pct)
+                position_cap_pct=position_cap_pct,
+                # dip_probation: target = prior close by design (R:R < 1)
+                min_reward_risk=(0.0 if signal.setup_name == dip_live.DIP else None))
             if not ok:
                 journal_pass_once(ticker, signal.setup_name, reject_reason,
                                   f"entry={signal.entry:.2f} stop={signal.stop:.2f} "
@@ -1575,15 +1674,16 @@ def _worker_loop():
             # The journal is the authority: the in-memory set dies with the
             # process, and a hand restart mid-session is exactly when a
             # declined bar gets re-asked (SPCX 2026-09-17, 68 then 78).
-            if gate_key in gatekeeper_rejected or journal.is_gatekeeper_rejected(
-                    ticker, signal.setup_name, signal_bar_key):
+            is_dip = signal.setup_name == dip_live.DIP   # rules only: advisory gatekeeper
+            if not is_dip and (gate_key in gatekeeper_rejected or journal.is_gatekeeper_rejected(
+                    ticker, signal.setup_name, signal_bar_key)):
                 gatekeeper_rejected.add(gate_key)      # warm the fast path
                 status_updates.append(f"{ticker}: Gatekeeper blocked (cached this bar)")
                 continue
             # Error backoff (Goal 21): after 3 consecutive errors on the same
             # (ticker, setup, bar), retry only every 10 minutes.
             err_state = gatekeeper_errors.get(gate_key)
-            if err_state and err_state[0] >= 3 and a_time.time() < err_state[1]:
+            if not is_dip and err_state and err_state[0] >= 3 and a_time.time() < err_state[1]:
                 status_updates.append(f"{ticker}: Gatekeeper backoff "
                                       f"({err_state[0]} errors)")
                 continue
@@ -1613,9 +1713,17 @@ def _worker_loop():
                         "groups": _ev_groups, "event_context": _ev_ctx,
                         "volume_ratio": signal.extras.get("volume_ratio"),
                     }
-                    verdict, decision_id = analyst.get_verdict(
-                        analyst_mode, ticker, signal.setup_name,
-                        decision_context, gk_kwargs)
+                    _dip_key = (ticker, now_et.date())
+                    if is_dip and _dip_key in dip_advised:
+                        verdict, decision_id = dip_advised[_dip_key]   # asked once a day
+                    else:
+                        if is_dip:
+                            decision_context["advisory"] = True    # logged, never a veto
+                        verdict, decision_id = analyst.get_verdict(
+                            analyst_mode, ticker, signal.setup_name,
+                            decision_context, gk_kwargs)
+                        if is_dip:
+                            dip_advised[_dip_key] = (verdict, decision_id)
                     # The version analyst.get_verdict stamps on the verdict's
                     # journaled context; it scopes the probation slot count.
                     prompt_version = prompts.GATEKEEPER_PROMPT_VERSION
@@ -1642,7 +1750,13 @@ def _worker_loop():
                     elif gate_key in gatekeeper_errors:
                         del gatekeeper_errors[gate_key]   # recovered
 
-                    if "error" in verdict or not approved \
+                    if is_dip:
+                        # Rules only: the verdict is journaled as advisory.
+                        logger.info(f"{ticker}: dip_probation advisory verdict "
+                                    f"approved={approved} conviction={conviction} "
+                                    f"(rules decide)")
+                        conviction = None
+                    elif "error" in verdict or not approved \
                             or conviction < claude_conviction_threshold:
                         reason_msg = (verdict.get('rejection_reason')
                                       or verdict.get('error')
@@ -1665,8 +1779,10 @@ def _worker_loop():
                         continue
                 except Exception as e:
                     logger.error(f"Gatekeeper error for {ticker}: {e}")
-                    status_updates.append(f"{ticker}: Waiting (gatekeeper failed)")
-                    continue
+                    if not is_dip:
+                        status_updates.append(f"{ticker}: Waiting (gatekeeper failed)")
+                        continue
+                    conviction = None          # dip: advisory only - the rules decide
 
             # --- Risk-based sizing (whole shares), then bracket order AT THE BROKER ---
             # Probation (revised 2026-09-02): a newly ratified setup trades
@@ -1711,11 +1827,18 @@ def _worker_loop():
             # never buy a larger position than the cap allows.
             size_mult = risk.conviction_multiplier(conviction, config)
             entry_risk_pct = entry_risk_pct * size_mult
+            _dip_entry = signal.setup_name == dip_live.DIP
+            if _dip_entry:
+                # dip_probation: 0.5% ($25 on $5,000), never above the event
+                # window; no conviction scaling, no min-lot round-up past $25.
+                size_mult = 1.0
+                entry_risk_pct = min(float(dip_live.params(config)["risk_per_trade_pct"]),
+                                     base_risk_pct)
             qty = risk.position_size(equity, entry_risk_pct,
                                      signal.entry, signal.stop,
                                      open_notional_usd=open_notional,
                                      position_cap_pct=position_cap_pct,
-                                     min_lot_tolerance=lot_tolerance)
+                                     min_lot_tolerance=0.0 if _dip_entry else lot_tolerance)
             # What this size actually risks. Equal to entry_risk_pct in the
             # normal case; ABOVE it whenever the minimum-lot tolerance bought
             # the single share back.
@@ -1748,7 +1871,9 @@ def _worker_loop():
                 open_positions=open_positions_count, max_positions=max_positions,
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
                 open_notional_usd=open_notional,
-                position_cap_pct=position_cap_pct)
+                position_cap_pct=position_cap_pct,
+                # dip_probation: target = prior close by design (R:R < 1)
+                min_reward_risk=(0.0 if signal.setup_name == dip_live.DIP else None))
             if not ok:
                 journal_pass_once(ticker, signal.setup_name, reject_reason, "")
                 status_updates.append(f"{ticker}: Pass ({reject_reason})")
@@ -1853,6 +1978,9 @@ def _worker_loop():
                     now_et.date(),
                     signal.extras.get("max_hold_sessions"))
                 if signal.extras.get("max_hold_sessions") else None,
+                # dip_probation: the session-3 time exit's journal reason
+                "hard_exit_reason": signal.extras.get("hard_exit_reason"),
+                "prior_close": signal.extras.get("prior_close"),
             }
             write_positions(positions)   # W8: persist the entry immediately
             # Capital persisted on BUY (display cache; broker stays authoritative).

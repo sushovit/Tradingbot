@@ -144,6 +144,12 @@
       "id": "conv-60-69-item",
       "order": "Saturday 11-07 agenda item: conviction 60-69 approvals - proposal criteria (n >= 10, avg R > 0)",
       "status": "19396ab"
+    },
+    {
+      "date": "2026-11-01",
+      "id": "dip-probation",
+      "order": "OWNER OVERRIDE (CEO-approved): live dip_probation setup from 2026-11-02 - rules only, $25 risk, max 1 open / 1 a day, target prior close, stop 2 x ATR, session-3 time exit, kill switch -$75 / 5 losses",
+      "status": "PENDING"
     }
   ]
 }

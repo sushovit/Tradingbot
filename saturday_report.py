@@ -210,6 +210,12 @@ def build(day: date, conn, broker, log_lines, orders, config):
     lines += orders_lines(orders, day) + [""]
     lines += graded_lines(conn) + [""]
     lines += shadow_report_lines(split) + [""]
+    try:
+        import dip_live
+        lines += ["**Dip probation (live)**"] + dip_live.summary_lines(
+            dip_live.dip_trades(conn), config) + [""]
+    except Exception:
+        pass
     s = credit.status(config)
     lines += ["**Claude credit**", credit.credit_line(s)] + credit.alerts(s)
     return lines
