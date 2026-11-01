@@ -221,7 +221,8 @@ def test_the_worker_sizes_with_the_configured_tolerance():
     with open("streamlit_app.py", encoding="utf-8") as f:
         src = f.read()
     assert "lot_tolerance = risk.min_lot_tolerance(config)" in src
-    assert "min_lot_tolerance=lot_tolerance" in src
+    # dip_probation (2026-11-01) never rounds past its $25: tolerance 0 for it only
+    assert "min_lot_tolerance=0.0 if _dip_entry else lot_tolerance" in src
 
 
 def test_the_worker_journals_the_actual_risk_on_the_buy():

@@ -91,8 +91,11 @@ def check_signal(entry: float, stop, target, equity: float,
                  open_positions: int = 0, max_positions: int = 3,
                  daily_pnl: float = 0.0, daily_loss_limit_usd: float = None,
                  open_notional_usd: float = 0.0,
-                 position_cap_pct: float = None):
+                 position_cap_pct: float = None,
+                 min_reward_risk: float = None):
     """Validate one prospective long entry. Returns (ok: bool, reason: str|None).
+    `min_reward_risk` overrides MIN_REWARD_RISK for a setup whose target is
+    fixed by design (dip_probation: the prior close).
 
     Rules:
       - a stop is mandatory (thesis invalidation must be defined)
@@ -115,8 +118,9 @@ def check_signal(entry: float, stop, target, equity: float,
         return False, "stop_not_below_entry"
 
     rr = reward_risk(entry, stop, target)
-    if rr is None or rr < MIN_REWARD_RISK:
-        return False, f"reward_risk_below_{MIN_REWARD_RISK}"
+    floor = MIN_REWARD_RISK if min_reward_risk is None else float(min_reward_risk)
+    if rr is None or rr <= 0 or rr < floor:
+        return False, f"reward_risk_below_{floor:g}"
 
     if notional_usd is not None and equity > 0:
         if notional_usd > equity * cap_pct:

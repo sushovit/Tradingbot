@@ -384,6 +384,11 @@ def main(argv=None) -> int:
             lines.append(cap_shadow.summary_line(cap_shadow.rows(conn)))
         except Exception:
             pass
+        try:                         # the LIVE dip probation, next to the paper test
+            import dip_live
+            lines += dip_live.summary_lines(dip_live.dip_trades(conn))
+        except Exception:
+            pass
         if a.post:
             post(lines)
         if a.show or a.post:

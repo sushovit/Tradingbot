@@ -270,5 +270,13 @@
     "earnings_gap_cooldown": {
         "_note": "CEO 2026-10-31 agenda 39: a post-earnings gap <= gap_pct blocks new entries for block_sessions sessions (gap day = 1), then reclaim only for reclaim_only_sessions",
         "enabled": true, "gap_pct": -8.0, "block_sessions": 3, "reclaim_only_sessions": 7
+    },
+    "dip_probation": {
+        "_note": "CEO-approved owner override 2026-11-01: live dip probation (dip_live.py). Rules only; Claude + shadow advisory. spy_gate false: the SPY 20-day EMA gate does not apply (not in the CEO spec; the S55 test had none).",
+        "enabled": true, "start": "2026-11-02", "risk_per_trade_pct": 0.5,
+        "min_price": 50.0, "open_band_pct": 1.0, "dip_pct": 2.0, "trigger_before_et": "11:00",
+        "fresh_bars": 2, "stop_atr": 2.0, "hold_sessions": 3, "earnings_block_sessions": 3,
+        "max_open": 1, "max_entries_per_day": 1, "kill_pnl_usd": -75.0, "kill_streak": 5,
+        "spy_gate": false
     }
 }

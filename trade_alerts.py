@@ -89,7 +89,8 @@ def buy_embed(ticker, qty, fill, ts, target=None, stop=None, setup=None,
                    else "rules-only"))
     if stop is not None and stop < fill:
         fields.append(("$ at risk", f"${(fill - stop) * qty:,.2f}"))
-    return {"title": f"🟢 BUY {ticker}", "color": GREEN, "fields": fields}
+    dip = "🧪 DIP " if setup == "dip_probation" else ""
+    return {"title": f"{dip}🟢 BUY {ticker}", "color": GREEN, "fields": fields}
 
 
 def sell_embed(ticker, qty, fill, ts, entry, reason, entry_ts=None,
@@ -146,10 +147,14 @@ def describe_exit(sell_trade_id: int, state: dict = None) -> dict:
                 or ctx.get("stop"))
     target = state.get("profit_target_price") or ctx.get("target")
     ts = datetime.fromisoformat(sell["timestamp"]).replace(tzinfo=ET)
-    return sell_embed(sell["ticker"], float(sell["qty"]), float(sell["price"]),
-                      ts, float(entry), sell["reason"], entry_ts,
-                      float(original) if original is not None else None,
-                      float(target) if target is not None else None)
+    embed = sell_embed(sell["ticker"], float(sell["qty"]), float(sell["price"]),
+                       ts, float(entry), sell["reason"], entry_ts,
+                       float(original) if original is not None else None,
+                       float(target) if target is not None else None)
+    if state.get("setup") == "dip_probation" or (buy is not None
+                                                 and buy["reason"] == "dip_probation"):
+        embed["title"] = "🧪 DIP " + embed["title"]
+    return embed
 
 
 def startup_embed(ts, pid, equity=None, positions=(), universe_n=None,

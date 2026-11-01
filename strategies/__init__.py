@@ -17,6 +17,7 @@ from .momentum_continuation import MomentumContinuation
 from .mean_reversion_reclaim import MeanReversionReclaim
 from .pullback_in_uptrend import PullbackInUptrend
 from .post_earnings_continuation import PostEarningsContinuation
+from .dip_probation import DipProbation
 
 REGISTRY = {
     TrendContinuation.name: TrendContinuation,
@@ -27,6 +28,8 @@ REGISTRY = {
     # spy_filter_exempt — pullback_in_uptrend is -0.14R in chop.
     PullbackInUptrend.name: PullbackInUptrend,
     PostEarningsContinuation.name: PostEarningsContinuation,
+    # CEO-approved owner override 2026-11-01: live probation, rules only
+    DipProbation.name: DipProbation,
 }
 
 DEFAULT_STRATEGIES = ["trend_continuation"]
@@ -47,6 +50,10 @@ def enabled_strategies(ticker: str, config: dict) -> list:
     names = config.get("strategies", {}).get(ticker)
     if names is None:
         names = config.get("default_strategies", DEFAULT_STRATEGIES)
+    names = list(names)
+    # The dip probation runs on every ticker while enabled (dip_live gates it).
+    if (config.get("dip_probation") or {}).get("enabled") and "dip_probation" not in names:
+        names.append("dip_probation")
     instances = []
     for name in names:
         if name in RETIRED:

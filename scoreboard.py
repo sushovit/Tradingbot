@@ -254,7 +254,7 @@ def cap3_lines(rows):
              else f"3.0 cap review at {done}/{cap_shadow.REVIEW_AFTER} closed")]
 
 
-def table_lines(rows, totals, day, shadow=None):
+def table_lines(rows, totals, day, shadow=None, dip=None):
     cap3 = any("cap3" in r for r in rows)
     w = max(trade_table.WIDTH, 54) if cap3 else trade_table.WIDTH
     mw = 7 if cap3 else 8
@@ -292,6 +292,8 @@ def table_lines(rows, totals, day, shadow=None):
     if totals["unscored"]:
         lines.append("No replay for: " + ", ".join(totals["unscored"]))
     lines += shadow_lines(shadow)
+    if dip:                                    # 2026-11-01: dip probation, on its own
+        lines += dip
     lines.append(f"Switch if owner > rule over >= {MIN_CLOSED} closed.")
     if totals["rule_met"]:
         lines.append(f"Rule MET ({totals['closed_n']} closed).")
@@ -360,7 +362,16 @@ def main(argv=None) -> int:
             split = None
     finally:
         conn.close()
-    lines = table_lines(rows, totals, day, split)
+    try:
+        import dip_live
+        dconn = sqlite3.connect(f"file:{journal.DB_FILE}?mode=ro", uri=True)
+        try:
+            dip = dip_live.summary_lines(dip_live.dip_trades(dconn), config)
+        finally:
+            dconn.close()
+    except Exception:
+        dip = None
+    lines = table_lines(rows, totals, day, split, dip)
     print("\n".join(lines))
     if a.no_post:
         return 0

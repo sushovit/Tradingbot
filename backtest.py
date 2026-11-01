@@ -272,6 +272,9 @@ def setup_min_bars() -> dict:
         "post_earnings_continuation": pe.LOOKBACK + pe.GAP_WINDOW + 4,
         # EMA21 + ADX14 + a 20-bar volume EMA, then dropna, then 3 rows.
         "trend_continuation": 2 * 14 + 3,
+        # 2026-11-01: daily ATR14 (15 completed days) + the prior close; the
+        # 5-minute trigger needs only today's bars.
+        "dip_probation": 14 + 2,
     }
 
 
