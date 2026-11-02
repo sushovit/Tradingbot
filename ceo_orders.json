@@ -155,7 +155,7 @@
       "date": "2026-11-02",
       "id": "dip-max1-fix",
       "order": "SAFETY FIX: dip_probation max 1 open / 1 a day - count pending orders + today's journal entries at submit time (ABBV, PSX, ZS opened in one cycle); keep the 3 positions",
-      "status": "PENDING"
+      "status": "246e7ea"
     }
   ]
 }
