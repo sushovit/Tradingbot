@@ -97,6 +97,42 @@ def cycle_gate(today, positions, dip_buys_today, closed_pnls, config):
     return None
 
 
+DEAD_STATES = {"canceled", "cancelled", "rejected", "expired", "done_for_day", "replaced"}
+
+
+def _status(o) -> str:
+    return str(getattr(o, "status", "")).lower().split(".")[-1]
+
+
+def presubmit_block(positions, journal_dip_buys_today, broker_orders_today, config=None):
+    """The LAST check before a dip order is submitted (2026-11-02 bug: ABBV,
+    PSX and ZS bought in one cycle). Counts, at that moment: open dip
+    positions, today's dip BUYs in the journal, and today's dip-tagged orders
+    at the broker (client_order_id "dip-..."), pending ones included.
+    `broker_orders_today` None = the broker could not be read -> block."""
+    p = params(config)
+    if broker_orders_today is None:
+        return "dip_check_unavailable"
+    open_n = sum(1 for s in (positions or {}).values()
+                 if s.get("in_position") and s.get("setup") == DIP)
+    dip_orders = [o for o in broker_orders_today
+                  if str(getattr(o, "client_order_id", "") or "").startswith("dip-")
+                  and "buy" in str(getattr(o, "side", "")).lower()
+                  and _status(o) not in DEAD_STATES]
+    pending = [o for o in dip_orders if _status(o) != "filled"]
+    if open_n >= int(p["max_open"]):
+        return "dip_position_open"
+    if pending:
+        return "dip_order_pending"
+    if max(int(journal_dip_buys_today), len(dip_orders)) >= int(p["max_entries_per_day"]):
+        return "dip_entry_done_today"
+    return None
+
+
+def client_order_id(ticker, now) -> str:
+    return f"dip-{ticker}-{now:%Y%m%d%H%M%S}"[:48]
+
+
 # ===================================================================== detect
 
 def _et(ts, tz="America/New_York"):
