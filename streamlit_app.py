@@ -2011,6 +2011,11 @@ def _worker_loop():
                                f"signal reference {signal.entry:.2f} until the "
                                f"broker reconcile corrects it")
             status_updates.append(f"{ticker}: BOUGHT ({signal.setup_name})")
+            if signal.setup_name == dip_live.DIP:
+                # 2026-11-02 bug (ABBV, PSX, ZS bought in ONE cycle): the gate
+                # is computed once per cycle, so close it for the rest of
+                # this cycle the moment a dip entry is made.
+                dip_gate = "dip_entry_done_today"
 
         write_positions(positions)
         breaker_note = " | ⛔ CIRCUIT BREAKER ACTIVE" if breaker_tripped else ""

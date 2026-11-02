@@ -186,3 +186,16 @@ def test_dip_reported_separately():
     import scoreboard
     assert scoreboard.table_lines([], {"live": 0, "rule": 0, "owner": 0, "closed_n": 0, "closed_diff": 0,
                                        "unscored": [], "rule_met": False}, None, None, lines)[-len(lines) - 4:]
+
+
+def test_a_dip_entry_closes_the_gate_for_the_rest_of_the_cycle():
+    """2026-11-02: ABBV, PSX and ZS were bought in one cycle - the per-cycle
+    gate must close as soon as a dip entry is made."""
+    src = open("streamlit_app.py", encoding="utf-8").read()
+    i = src.index('status_updates.append(f"{ticker}: BOUGHT ({signal.setup_name})")')
+    after = src[i:i + 500]
+    assert "if signal.setup_name == dip_live.DIP:" in after
+    assert 'dip_gate = "dip_entry_done_today"' in after
+    # and the next ticker's detector sees it
+    assert '"dip_gate": dip_gate}' in src
+    assert dl.detect(m5(TOUCH), ctx(gate="dip_entry_done_today")) is None
