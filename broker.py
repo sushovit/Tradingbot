@@ -201,9 +201,11 @@ class Broker:
         return [o for o in orders if o.filled_at is not None]
 
     def submit_bracket(self, ticker: str, qty: int, stop_price: float,
-                       target_price: float):
+                       target_price: float, client_order_id: str = None):
         """Market BUY with attached stop-loss and take-profit legs.
-        The exit orders live AT THE BROKER, not in our polling loop."""
+        The exit orders live AT THE BROKER, not in our polling loop.
+        `client_order_id` tags the order (dip_probation: "dip-...", so the
+        pre-submit check can count dip orders the journal has not seen)."""
         req = MarketOrderRequest(
             symbol=ticker,
             qty=qty,
@@ -212,6 +214,7 @@ class Broker:
             order_class=OrderClass.BRACKET,
             take_profit=TakeProfitRequest(limit_price=round(target_price, 2)),
             stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+            **({"client_order_id": client_order_id} if client_order_id else {}),
         )
         return _retry(self.trading.submit_order, req,
                       what=f"submit_bracket({ticker})")
@@ -243,6 +246,11 @@ class Broker:
         req = ReplaceOrderRequest(limit_price=round(new_limit_price, 2))
         return _retry(self.trading.replace_order_by_id, order_id, req,
                       what=f"replace_target({order_id})")
+
+    def orders_since(self, after_utc):
+        """Every order (any status) submitted at/after `after_utc`."""
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, after=after_utc, limit=500)
+        return _retry(self.trading.get_orders, req, what="orders_since")
 
     def cancel_order(self, order_id: str):
         return _retry(self.trading.cancel_order_by_id, order_id,

@@ -574,6 +574,32 @@ def dip_reanchor_once(broker, positions, ticker, state, last_price, journal_even
     return moved
 
 
+def dip_presubmit_check(broker, positions, now_et, config):
+    """2026-11-02 safety fix: dip_live.presubmit_block with live counts - the
+    journal's dip BUYs today and the broker's orders since today's midnight
+    ET. Any read failure blocks the order (fail closed)."""
+    import sqlite3
+    today = now_et.date()
+    try:
+        conn = sqlite3.connect(journal.DB_FILE, timeout=15)
+        try:
+            n = conn.execute("SELECT count(*) FROM trades WHERE action='BUY' AND reason=? "
+                             "AND substr(timestamp,1,10)=?",
+                             (dip_live.DIP, today.isoformat())).fetchone()[0]
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"dip pre-submit: journal unreadable ({e}) - blocked")
+        return "dip_check_unavailable"
+    try:
+        midnight = EASTERN_TZ.localize(datetime.combine(today, dttime(0, 0)))
+        orders = broker.orders_since(midnight.astimezone(pytz.utc))
+    except Exception as e:
+        logger.warning(f"dip pre-submit: broker orders unreadable ({e}) - blocked")
+        orders = None
+    return dip_live.presubmit_block(positions, n, orders, config)
+
+
 def dip_cycle_gate(positions, now_et, config):
     """CEO-approved owner override 2026-11-01: the dip probation's per-cycle
     gate (dip_live.cycle_gate) and kill state, from the journal."""
@@ -1892,7 +1918,20 @@ def _worker_loop():
                 continue
 
             try:
-                order = broker.submit_bracket(ticker, qty, signal.stop, signal.target)
+                _coid = None
+                if signal.setup_name == dip_live.DIP:
+                    # 2026-11-02 safety fix: the last check, at submit time
+                    _blk = dip_presubmit_check(broker, positions, now_et, config)
+                    if _blk:
+                        journal_pass_once(ticker, signal.setup_name, _blk,
+                                          "dip pre-submit check")
+                        status_updates.append(f"{ticker}: Pass ({_blk})")
+                        dip_gate = _blk
+                        continue
+                    _coid = dip_live.client_order_id(ticker, now_et)
+                order = broker.submit_bracket(
+                    ticker, qty, signal.stop, signal.target,
+                    **({"client_order_id": _coid} if _coid else {}))
             except BrokerError as e:
                 logger.error(f"{ticker}: bracket order failed: {e}")
                 status_updates.append(f"{ticker}: Order failed (will retry)")
@@ -2011,6 +2050,11 @@ def _worker_loop():
                                f"signal reference {signal.entry:.2f} until the "
                                f"broker reconcile corrects it")
             status_updates.append(f"{ticker}: BOUGHT ({signal.setup_name})")
+            if signal.setup_name == dip_live.DIP:
+                # 2026-11-02 bug (ABBV, PSX, ZS bought in ONE cycle): the gate
+                # is computed once per cycle, so close it for the rest of
+                # this cycle the moment a dip entry is made.
+                dip_gate = "dip_entry_done_today"
 
         write_positions(positions)
         breaker_note = " | ⛔ CIRCUIT BREAKER ACTIVE" if breaker_tripped else ""

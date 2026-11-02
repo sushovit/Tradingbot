@@ -2240,4 +2240,18 @@ _Measured on SIGNALS, not on trades the desk took. Every signal counted here wou
 - **kill switch:** after 10 probation trades, if their average R < 0, the class closes (floor back to 70).
 
 Otherwise: no proposal; keep grading. The Saturday report's section (c) states whether the criteria are met.
+---
+
+## 42. Ops: dip_probation opened 3 positions in one cycle - root cause and fix (2026-11-02)
+
+**Incident 2026-11-02 (first live day of dip_probation).** The setup's rule is max 1 open dip position and max 1 dip entry per day. Between 09:37 and 09:39 ET the worker bought **three**: ABBV (1 @ 288.57, 09:37:01), PSX (1 @ 276.38, 09:37:25), ZS (1 @ 232.12, 09:39:00) - all within ONE worker cycle.
+
+**Root cause.** The max-1 gate (dip_cycle_gate) was computed once at the start of each cycle from the journal and positions; a dip entry made during the cycle did not update it, so every later ticker in the same cycle still saw an open gate. Consecutive cycles were already covered (the next cycle's gate saw the open positions); the hole was within a cycle.
+
+**Fix (safety, allowed under the rule freeze; merged after the close with the worker off):**
+1. A **pre-submit check** immediately before every dip order (dip_live.presubmit_block via the worker's dip_presubmit_check): open dip positions, today's dip BUYs in the journal, and today's dip orders at the broker - **pending/unfilled included** - identified by client_order_id `dip-<ticker>-<time>`. A journal or broker read failure blocks the order (fail closed).
+2. The **in-cycle gate** closes for the rest of the cycle the moment a dip entry is made.
+3. End-to-end tests through the real worker loop with a fake broker: two dip signals in the same cycle -> 1 order; consecutive cycles with the first entry pending -> 1 order; a pending dip order the journal never saw -> 0 orders. The same-cycle test fails on the unfixed code (reproduces the incident).
+
+**Positions kept per CEO:** ABBV, PSX and ZS stay open with their broker stops (fill - 2 x ATR14) and targets (prior close) and the 15:55 ET time exit on Wed 2026-11-04. Combined risk ~$56, inside the $75 kill switch.
 
