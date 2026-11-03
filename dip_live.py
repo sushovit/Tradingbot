@@ -11,7 +11,9 @@ Entry (strategies/dip_probation.py calls detect()):
   * the FIRST completed 5-minute bar starting before 11:00 ET whose low <=
     prior close x 0.98 -> a market buy on the next cycle (the touch bar must
     be one of the last two completed bars, or the entry is missed);
-  * max 1 dip_probation position open, max 1 dip entry per day.
+  * a SEPARATE book (CEO 2026-11-03): max 3 dip positions open, max 1 dip
+    entry per day; dip positions do not count toward the main book's
+    max_positions or its sector cap (the daily loss limit counts both).
 Bracket: target = the prior close (limit); stop = entry - 2.0 x daily ATR14
 (re-anchored to the broker fill once confirmed). Time exit at 15:55 ET on
 session 3 (the entry session is session 1). No ladder, no trail, no target
@@ -28,7 +30,7 @@ DIP = "dip_probation"
 DEFAULTS = {"enabled": True, "start": "2026-11-02", "risk_per_trade_pct": 0.5,
             "min_price": 50.0, "open_band_pct": 1.0, "dip_pct": 2.0,
             "trigger_before_et": "11:00", "fresh_bars": 2, "stop_atr": 2.0,
-            "hold_sessions": 3, "earnings_block_sessions": 3, "max_open": 1,
+            "hold_sessions": 3, "earnings_block_sessions": 3, "max_open": 3,
             "max_entries_per_day": 1, "kill_pnl_usd": -75.0, "kill_streak": 5,
             "spy_gate": False}
 EXIT_REASON = "Time exit (session 3)"

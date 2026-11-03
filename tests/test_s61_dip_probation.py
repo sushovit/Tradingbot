@@ -115,8 +115,9 @@ def test_kill_alert_is_sent_once(monkeypatch):
 
 # ----------------------------------------------------------------- max-1
 
-def test_max_one_open_max_one_entry_a_day_and_start_date():
-    open_pos = {"ABC": {"in_position": True, "setup": "dip_probation"}}
+def test_max_open_max_one_entry_a_day_and_start_date():
+    # CEO 2026-11-03: the dip book allows 3 open (separate from the main book)
+    open_pos = {t: {"in_position": True, "setup": "dip_probation"} for t in ("ABC", "DEF", "GHI")}
     other = {"XYZ": {"in_position": True, "setup": "momentum_continuation"}}
     assert dl.cycle_gate(TODAY, open_pos, 0, [], CFG) == "dip_position_open"
     assert dl.cycle_gate(TODAY, other, 1, [], CFG) == "dip_entry_done_today"
