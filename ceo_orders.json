@@ -161,7 +161,7 @@
       "date": "2026-11-03",
       "id": "dip-separate-book",
       "order": "dip_probation is a separate book: excluded from main max_positions and the main sector cap; dip max_open 3, 1 entry/day, $25 risk, kill switch; daily loss limit counts both",
-      "status": "PENDING"
+      "status": "ef70d69"
     }
   ]
 }
