@@ -276,7 +276,7 @@
         "enabled": true, "start": "2026-11-02", "risk_per_trade_pct": 0.5,
         "min_price": 50.0, "open_band_pct": 1.0, "dip_pct": 2.0, "trigger_before_et": "11:00",
         "fresh_bars": 2, "stop_atr": 2.0, "hold_sessions": 3, "earnings_block_sessions": 3,
-        "max_open": 1, "max_entries_per_day": 1, "kill_pnl_usd": -75.0, "kill_streak": 5,
+        "max_open": 3, "max_entries_per_day": 1, "kill_pnl_usd": -75.0, "kill_streak": 5,
         "spy_gate": false
     }
 }

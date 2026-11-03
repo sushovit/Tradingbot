@@ -1283,7 +1283,14 @@ def _worker_loop():
         status_updates = []
         for ticker in ticker_list:
             current_geo.clear()
-            open_positions_count = sum(1 for s in positions.values() if s.get("in_position"))
+            # CEO 2026-11-03: the dip probation is a SEPARATE book - the main
+            # book's position count (max_positions) leaves dip positions out;
+            # the dip book has its own limits (dip_live). Cash and the daily
+            # loss limit still count both books.
+            _dip_open_n = sum(1 for s in positions.values()
+                              if s.get("in_position") and s.get("setup") == dip_live.DIP)
+            open_positions_count = sum(1 for s in positions.values()
+                                       if s.get("in_position")) - _dip_open_n
             # Cash actually deployed — entries must never push this above
             # effective equity (no margin, ever).
             open_notional = sum(s.get("shares_held", 0) * s.get("entry_price", 0)
@@ -1655,13 +1662,21 @@ def _worker_loop():
                 journal_pass_once(ticker, signal.setup_name, "outside_hours", "")
                 status_updates.append(f"{ticker}: Pass (outside hours)")
                 continue
-            if open_positions_count >= max_positions:
+            _is_dip_signal = signal.setup_name == dip_live.DIP
+            # the book this entry belongs to: its open count and its limit
+            _book_open, _book_max = ((_dip_open_n, int(dip_live.params(config)["max_open"]))
+                                     if _is_dip_signal else (open_positions_count, max_positions))
+            if not _is_dip_signal and open_positions_count >= max_positions:
                 journal_pass_once(ticker, signal.setup_name, "max_positions", "")
                 status_updates.append(f"{ticker}: Pass (max positions)")
                 continue
             # CEO 2026-10-22: max 1 open position per sector (KMI + SLB, both
             # energy, entered 09:32 and both stopped). Before the gatekeeper.
-            _sector_block = risk.sector_cap_block(ticker, positions, config)
+            # main entries: dip positions are another book, not counted;
+            # dip entries: every open position counts (as specified 11-01)
+            _sector_block = risk.sector_cap_block(
+                ticker, positions if _is_dip_signal else
+                {t: s for t, s in positions.items() if s.get("setup") != dip_live.DIP}, config)
             if _sector_block:
                 journal_pass_once(ticker, signal.setup_name, "sector_cap",
                                   _sector_block)
@@ -1681,7 +1696,7 @@ def _worker_loop():
 
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,
-                open_positions=open_positions_count, max_positions=max_positions,
+                open_positions=_book_open, max_positions=_book_max,
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
                 open_notional_usd=open_notional,
                 position_cap_pct=position_cap_pct,
@@ -1894,7 +1909,7 @@ def _worker_loop():
             ok, reject_reason = risk.check_signal(
                 signal.entry, signal.stop, signal.target, equity,
                 notional_usd=qty * signal.entry,
-                open_positions=open_positions_count, max_positions=max_positions,
+                open_positions=_book_open, max_positions=_book_max,
                 daily_pnl=daily_pnl, daily_loss_limit_usd=loss_limit_usd,
                 open_notional_usd=open_notional,
                 position_cap_pct=position_cap_pct,

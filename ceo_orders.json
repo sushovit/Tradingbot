@@ -156,6 +156,12 @@
       "id": "dip-max1-fix",
       "order": "SAFETY FIX: dip_probation max 1 open / 1 a day - count pending orders + today's journal entries at submit time (ABBV, PSX, ZS opened in one cycle); keep the 3 positions",
       "status": "246e7ea"
+    },
+    {
+      "date": "2026-11-03",
+      "id": "dip-separate-book",
+      "order": "dip_probation is a separate book: excluded from main max_positions and the main sector cap; dip max_open 3, 1 entry/day, $25 risk, kill switch; daily loss limit counts both",
+      "status": "PENDING"
     }
   ]
 }
